@@ -127,6 +127,12 @@ class TranscriptDocument(StrictModel):
         ):
             raise ValueError("complete timeline transcript cannot have uncovered duration")
         if self.duration_seconds is not None:
+            for segment in self.segments:
+                if segment.end_seconds > self.duration_seconds:
+                    raise ValueError("transcript segment exceeds duration")
+                for word in segment.words or []:
+                    if word.end_seconds > self.duration_seconds:
+                        raise ValueError("transcript word exceeds duration")
             for gap in self.gaps:
                 if gap.end_seconds > self.duration_seconds:
                     raise ValueError("transcript gap exceeds duration")
