@@ -104,10 +104,14 @@ def _unit_from_excerpt(
 ) -> dict[str, Any] | None:
     text = excerpt.get("text_original") or "课程内容"
     kind = _kind_for_text(text)
-    start = max(float(excerpt.get("start_seconds", core[0])), core[0])
-    end = min(float(excerpt.get("end_seconds", core[1])), core[1])
+    excerpt_start = float(excerpt.get("start_seconds", core[0]))
+    excerpt_end = float(excerpt.get("end_seconds", core[1]))
+    if excerpt_end <= core[0] or excerpt_start >= core[1]:
+        return None
+    start = max(excerpt_start, core[0])
+    end = min(excerpt_end, core[1])
     if end <= start:
-        start, end = core
+        return None
     nearby = [
         frame
         for frame in frames

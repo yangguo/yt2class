@@ -206,7 +206,10 @@ def test_reducer_drops_empty_blocks_and_keeps_neighbors():
 
 def test_non_speculative_topic_must_cite_block_local_evidence():
     transcript = make_transcript(
-        [("cap-early", 0.0, 10.0, "开头。"), ("cap-late", 40.0, 50.0, "结尾。")],
+        [
+            ("cap-early", 0.0, 10.0, "开头内容必须足够长才能单独成块。"),
+            ("cap-late", 40.0, 50.0, "结尾内容也要单独成块以便隔离证据。"),
+        ],
         duration=60.0,
     )
     visual = make_visual([("frame-late", 45.0, "scene-001")], duration=60.0)

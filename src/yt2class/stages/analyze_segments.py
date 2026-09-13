@@ -239,9 +239,6 @@ def validate_knowledge_units(
     clip_ids = {str(clip.get("id")) for clip in payload.get("clips") or [] if clip.get("id")}
     topic_id = (payload.get("course_context") or {}).get("topic_id")
     context_start, context_end = payload.get("context_range") or [0.0, 0.0]
-    transcript_text = " ".join(
-        str(row.get("text_original") or "") for row in payload.get("transcript") or []
-    )
     units: list[KnowledgeUnit] = []
     for raw in raw_units:
         if not isinstance(raw, dict):
@@ -289,9 +286,15 @@ def validate_knowledge_units(
                 f"unit {unit.id} claims a temporal sequence from a single frame"
             )
 
-        if text_has_negation(transcript_text) and not text_has_negation(_collect_text(unit)):
+        local_transcript = " ".join(
+            str(row.get("text_original") or "")
+            for row in payload.get("transcript") or []
+            if float(row.get("end_seconds") or 0) > unit.start_seconds
+            and float(row.get("start_seconds") or 0) < unit.end_seconds
+        )
+        if text_has_negation(local_transcript) and not text_has_negation(_collect_text(unit)):
             raise SegmentContractError(f"unit {unit.id} dropped a transcript negation")
-        if text_has_units(transcript_text) and not text_has_units(_collect_text(unit)):
+        if text_has_units(local_transcript) and not text_has_units(_collect_text(unit)):
             raise SegmentContractError(f"unit {unit.id} dropped a transcript unit or quantity")
         units.append(unit)
     return units

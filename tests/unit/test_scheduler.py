@@ -183,7 +183,7 @@ def test_low_output_reserve_is_scheduled_not_overflowed():
 
 def test_oversized_transcript_only_window_splits_or_gaps():
     transcript = make_transcript(
-        [("cap-huge", 0.0, 60.0, "讲解" * 8000)],
+        [("cap-huge", 0.0, 60.0, "讲解" * 3900)],
         duration=60.0,
     )
     manifest = _schedule(
