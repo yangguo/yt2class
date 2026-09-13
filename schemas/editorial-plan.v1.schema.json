@@ -118,6 +118,29 @@
           "minLength": 1,
           "title": "Selection Reason",
           "type": "string"
+        },
+        "locked": {
+          "default": false,
+          "title": "Locked",
+          "type": "boolean"
+        },
+        "quality_label": {
+          "default": "draft",
+          "enum": [
+            "verified",
+            "draft",
+            "evidence-only"
+          ],
+          "title": "Quality Label",
+          "type": "string"
+        },
+        "body_points": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 4,
+          "title": "Body Points",
+          "type": "array"
         }
       },
       "required": [

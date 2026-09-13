@@ -2,8 +2,8 @@
 
 `yt2class` 把一批 YouTube 课程链接整理成 PPTX 讲义：先下载视频和可用字幕，再按课件画面变化抓取候选帧，做感知去重，最后把经过校验的原始视频截图嵌入 PPT。它不会让模型重新生成课程图片。
 
-> 项目状态：M0 合同、M1 Task 1 媒体输入与 M1 Task 2 证据抽取已经落地；
-> 后续的全视频 LLM 理解、编辑核验和 PptxGenJS 交付仍按实施计划推进。
+> 项目状态：M0 合同、M1 证据抽取、M2 全视频理解与 M3 编辑/核验/审阅已经落地；
+> PptxGenJS / SlideSpec 3.0 交付仍按实施计划的 M4 推进。
 
 目标系统让 LLM 覆盖整段课程，而不是在目标页数范围内预先截断候选画面：
 
@@ -148,6 +148,45 @@ opt-in 活测，见 [tests/live/README.md](tests/live/README.md)；不要提交�
 uv run pytest tests/unit tests/contract tests/integration -q
 ```
 
+## M3 全局编辑、核验与人工审阅
+
+M3 在 KnowledgeDocument 之上做页数约束下的 EditorialPlan、逐条 claim 核验和离线审阅包。
+普通测试与下面的 CLI 只使用 `FakeProvider` 或确定性评分，用来证明合同和 M3 门槛。
+这**不是**真实模型核验，也不把 fake JSON 当成金标准。
+
+```bash
+uv run yt2class plan \
+  --knowledge output/runs/<lesson-id>/analysis/knowledge-document.json \
+  --transcript output/runs/<lesson-id>/evidence/transcript-document.json \
+  --visual output/runs/<lesson-id>/evidence/visual-catalogue.json \
+  --output output/runs/<lesson-id>/editorial \
+  --provider fake
+
+uv run yt2class verify \
+  --knowledge output/runs/<lesson-id>/analysis/knowledge-document.json \
+  --plan output/runs/<lesson-id>/editorial/editorial-plan.json \
+  --transcript output/runs/<lesson-id>/evidence/transcript-document.json \
+  --visual output/runs/<lesson-id>/evidence/visual-catalogue.json \
+  --output output/runs/<lesson-id>/editorial \
+  --mode draft \
+  --provider fake
+
+uv run yt2class review \
+  --knowledge output/runs/<lesson-id>/analysis/knowledge-document.json \
+  --plan output/runs/<lesson-id>/editorial/editorial-plan.json \
+  --report output/runs/<lesson-id>/editorial/verification-report.json \
+  --transcript output/runs/<lesson-id>/evidence/transcript-document.json \
+  --visual output/runs/<lesson-id>/evidence/visual-catalogue.json \
+  --output output/runs/<lesson-id>/editorial \
+  --provider fake
+```
+
+`--provider` 目前只实现并测试了 `fake`。`strict` 模式在仍有未解决的关键 claim 时拒绝写出
+`verified` 标签，并退出码 2；draft / evidence-only 会在页面 notes 和 `review.html` 里留下
+可见标记，不会伪装成已核验。审阅文件只允许改文案、选择 allowed frame、删页、锁定和排序；
+过期 revision 或 baseline hash 会被拒绝。修改后只重跑受影响 claim 的 verifier。
+SlideSpec / PPTX 绑定仍是 M4，当前 binder/renderer 只返回延期占位。
+
 
 ## 完整目标设计
 
@@ -176,7 +215,7 @@ uv run pytest tests/contract -q
 uv run pytest -q
 ```
 
-目前 `build` 仍是原型：仅接受 YouTube 链接，没有把 M1/M2 接到正式 PPT 导出。
+目前 `build` 仍是原型：仅接受 YouTube 链接，没有把 M1–M3 接到正式 PPT 导出。
 v2 契约与校验已落地但尚未接入 build；它不会自动升级成目标 3.0。
 不要把 v2 示例传给当前 `--selection-file`，该选项仍使用上方的 LessonPlan 格式。
 

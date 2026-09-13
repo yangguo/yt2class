@@ -11,6 +11,9 @@ def test_help_exposes_build_subcommand():
     assert "COMMAND" in result.stdout
     assert "build" in result.stdout.lower()
     assert "analyze" in result.stdout.lower()
+    assert "plan" in result.stdout.lower()
+    assert "verify" in result.stdout.lower()
+    assert "review" in result.stdout.lower()
 
     build_help = runner.invoke(cli.app, ["build", "--help"], prog_name="yt2class")
     assert build_help.exit_code == 0
@@ -18,6 +21,10 @@ def test_help_exposes_build_subcommand():
     analyze_help = runner.invoke(cli.app, ["analyze", "--help"], prog_name="yt2class")
     assert analyze_help.exit_code == 0
     assert "FakeProvider" in analyze_help.stdout or "fake" in analyze_help.stdout.lower()
+    for command in ("plan", "verify", "review"):
+        help_result = runner.invoke(cli.app, [command, "--help"], prog_name="yt2class")
+        assert help_result.exit_code == 0
+        assert "fake" in help_result.stdout.lower()
 
 
 def test_build_command_passes_batch_options_to_pipeline(tmp_path, monkeypatch):

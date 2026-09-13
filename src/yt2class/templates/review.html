@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>yt2class review</title>
+  <style>
+    body { font-family: sans-serif; margin: 1.5rem; color: #111; }
+    .banner { padding: 0.75rem 1rem; margin-bottom: 1rem; border-radius: 6px; }
+    .banner.draft { background: #fef3c7; }
+    .banner.evidence-only { background: #e5e7eb; }
+    .banner.strict { background: #d1fae5; }
+    .badge { display: inline-block; padding: 0.1rem 0.45rem; border-radius: 4px; font-size: 0.8rem; margin-right: 0.4rem; }
+    .badge-draft { background: #f59e0b; color: #111; }
+    .badge-evidence-only { background: #4b5563; color: #fff; }
+    .badge-verified { background: #059669; color: #fff; }
+    article { border: 1px solid #d1d5db; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
+    img { max-width: 100%; height: auto; background: #f3f4f6; }
+    .warn { font-weight: 600; }
+    ul { padding-left: 1.2rem; }
+  </style>
+</head>
+<body>
+  <h1>离线审阅 / review</h1>
+  <p class="warn">Draft / evidence-only 材料有可见标识，不能伪装成已核验结论。模型互审不是通过依据。</p>
+  <div id="banner"></div>
+  <section id="omissions"></section>
+  <section id="pages"></section>
+  <script id="review-bundle" type="application/json">__REVIEW_BUNDLE_JSON__</script>
+  <script>
+    const bundle = JSON.parse(document.getElementById("review-bundle").textContent);
+    const banner = document.getElementById("banner");
+    const mode = (bundle.report && bundle.report.quality_mode) || "draft";
+    banner.className = "banner " + mode;
+    banner.textContent = "quality_mode=" + mode + " revision=" + bundle.revision +
+      (bundle.report && bundle.report.human_sampling_required ? " · 需要人工抽样核验" : "");
+    const omit = document.getElementById("omissions");
+    const omitted = bundle.omitted_topics || [];
+    omit.innerHTML = "<h2>遗漏主题</h2><ul>" +
+      omitted.map((item) => "<li>" + String(item) + "</li>").join("") + "</ul>";
+    const root = document.getElementById("pages");
+    (bundle.pages || []).forEach((view) => {
+      const page = view.page || {};
+      const label = page.quality_label || "draft";
+      const article = document.createElement("article");
+      article.innerHTML =
+        '<h2><span class="badge badge-' + label + '">' + label +
+        "</span>" + (page.title || "") + "</h2>" +
+        "<p>" + (page.notes || "") + "</p>" +
+        "<p>claims: " + (view.claim_texts || []).join(" / ") + "</p>" +
+        "<p>transcript: " + (view.transcript_excerpts || []).join(" / ") + "</p>" +
+        "<p>time links: " + (view.time_links || []).map((link) =>
+          '<a href="' + link + '">' + link + "</a>").join(" · ") + "</p>" +
+        (view.frame_asset_paths || []).map((src) => '<img alt="source frame" src="' + src + '">').join("");
+      root.appendChild(article);
+    });
+  </script>
+</body>
+</html>

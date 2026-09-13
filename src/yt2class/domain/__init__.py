@@ -7,6 +7,7 @@ from yt2class.domain.knowledge import KnowledgeDocument
 from yt2class.domain.migration import MigrationReport, assess_v2_migration, migrate_v2_to_v3
 from yt2class.domain.render_report import RenderReport
 from yt2class.domain.resolvers import ClosureError, DocumentBundle, resolve_reference_closure
+from yt2class.domain.review import ReviewBundle, ReviewEdits, StaleReviewError
 from yt2class.domain.run_manifest import RunManifest
 from yt2class.domain.segment import SegmentManifest
 from yt2class.domain.slide_spec_v3 import SlideSpecV3
@@ -39,6 +40,9 @@ __all__ = [
     "KnowledgeDocument",
     "MigrationReport",
     "RenderReport",
+    "ReviewBundle",
+    "ReviewEdits",
+    "StaleReviewError",
     "RunManifest",
     "SegmentManifest",
     "SourceInput",
