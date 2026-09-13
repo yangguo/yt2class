@@ -250,7 +250,11 @@ def predicate_conflicts(left: str, right: str) -> list[str]:
     right_numbers = set(NUMBER_RE.findall(right))
     if left_numbers and any(item not in right_numbers for item in left_numbers):
         found.append("number")
-    if polarity(left) != polarity(right) and content_tokens(left) & content_tokens(right):
+    if (
+        normalize_concept(left)
+        and normalize_concept(left) == normalize_concept(right)
+        and polarity(left) != polarity(right)
+    ):
         found.append("negation")
     return list(dict.fromkeys(found))
 
