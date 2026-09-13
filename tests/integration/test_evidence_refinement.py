@@ -363,3 +363,67 @@ def test_successful_clip_and_frame_appear_in_reanalysis_request():
     assert any(asset.id == "clip-refine-0001" for asset in new_visual.assets)
     assert any(request.video_seconds > 0 and "video" in request.modalities for request in provider.requests)
     assert updated.units
+
+
+def test_refinement_clips_are_sized_before_dispatch():
+    from yt2class.stages.analyze_segments import estimate_segment_request_tokens
+
+    transcript = make_transcript([("cap-001", 10.0, 30.0, "缺步骤。" * 40)], duration=60.0)
+    visual = make_visual([("frame-001", 12.5, "scene-001")], duration=60.0)
+    request = _request("missing_step", 10.0, 25.0, "clip")
+    outcome = SegmentAnalysisOutcome(
+        window=_window(),
+        payload={},
+        units=[_unit_with_request(request)],
+    )
+    clip = ExtractedClip(
+        asset=VisualAsset(
+            id="clip-refine-overflow",
+            role="clip",
+            path="clips/clip-refine-overflow-with-long-artifact-name.mp4",
+            sha256="c" * 64,
+            mime_type="video/mp4",
+        ),
+        start_seconds=10.0,
+        end_seconds=25.0,
+    )
+    course_map = sample_course_map()
+    without_clips = estimate_segment_request_tokens(
+        _window(),
+        transcript=transcript,
+        visual=visual,
+        course_map=course_map,
+        batch_evidence_ids=["frame-001"],
+        image_count=1,
+    )
+    with_clips = estimate_segment_request_tokens(
+        _window(),
+        transcript=transcript,
+        visual=visual,
+        course_map=course_map,
+        batch_evidence_ids=["frame-001"],
+        image_count=1,
+        extra_clips=[clip],
+    )
+    assert with_clips > without_clips
+    caps = frames_caps(
+        supports_video=True,
+        max_video_seconds=30.0,
+        max_input_tokens=(without_clips + with_clips) // 2,
+    )
+    assert without_clips <= caps.max_input_tokens < with_clips
+    provider = FakeProvider(caps, structured={"units": []})
+    updated, _visual, _budget = refine_window(
+        outcome,
+        transcript=transcript,
+        visual=visual,
+        course_map=course_map,
+        provider=provider,
+        capabilities=caps,
+        duration_seconds=60.0,
+        clip_extractor=lambda start, end, dest: clip,
+    )
+    assert provider.requests == []
+    assert updated.window.status == "degraded"
+    assert "unschedulable" in (updated.window.failure_reason or "")
+    assert any(claim.status == "unresolved" for unit in updated.units for claim in unit.claims)

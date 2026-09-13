@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 from threading import Event
+from typing import Iterable
 
 from yt2class.adapters.providers.base import ProviderCapabilities, RequestCancelled
 from yt2class.domain.course_map import CourseMap
@@ -82,6 +83,19 @@ def _scheduling_course_map(course_map: CourseMap | None, source_id: str) -> Cour
     return CourseMap(schema_version="1.0", source_id=source_id, topics=[])
 
 
+def _clip_seconds(extra_clips: Iterable[object] | None) -> float:
+    total = 0.0
+    for item in extra_clips or []:
+        if isinstance(item, dict):
+            start = item.get("start_seconds") or 0.0
+            end = item.get("end_seconds") or 0.0
+        else:
+            start = getattr(item, "start_seconds", 0.0) or 0.0
+            end = getattr(item, "end_seconds", 0.0) or 0.0
+        total += max(0.0, float(end) - float(start))
+    return total
+
+
 def _estimate_dispatch_tokens(
     window: AnalysisWindow,
     *,
@@ -90,6 +104,7 @@ def _estimate_dispatch_tokens(
     course_map: CourseMap,
     frame_ids: list[str],
     image_count: int,
+    extra_clips: Iterable[object] | None = None,
 ) -> int:
     # Imported lazily: analyze_segments imports set_window_status from this module.
     from yt2class.stages.analyze_segments import estimate_segment_request_tokens
@@ -101,6 +116,7 @@ def _estimate_dispatch_tokens(
         course_map=course_map,
         batch_evidence_ids=frame_ids,
         image_count=image_count,
+        extra_clips=extra_clips,
     )
 
 
@@ -113,6 +129,7 @@ def _batch_frames(
     course_map: CourseMap,
     max_images: int,
     output_tokens: int,
+    extra_clips: Iterable[object] | None = None,
 ) -> tuple[list[ImageBatch], int]:
     if max_images <= 0 or not frames:
         tokens = _estimate_dispatch_tokens(
@@ -122,6 +139,7 @@ def _batch_frames(
             course_map=course_map,
             frame_ids=[],
             image_count=0,
+            extra_clips=extra_clips,
         )
         batch = ImageBatch(
             id=f"{window.id}-batch-01",
@@ -145,6 +163,7 @@ def _batch_frames(
             course_map=course_map,
             frame_ids=frame_ids,
             image_count=image_count,
+            extra_clips=extra_clips,
         )
         batches.append(
             ImageBatch(
@@ -181,6 +200,7 @@ def rebuild_window_batches(
     config: SchedulerConfig | None = None,
     course_map: CourseMap | None = None,
     source_id: str = "src-unknown",
+    extra_clips: Iterable[object] | None = None,
 ) -> AnalysisWindow:
     """Refresh image batches from the current catalogue so refined frames are visible."""
 
@@ -203,6 +223,7 @@ def rebuild_window_batches(
         course_map=active_map,
         max_images=max_images if max_images > 0 else 0,
         output_tokens=output_tokens,
+        extra_clips=extra_clips,
     )
     return window.model_copy(
         update={
@@ -265,15 +286,30 @@ def _build_window(
 def _fits(
     window: AnalysisWindow,
     capabilities: ProviderCapabilities,
+    *,
+    extra_clips: Iterable[object] | None = None,
 ) -> bool:
     heaviest = max((batch.image_count for batch in window.image_batches), default=0)
     heaviest_tokens = max((batch.estimated_input_tokens for batch in window.image_batches), default=0)
-    return _window_fits_budget(
+    if not _window_fits_budget(
         heaviest_tokens,
         window.estimated_output_tokens,
         heaviest,
         capabilities,
-    )
+    ):
+        return False
+    return _clip_seconds(extra_clips) <= capabilities.max_video_seconds
+
+
+def dispatch_fits(
+    window: AnalysisWindow,
+    capabilities: ProviderCapabilities,
+    *,
+    extra_clips: Iterable[object] | None = None,
+) -> bool:
+    """True when the rebuilt window, including refinement clips, can be dispatched."""
+
+    return _fits(window, capabilities, extra_clips=extra_clips)
 
 
 def _split_until_fit(

@@ -404,6 +404,24 @@ def analyze_window(
         image_count = 0 if batch is None else batch.image_count
         suffix = "" if batch is None else f":{batch.id}"
         video_seconds = _clip_seconds(extra_clips)
+        dispatch_tokens = estimate_serialized_tokens(payload, image_count=image_count)
+        if (
+            dispatch_tokens > provider.capabilities.max_input_tokens
+            or video_seconds > provider.capabilities.max_video_seconds
+            or image_count > provider.capabilities.max_images
+            or output_tokens > provider.capabilities.max_output_tokens
+        ):
+            return SegmentAnalysisOutcome(
+                window=window.model_copy(
+                    update={
+                        "status": "failed",
+                        "failure_reason": "unschedulable: exceeds provider budget",
+                    }
+                ),
+                payload=payload,
+                units=[],
+                error="unschedulable: exceeds provider budget",
+            )
 
         def _attempt(request_id: str, attempt_payload: dict[str, Any]):
             return _complete_with_payload(

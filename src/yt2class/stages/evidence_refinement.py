@@ -14,7 +14,7 @@ from yt2class.domain.segment import AnalysisWindow
 from yt2class.domain.source import SourceManifest
 from yt2class.domain.transcript import TranscriptDocument
 from yt2class.domain.visual import FrameOccurrence, VisualAsset, VisualCatalogue
-from yt2class.orchestration.scheduler import rebuild_window_batches
+from yt2class.orchestration.scheduler import dispatch_fits, rebuild_window_batches
 from yt2class.stages.analyze_segments import SegmentAnalysisOutcome, analyze_window
 
 RefinementKind = Literal["unreadable_text", "missing_step", "audio_visual_conflict"]
@@ -386,7 +386,20 @@ def refine_window(
             visual=current_visual,
             capabilities=capabilities,
             course_map=course_map,
+            extra_clips=extra_clips,
         )
+        if not dispatch_fits(refreshed, capabilities, extra_clips=extra_clips):
+            note = "unschedulable: refinement request exceeds provider budget"
+            current = SegmentAnalysisOutcome(
+                window=current.window.model_copy(
+                    update={"status": "degraded", "failure_reason": note}
+                ),
+                payload=current.payload,
+                units=mark_unresolved(current.units, note),
+                repaired=current.repaired,
+                error=note,
+            )
+            break
         current = analyze_window(
             refreshed,
             transcript=transcript,
