@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 from typing import Any, Callable, Iterable
 
 from yt2class.adapters.providers.base import Provider
 from yt2class.domain.course_map import CourseMap
-from yt2class.domain.editorial import EditorialPlan, Omission, PageIntent
+from yt2class.domain.editorial import EditorialPlan, Omission, PageIntent, relabel_page
 from yt2class.domain.knowledge import KnowledgeDocument
 from yt2class.domain.review import (
     ALLOWED_REVIEW_OPS,
@@ -22,11 +23,20 @@ from yt2class.domain.review import (
 )
 from yt2class.domain.transcript import TranscriptDocument
 from yt2class.domain.verification import QualityMode, VerificationReport
-from yt2class.domain.visual import VisualCatalogue
+from yt2class.domain.visual import VisualCatalogue, is_accepted_visual_occurrence
 from yt2class.stages.llm_util import payload_digest
-from yt2class.stages.verify_claims import VerifyOutcome, verify_claims
+from yt2class.stages.verify_claims import VerifyOutcome, page_copy_grounded, verify_claims
 
 TEMPLATE_PATH = Path(__file__).resolve().parents[1] / "templates" / "review.html"
+SAFE_TIME_LINK = re.compile(r"^https://www\.youtube\.com/watch\?v=[A-Za-z0-9_-]{1,64}&t=\d+s$")
+SAFE_LOCAL_LINK = re.compile(r"^t=\d+s$")
+SAFE_ASSET_PATH = re.compile(
+    r"^(?!/)(?!.*[:\\])(?!.*(?:^|/)\.\.(?:/|$))[A-Za-z0-9._/-]+\.(?:jpg|jpeg|png|webp)$",
+    re.I,
+)
+YOUTUBE_WATCH = re.compile(
+    r"^https://(?:www\.)?youtube\.com/watch\?v=([A-Za-z0-9_-]{1,64})(?:&.*)?$"
+)
 
 
 def document_digest(model: Any) -> str:
@@ -52,12 +62,54 @@ def baseline_hashes(
     return hashes
 
 
+def accepted_frame_ids(visual: VisualCatalogue) -> set[str]:
+    assets = {asset.id: asset for asset in visual.assets}
+    return {
+        occurrence.id
+        for occurrence in visual.occurrences
+        if is_accepted_visual_occurrence(occurrence, assets)
+    }
+
+
+def page_allowed_frames(
+    page: PageIntent,
+    *,
+    knowledge: KnowledgeDocument,
+    visual: VisualCatalogue,
+) -> set[str]:
+    accepted = accepted_frame_ids(visual)
+    relevant = {frame_id for frame_id in page.frame_ids if frame_id in accepted}
+    claim_ids = set(page.claim_ids)
+    for unit in knowledge.units:
+        if not any(claim.id in claim_ids for claim in unit.claims):
+            continue
+        for claim in unit.claims:
+            relevant.update(item for item in claim.evidence_ids if item in accepted)
+        relevant.update(
+            candidate.frame_id
+            for candidate in unit.visual_candidates
+            if candidate.frame_id in accepted
+        )
+    return relevant
+
+
+def is_safe_time_link(value: str) -> bool:
+    return bool(SAFE_TIME_LINK.fullmatch(value) or SAFE_LOCAL_LINK.fullmatch(value))
+
+
+def is_safe_asset_path(value: str) -> bool:
+    return bool(SAFE_ASSET_PATH.fullmatch(value))
+
+
 def seek_link(seconds: float, source_url: str | None = None) -> str:
     stamp = max(0, int(seconds))
-    if source_url and "youtu" in source_url:
-        separator = "&" if "?" in source_url else "?"
-        return f"{source_url}{separator}t={stamp}s"
-    return f"t={stamp}s"
+    local = f"t={stamp}s"
+    if not source_url:
+        return local
+    match = YOUTUBE_WATCH.fullmatch(source_url)
+    if match is None:
+        return local
+    return f"https://www.youtube.com/watch?v={match.group(1)}&t={stamp}s"
 
 
 def _page_times(page: PageIntent, knowledge: KnowledgeDocument) -> list[float]:
@@ -109,7 +161,8 @@ def _frame_paths(page: PageIntent, visual: VisualCatalogue) -> list[str]:
             continue
         asset = assets.get(occurrence.asset_id)
         if asset is not None:
-            paths.append(asset.path)
+            if is_safe_asset_path(asset.path):
+                paths.append(asset.path)
     return paths
 
 
@@ -134,7 +187,11 @@ def build_review_bundle(
                 transcript_excerpts=_page_transcript(page, knowledge, transcript),
                 frame_ids=list(page.frame_ids),
                 frame_asset_paths=_frame_paths(page, visual),
-                time_links=[seek_link(stamp, source_url) for stamp in times[:4]],
+                time_links=[
+                    link
+                    for link in (seek_link(stamp, source_url) for stamp in times[:4])
+                    if is_safe_time_link(link)
+                ],
                 selection_reason=page.selection_reason,
             )
         )
@@ -159,7 +216,7 @@ def build_review_bundle(
         pages=views,
         omitted_topics=list(dict.fromkeys(omitted_topics)),
         allowed_ops=list(ALLOWED_REVIEW_OPS),
-        allowed_frame_ids=[occurrence.id for occurrence in visual.occurrences],
+        allowed_frame_ids=sorted(accepted_frame_ids(visual)),
     )
 
 
@@ -204,7 +261,13 @@ def _require_page(pages: list[PageIntent], page_id: str) -> PageIntent:
     raise IllegalReviewOpError(f"unknown page {page_id}")
 
 
-def apply_ops(plan: EditorialPlan, ops: Iterable[ReviewOp], allowed_frames: set[str]) -> EditorialPlan:
+def apply_ops(
+    plan: EditorialPlan,
+    ops: Iterable[ReviewOp],
+    *,
+    knowledge: KnowledgeDocument,
+    visual: VisualCatalogue,
+) -> EditorialPlan:
     pages = list(plan.pages)
     omissions = list(plan.omissions)
     for op in ops:
@@ -238,9 +301,12 @@ def apply_ops(plan: EditorialPlan, ops: Iterable[ReviewOp], allowed_frames: set[
             pages = [item.model_copy(update=updates) if item.id == page.id else item for item in pages]
         elif op.op == "pick_asset":
             frames = list(op.frame_ids or [])
-            unknown = [item for item in frames if item not in allowed_frames]
+            allowed = page_allowed_frames(page, knowledge=knowledge, visual=visual)
+            unknown = [item for item in frames if item not in allowed]
             if unknown:
-                raise IllegalReviewOpError(f"pick_asset cited unknown frames {unknown}")
+                raise IllegalReviewOpError(
+                    f"pick_asset cited rejected or unrelated frames {unknown}"
+                )
             pages = [item.model_copy(update={"frame_ids": frames}) if item.id == page.id else item for item in pages]
         else:
             raise IllegalReviewOpError(f"unsupported review op {op.op}")
@@ -267,23 +333,30 @@ def apply_review_edits(
     permitted = tuple(allowed_ops) if allowed_ops is not None else tuple(bundle.allowed_ops)
     if edits.revision != bundle.revision:
         raise StaleReviewError("stale review revision")
-    expected = {key: bundle.baseline_hashes[key] for key in ("knowledge", "editorial", "transcript", "visual")}
+    expected_keys = ["knowledge", "editorial", "transcript", "visual"]
+    if "verification" in bundle.baseline_hashes:
+        expected_keys.append("verification")
+    expected = {key: bundle.baseline_hashes[key] for key in expected_keys}
     incoming = {key: edits.baseline_hashes.get(key) for key in expected}
     if incoming != expected:
         raise StaleReviewError("stale review baseline hash")
     for op in edits.ops:
         if op.op not in permitted:
             raise IllegalReviewOpError(f"op {op.op} is not allowed")
-    planned = apply_ops(bundle.plan, edits.ops, set(bundle.allowed_frame_ids))
+    planned = apply_ops(bundle.plan, edits.ops, knowledge=knowledge, visual=visual)
     affected: set[str] = set()
+    force_draft: set[str] = set()
     original = {page.id: page for page in bundle.plan.pages}
     for op in edits.ops:
         if op.op in {"edit_copy", "pick_asset"} and op.page_id:
-            page = original.get(op.page_id) or next(
-                (item for item in planned.pages if item.id == op.page_id), None
-            )
+            page = next((item for item in planned.pages if item.id == op.page_id), original.get(op.page_id))
             if page is not None:
                 affected.update(page.claim_ids)
+            if op.op == "edit_copy" and page is not None:
+                if not page_copy_grounded(
+                    page, knowledge=knowledge, transcript=transcript, visual=visual
+                ):
+                    force_draft.add(page.id)
     outcome = None
     report = bundle.report
     current_knowledge = knowledge
@@ -301,6 +374,15 @@ def apply_review_edits(
         planned = outcome.plan
         report = outcome.report
         current_knowledge = outcome.knowledge
+    if force_draft:
+        planned = planned.model_copy(
+            update={
+                "pages": [
+                    relabel_page(page, "draft") if page.id in force_draft else page
+                    for page in planned.pages
+                ]
+            }
+        )
     updated = build_review_bundle(
         knowledge=current_knowledge,
         plan=planned,

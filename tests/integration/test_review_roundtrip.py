@@ -185,6 +185,297 @@ def test_allowed_ops_and_rejected_unknown_ops():
         )
 
 
+def test_false_edit_copy_cannot_remain_verified():
+    unit = concept_unit(
+        "unit-ok",
+        "claim-ok",
+        "这不是自动词。",
+        ["cap-ok", "frame-ok"],
+        start=0.0,
+        end=10.0,
+        frames=["frame-ok"],
+    )
+    doc = knowledge(unit)
+    topics = course_map([("topic-1", "通过", 0.0, 10.0)])
+    transcript = make_transcript([("cap-ok", 0.0, 10.0, "这不是自动词。")], duration=10.0)
+    visual = make_visual(
+        [("frame-ok", 4.0, "scene-001")],
+        duration=10.0,
+        ocr=[("ocr-ok", "frame-ok", "自动词 ではない")],
+    )
+    provider = FakeProvider(frames_caps())
+    plan = edit_deck(
+        doc,
+        course_map=topics,
+        transcript=transcript,
+        visual=visual,
+        provider=provider,
+        target_pages=4,
+        max_pages=6,
+    )
+    outcome = verify_claims(
+        doc,
+        plan=plan,
+        transcript=transcript,
+        visual=visual,
+        provider=FakeProvider(frames_caps()),
+        quality_mode="strict",
+    )
+    assert any(page.quality_label == "verified" and page.type == "content" for page in outcome.plan.pages)
+    bundle = build_review_bundle(
+        knowledge=outcome.knowledge,
+        plan=outcome.plan,
+        report=outcome.report,
+        transcript=transcript,
+        visual=visual,
+        course_map=topics,
+    )
+    target = next(page for page in bundle.plan.pages if "claim-ok" in page.claim_ids)
+    updated = apply_review_edits(
+        bundle,
+        ReviewEdits(
+            revision=bundle.revision,
+            baseline_hashes=bundle.baseline_hashes,
+            ops=[
+                {
+                    "op": "edit_copy",
+                    "page_id": target.id,
+                    "title": "水在 100 度沸腾。",
+                    "notes": "地球是平的。",
+                    "body_points": ["板书写了公式。"],
+                }
+            ],
+        ),
+        knowledge=outcome.knowledge,
+        transcript=transcript,
+        visual=visual,
+        provider=FakeProvider(frames_caps()),
+        quality_mode="strict",
+    )
+    changed = next(page for page in updated.plan.pages if page.id == target.id)
+    assert changed.title == "水在 100 度沸腾。"
+    assert changed.quality_label != "verified"
+    assert changed.quality_label == "draft"
+    assert "[DRAFT]" in changed.notes
+
+
+def test_rejected_or_unrelated_pick_asset_is_rejected():
+    unit = concept_unit(
+        "unit-ok",
+        "claim-ok",
+        "这不是自动词。",
+        ["cap-ok", "frame-ok"],
+        start=0.0,
+        end=10.0,
+        frames=["frame-ok"],
+    )
+    other = concept_unit(
+        "unit-other",
+        "claim-other",
+        "例如：把水倒入烧杯。",
+        ["cap-other", "frame-other"],
+        start=10.0,
+        end=20.0,
+        kind="example",
+        frames=["frame-other"],
+    )
+    doc = knowledge(unit, other)
+    topics = course_map([("topic-1", "主题", 0.0, 20.0)])
+    transcript = make_transcript(
+        [("cap-ok", 0.0, 10.0, "这不是自动词。"), ("cap-other", 10.0, 20.0, "例如：把水倒入烧杯。")],
+        duration=20.0,
+    )
+    visual = make_visual(
+        [
+            ("frame-ok", 4.0, "scene-001"),
+            ("frame-other", 14.0, "scene-001"),
+            ("frame-rejected", 16.0, "scene-001"),
+        ],
+        duration=20.0,
+        ocr=[("ocr-ok", "frame-ok", "自动词 ではない")],
+    )
+    visual = visual.model_copy(
+        update={
+            "occurrences": [
+                item.model_copy(update={"reject_reason": "blurry"})
+                if item.id == "frame-rejected"
+                else item
+                for item in visual.occurrences
+            ]
+        }
+    )
+    plan = edit_deck(
+        doc,
+        course_map=topics,
+        transcript=transcript,
+        visual=visual,
+        provider=FakeProvider(frames_caps()),
+        target_pages=4,
+        max_pages=6,
+    )
+    outcome = verify_claims(
+        doc,
+        plan=plan,
+        transcript=transcript,
+        visual=visual,
+        provider=FakeProvider(frames_caps()),
+        quality_mode="draft",
+    )
+    bundle = build_review_bundle(
+        knowledge=outcome.knowledge,
+        plan=outcome.plan,
+        report=outcome.report,
+        transcript=transcript,
+        visual=visual,
+        course_map=topics,
+    )
+    assert "frame-rejected" not in bundle.allowed_frame_ids
+    target = next(page for page in bundle.plan.pages if "claim-ok" in page.claim_ids)
+    with pytest.raises(IllegalReviewOpError, match="rejected|unrelated|allowed"):
+        apply_review_edits(
+            bundle,
+            ReviewEdits(
+                revision=bundle.revision,
+                baseline_hashes=bundle.baseline_hashes,
+                ops=[{"op": "pick_asset", "page_id": target.id, "frame_ids": ["frame-rejected"]}],
+            ),
+            knowledge=outcome.knowledge,
+            transcript=transcript,
+            visual=visual,
+            provider=FakeProvider(frames_caps()),
+        )
+    with pytest.raises(IllegalReviewOpError, match="rejected|unrelated|allowed"):
+        apply_review_edits(
+            bundle,
+            ReviewEdits(
+                revision=bundle.revision,
+                baseline_hashes=bundle.baseline_hashes,
+                ops=[{"op": "pick_asset", "page_id": target.id, "frame_ids": ["frame-other"]}],
+            ),
+            knowledge=outcome.knowledge,
+            transcript=transcript,
+            visual=visual,
+            provider=FakeProvider(frames_caps()),
+        )
+
+
+def test_hostile_review_html_is_escaped_and_not_executed():
+    outcome, transcript, visual, topics = _verified_bundle()
+    hostile_plan = outcome.plan.model_copy(deep=True)
+    hostile_plan.pages[0] = hostile_plan.pages[0].model_copy(
+        update={
+            "title": "<img src=x onerror=alert(1)>",
+            "notes": "</script><script>alert(1)</script>",
+        }
+    )
+    bundle = build_review_bundle(
+        knowledge=outcome.knowledge,
+        plan=hostile_plan,
+        report=outcome.report,
+        transcript=transcript.model_copy(
+            update={
+                "segments": [
+                    transcript.segments[0].model_copy(
+                        update={"text_original": "<svg onload=alert(1)>板书"}
+                    ),
+                    *transcript.segments[1:],
+                ]
+            }
+        ),
+        visual=visual,
+        course_map=topics,
+        source_url="javascript:alert(1)",
+    )
+    html = render_review_html(bundle)
+    assert "Content-Security-Policy" in html
+    assert "default-src 'none'" in html
+    assert "innerHTML" not in html
+    assert "textContent" in html
+    assert "setAttribute" in html
+    assert "\\u003c" in html
+    assert "javascript:alert(1)" not in html
+    assert "<img src=x onerror=alert(1)>" not in html
+    assert "</script><script>alert(1)</script>" not in html
+
+
+def test_two_review_rounds_repair_a_claim_only_once():
+    unit = concept_unit(
+        "unit-r",
+        "claim-r",
+        "加热 15 分钟。",
+        ["cap-r"],
+        start=0.0,
+        end=10.0,
+        modality="audio",
+    )
+    doc = knowledge(unit)
+    topics = course_map([("topic-1", "修复", 0.0, 10.0)])
+    transcript = make_transcript([("cap-r", 0.0, 10.0, "加热 3 分钟。")], duration=10.0)
+    visual = make_visual([], duration=10.0)
+    repairs: list[str] = []
+
+    def refuse_and_count(provider, request):
+        if request.role == "verifier" and "repair" in request.request_id:
+            repairs.append(request.request_id)
+            return {"text": "加热 15 分钟。", "evidence_ids": ["cap-r"]}
+        return {"verdicts": (provider.last_payload or {}).get("draft_verdicts") or []}
+
+    provider = FakeProvider(frames_caps(), responder=refuse_and_count)
+    plan = edit_deck(
+        doc,
+        course_map=topics,
+        transcript=transcript,
+        visual=visual,
+        provider=FakeProvider(frames_caps()),
+        target_pages=4,
+        max_pages=6,
+    )
+    outcome = verify_claims(
+        doc,
+        plan=plan,
+        transcript=transcript,
+        visual=visual,
+        provider=provider,
+        quality_mode="draft",
+    )
+    assert repairs == ["verifier:repair:claim-r"]
+    # Keep the pre-formal page that still cites the failing claim so the
+    # second review round re-enters the verifier for that lifetime.
+    bundle = build_review_bundle(
+        knowledge=outcome.knowledge,
+        plan=plan,
+        report=outcome.report,
+        transcript=transcript,
+        visual=visual,
+        course_map=topics,
+    )
+    target = next(page for page in bundle.plan.pages if "claim-r" in page.claim_ids)
+    first = apply_review_edits(
+        bundle,
+        ReviewEdits(
+            revision=bundle.revision,
+            baseline_hashes=bundle.baseline_hashes,
+            ops=[{"op": "edit_copy", "page_id": target.id, "title": "加热 15 分钟。"}],
+        ),
+        knowledge=outcome.knowledge,
+        transcript=transcript,
+        visual=visual,
+        provider=provider,
+    )
+    second = verify_claims(
+        first.knowledge,
+        plan=first.plan,
+        transcript=transcript,
+        visual=visual,
+        provider=provider,
+        quality_mode="draft",
+        existing=first.report,
+        only_claim_ids={"claim-r"},
+    )
+    assert repairs == ["verifier:repair:claim-r"]
+    assert "claim-r" in second.report.repaired_claim_ids
+
+
 def test_pick_asset_delete_and_reorder():
     outcome, transcript, visual, topics = _verified_bundle()
     bundle = build_review_bundle(
@@ -197,18 +488,7 @@ def test_pick_asset_delete_and_reorder():
     )
     content_pages = [item.page for item in bundle.pages if item.page.type == "content"]
     target = next((page for page in content_pages if page.layout != "text"), content_pages[0])
-    alt = next(
-        (occ.id for occ in visual.occurrences if occ.id not in target.frame_ids),
-        None,
-    )
     ops = []
-    if alt and target.layout in {"image-text", "comparison", "sequence"}:
-        new_frames = list(target.frame_ids)
-        if new_frames:
-            new_frames[0] = alt
-        else:
-            new_frames = [alt]
-        ops.append({"op": "pick_asset", "page_id": target.id, "frame_ids": new_frames[:3]})
     victim = next(page for page in content_pages if page.id != target.id)
     ops.append({"op": "delete", "page_id": victim.id})
     remaining = [page.id for page in outcome.plan.pages if page.id != victim.id]
@@ -263,6 +543,22 @@ def test_stale_revision_and_hash_are_rejected():
             ReviewEdits(
                 revision=bundle.revision,
                 baseline_hashes=stale_hashes,
+                ops=[{"op": "lock", "page_id": page_id}],
+            ),
+            knowledge=outcome.knowledge,
+            transcript=transcript,
+            visual=visual,
+            provider=FakeProvider(frames_caps()),
+        )
+    assert "verification" in bundle.baseline_hashes
+    stale_report = dict(bundle.baseline_hashes)
+    stale_report["verification"] = DIGEST_A
+    with pytest.raises(StaleReviewError, match="hash"):
+        apply_review_edits(
+            bundle,
+            ReviewEdits(
+                revision=bundle.revision,
+                baseline_hashes=stale_report,
                 ops=[{"op": "lock", "page_id": page_id}],
             ),
             knowledge=outcome.knowledge,

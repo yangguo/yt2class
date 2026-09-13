@@ -431,6 +431,67 @@ def test_score_then_select_is_deterministic_before_llm():
     assert isinstance(omissions, list)
 
 
+def test_model_cannot_drop_required_coverage():
+    from yt2class.stages.edit_deck import validate_editorial_payload
+
+    doc, topics, transcript, visual = lecture_knowledge()
+    provider = FakeProvider(
+        frames_caps(),
+        structured={
+            "pages": [
+                {
+                    "id": "intent-cover",
+                    "type": "cover",
+                    "title": "合成示例课程",
+                    "claim_ids": [],
+                    "frame_ids": [],
+                    "notes": "",
+                    "selection_reason": "封面",
+                }
+            ],
+            "omissions": [],
+        },
+    )
+    plan = edit_deck(
+        doc,
+        course_map=topics,
+        transcript=transcript,
+        visual=visual,
+        provider=provider,
+        target_pages=8,
+        max_pages=10,
+    )
+    assert any(page.type == "content" for page in plan.pages)
+    assert any(page.type == "summary" for page in plan.pages)
+    assert {claim.id for claim in doc.iter_claims()} & {
+        claim_id for page in plan.pages for claim_id in page.claim_ids
+    }
+    with pytest.raises(EditorContractError, match="required|coverage|partition"):
+        validate_editorial_payload(
+            {
+                "pages": [
+                    {
+                        "id": "intent-cover",
+                        "type": "cover",
+                        "title": "合成示例课程",
+                        "claim_ids": [],
+                        "frame_ids": [],
+                        "notes": "",
+                        "selection_reason": "封面",
+                    }
+                ],
+                "omissions": [],
+            },
+            allowed_claim_ids={claim.id for claim in doc.iter_claims()},
+            allowed_frame_ids={item.id for item in visual.occurrences},
+            max_pages=10,
+            source_id="src-demo",
+            target_pages=8,
+            order="chronological",
+            required_page_ids={"intent-cover", "intent-unit-def", "intent-summary"},
+        )
+
+
 def test_editor_rejects_path_literals_during_contract_check():
     from yt2class.stages.edit_deck import validate_editorial_payload
 

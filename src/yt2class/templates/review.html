@@ -2,6 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
   <title>yt2class review</title>
   <style>
     body { font-family: sans-serif; margin: 1.5rem; color: #111; }
@@ -27,6 +28,25 @@
   <section id="pages"></section>
   <script id="review-bundle" type="application/json">__REVIEW_BUNDLE_JSON__</script>
   <script>
+    function safeLink(value) {
+      const text = String(value || "");
+      if (/^https:\/\/www\.youtube\.com\/watch\?v=[A-Za-z0-9_-]+&t=\d+s$/.test(text)) return text;
+      if (/^t=\d+s$/.test(text)) return text;
+      return "";
+    }
+    function safeImg(value) {
+      const text = String(value || "");
+      if (/^(?!\/)(?!.*[:\\])(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9._/-]+\.(?:jpg|jpeg|png|webp)$/i.test(text)) {
+        return text;
+      }
+      return "";
+    }
+    function addText(node, tag, text) {
+      const child = document.createElement(tag);
+      child.textContent = text;
+      node.appendChild(child);
+      return child;
+    }
     const bundle = JSON.parse(document.getElementById("review-bundle").textContent);
     const banner = document.getElementById("banner");
     const mode = (bundle.report && bundle.report.quality_mode) || "draft";
@@ -34,23 +54,47 @@
     banner.textContent = "quality_mode=" + mode + " revision=" + bundle.revision +
       (bundle.report && bundle.report.human_sampling_required ? " · 需要人工抽样核验" : "");
     const omit = document.getElementById("omissions");
-    const omitted = bundle.omitted_topics || [];
-    omit.innerHTML = "<h2>遗漏主题</h2><ul>" +
-      omitted.map((item) => "<li>" + String(item) + "</li>").join("") + "</ul>";
+    addText(omit, "h2", "遗漏主题");
+    const omitList = document.createElement("ul");
+    (bundle.omitted_topics || []).forEach((item) => {
+      addText(omitList, "li", String(item));
+    });
+    omit.appendChild(omitList);
     const root = document.getElementById("pages");
     (bundle.pages || []).forEach((view) => {
       const page = view.page || {};
       const label = page.quality_label || "draft";
       const article = document.createElement("article");
-      article.innerHTML =
-        '<h2><span class="badge badge-' + label + '">' + label +
-        "</span>" + (page.title || "") + "</h2>" +
-        "<p>" + (page.notes || "") + "</p>" +
-        "<p>claims: " + (view.claim_texts || []).join(" / ") + "</p>" +
-        "<p>transcript: " + (view.transcript_excerpts || []).join(" / ") + "</p>" +
-        "<p>time links: " + (view.time_links || []).map((link) =>
-          '<a href="' + link + '">' + link + "</a>").join(" · ") + "</p>" +
-        (view.frame_asset_paths || []).map((src) => '<img alt="source frame" src="' + src + '">').join("");
+      const heading = document.createElement("h2");
+      const badge = document.createElement("span");
+      badge.className = "badge badge-" + label.replace(/[^a-z-]/g, "");
+      badge.textContent = label;
+      heading.appendChild(badge);
+      heading.appendChild(document.createTextNode(page.title || ""));
+      article.appendChild(heading);
+      addText(article, "p", page.notes || "");
+      addText(article, "p", "claims: " + (view.claim_texts || []).join(" / "));
+      addText(article, "p", "transcript: " + (view.transcript_excerpts || []).join(" / "));
+      const links = document.createElement("p");
+      links.appendChild(document.createTextNode("time links: "));
+      (view.time_links || []).forEach((link, index) => {
+        const href = safeLink(link);
+        if (!href) return;
+        if (index) links.appendChild(document.createTextNode(" · "));
+        const anchor = document.createElement("a");
+        anchor.setAttribute("href", href);
+        anchor.textContent = href;
+        links.appendChild(anchor);
+      });
+      article.appendChild(links);
+      (view.frame_asset_paths || []).forEach((src) => {
+        const safe = safeImg(src);
+        if (!safe) return;
+        const image = document.createElement("img");
+        image.setAttribute("alt", "source frame");
+        image.setAttribute("src", safe);
+        article.appendChild(image);
+      });
       root.appendChild(article);
     });
   </script>

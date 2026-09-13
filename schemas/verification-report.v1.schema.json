@@ -79,7 +79,8 @@
               "image_text",
               "generated_practice",
               "unknown_ref",
-              "contradiction"
+              "contradiction",
+              "grounding"
             ],
             "type": "string"
           },

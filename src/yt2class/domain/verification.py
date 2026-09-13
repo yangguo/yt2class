@@ -21,6 +21,7 @@ CheckKind = Literal[
     "generated_practice",
     "unknown_ref",
     "contradiction",
+    "grounding",
 ]
 
 
@@ -30,6 +31,12 @@ class ClaimVerdict(StrictModel):
     supporting_ids: list[Identifier] = Field(default_factory=list)
     contradicting_ids: list[Identifier] = Field(default_factory=list)
     reason: str = Field(min_length=1, max_length=400)
+
+    @model_validator(mode="after")
+    def supported_requires_evidence(self) -> Self:
+        if self.verdict == "supported" and not self.supporting_ids:
+            raise ValueError("supported verdict requires supporting evidence ids")
+        return self
 
 
 class HumanSample(StrictModel):

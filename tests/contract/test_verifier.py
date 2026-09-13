@@ -380,6 +380,55 @@ def test_generated_practice_is_tagged_and_not_source():
         assert "原视频给出该题" not in page.notes
 
 
+def test_repair_is_once_per_claim_lifetime():
+    unit = concept_unit(
+        "unit-r",
+        "claim-r",
+        "加热 15 分钟。",
+        ["cap-r"],
+        start=0.0,
+        end=10.0,
+        modality="audio",
+    )
+    doc = knowledge(unit)
+    topics = course_map([("topic-1", "修复", 0.0, 10.0)])
+    transcript = make_transcript([("cap-r", 0.0, 10.0, "加热 3 分钟。")], duration=10.0)
+    visual = make_visual([], duration=10.0)
+    plan = _plan_for(doc, topics, transcript, visual, target_pages=4, max_pages=6)
+    repairs: list[str] = []
+
+    def refuse_and_count(provider, request):
+        if request.role == "verifier" and "repair" in request.request_id:
+            repairs.append(request.request_id)
+            return {"text": "加热 15 分钟。", "evidence_ids": ["cap-r"]}
+        return {"verdicts": (provider.last_payload or {}).get("draft_verdicts") or []}
+
+    provider = FakeProvider(frames_caps(), responder=refuse_and_count)
+    first = verify_claims(
+        doc,
+        plan=plan,
+        transcript=transcript,
+        visual=visual,
+        provider=provider,
+        quality_mode="draft",
+    )
+    assert first.repaired is True
+    assert "claim-r" in first.report.repaired_claim_ids
+    assert repairs == ["verifier:repair:claim-r"]
+    second = verify_claims(
+        doc,
+        plan=first.plan,
+        transcript=transcript,
+        visual=visual,
+        provider=provider,
+        quality_mode="draft",
+        existing=first.report,
+        only_claim_ids={"claim-r"},
+    )
+    assert repairs == ["verifier:repair:claim-r"]
+    assert "claim-r" in second.report.repaired_claim_ids
+
+
 def test_one_repair_then_remove_or_pending():
     unit = concept_unit(
         "unit-r",
@@ -490,6 +539,49 @@ def test_evidence_only_cannot_emit_verified_or_supported_labels():
     assert not any(page.quality_label == "verified" for page in outcome.plan.pages)
 
 
+def test_unrelated_valid_evidence_is_never_supported():
+    unit = concept_unit(
+        "unit-false",
+        "claim-false",
+        "板书写了公式。",
+        ["cap-other"],
+        start=0.0,
+        end=10.0,
+        modality="audio",
+    )
+    doc = knowledge(unit)
+    topics = course_map([("topic-1", "无关", 0.0, 10.0)])
+    transcript = make_transcript([("cap-other", 0.0, 10.0, "例如：把水倒入烧杯。")], duration=10.0)
+    visual = make_visual([], duration=10.0)
+    plan = _plan_for(doc, topics, transcript, visual, target_pages=4, max_pages=6)
+    outcome = verify_claims(
+        doc,
+        plan=plan,
+        transcript=transcript,
+        visual=visual,
+        provider=FakeProvider(frames_caps()),
+        quality_mode="draft",
+    )
+    verdict = next(item for item in outcome.report.verdicts if item.claim_id == "claim-false")
+    assert verdict.verdict != "supported"
+    assert verdict.verdict == "insufficient"
+    assert not verdict.supporting_ids
+    with pytest.raises(ValidationError, match="supporting"):
+        VerificationReport(
+            schema_version="1.0",
+            source_id="src-demo",
+            quality_mode="strict",
+            verdicts=[
+                {
+                    "claim_id": "claim-false",
+                    "verdict": "supported",
+                    "supporting_ids": [],
+                    "reason": "fail open",
+                }
+            ],
+        )
+
+
 def test_successful_strict_path_has_no_unresolved_critical_claims():
     unit = concept_unit(
         "unit-ok",
@@ -519,6 +611,9 @@ def test_successful_strict_path_has_no_unresolved_critical_claims():
     )
     assert outcome.report.quality_mode == "strict"
     assert all(item.verdict == "supported" for item in outcome.report.verdicts)
+    assert all(item.supporting_ids for item in outcome.report.verdicts)
+    allowed = {segment.id for segment in transcript.segments} | {item.id for item in visual.occurrences}
+    assert all(set(item.supporting_ids) <= allowed for item in outcome.report.verdicts)
     assert not outcome.report.pending_review
     assert all(
         page.quality_label == "verified"

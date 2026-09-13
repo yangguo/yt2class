@@ -26,7 +26,7 @@ from yt2class.stages.llm_util import (
     model_request,
     text_has_negation,
 )
-from yt2class.stages.reduce_knowledge import normalize_concept, polarity
+from yt2class.stages.reduce_knowledge import normalize_concept, polarity, strip_negation
 
 NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
 CONDITION_MARKERS = (
@@ -159,6 +159,30 @@ def _claim_times(
     return times
 
 
+FUNCTION_CHARS = re.compile(r"[是的了與与和把在为請请看先再又就也与及或]")
+
+
+def content_tokens(text: str) -> set[str]:
+    """CJK bigrams plus latin/numeric tokens. Function words are stripped."""
+
+    cleaned = FUNCTION_CHARS.sub("", strip_negation(text).lower())
+    tokens = {item.lower() for item in NUMBER_RE.findall(cleaned)}
+    tokens.update(item.lower() for item in re.findall(r"[a-zA-Z]{2,}", cleaned))
+    for run in re.findall(r"[\u4e00-\u9fff\u3040-\u30ff]+", cleaned):
+        if len(run) == 1:
+            tokens.add(run)
+        else:
+            tokens.update(run[index : index + 2] for index in range(len(run) - 1))
+    tokens.discard("")
+    return tokens
+
+
+def needed_overlap(tokens: set[str], *, practice: bool = False) -> int:
+    if practice or len(tokens) <= 2:
+        return 1
+    return max(2, (len(tokens) + 2) // 3)
+
+
 def check_unknown_refs(claim: KnowledgeClaim, allowed: set[str]) -> CheckResult:
     missing = [item for item in claim.evidence_ids if item not in allowed]
     if missing:
@@ -168,7 +192,43 @@ def check_unknown_refs(claim: KnowledgeClaim, allowed: set[str]) -> CheckResult:
             note=f"unknown evidence refs {missing}",
             verdict="insufficient",
         )
-    return CheckResult(kind="unknown_ref", passed=True, note="refs resolve", supporting_ids=list(claim.evidence_ids))
+    return CheckResult(kind="unknown_ref", passed=True, note="refs resolve")
+
+
+def check_grounding(claim: KnowledgeClaim, index: dict[str, str]) -> CheckResult:
+    tokens = content_tokens(claim.text)
+    if not tokens:
+        return CheckResult(
+            kind="grounding",
+            passed=False,
+            note="claim has no grounded content",
+            verdict="insufficient",
+        )
+    supporting: list[str] = []
+    union: set[str] = set()
+    for evidence_id in claim.evidence_ids:
+        excerpt = (index.get(evidence_id) or "").strip()
+        if not excerpt:
+            continue
+        excerpt_tokens = content_tokens(excerpt)
+        union |= excerpt_tokens
+        if tokens & excerpt_tokens:
+            supporting.append(evidence_id)
+    covered = tokens & union
+    required = needed_overlap(tokens, practice=claim.provenance == "generated-practice")
+    if not supporting or len(covered) < required:
+        return CheckResult(
+            kind="grounding",
+            passed=False,
+            note="cited evidence does not affirm the claim",
+            verdict="insufficient",
+        )
+    return CheckResult(
+        kind="grounding",
+        passed=True,
+        note="evidence excerpts support the claim",
+        supporting_ids=supporting,
+    )
 
 
 def check_numbers(claim: KnowledgeClaim, evidence_text: str) -> CheckResult:
@@ -372,6 +432,7 @@ def run_claim_checks(
     ocr_text = _ocr_text(claim, visual)
     return [
         check_unknown_refs(claim, allowed),
+        check_grounding(claim, index),
         check_numbers(claim, evidence_text),
         check_negation(claim, evidence_text or transcript_text),
         check_conditions(claim, evidence_text or transcript_text),
@@ -385,22 +446,24 @@ def run_claim_checks(
 
 
 def _worst_verdict(checks: list[CheckResult]) -> tuple[Verdict, str, list[str], list[str]]:
-    supporting: list[str] = []
     contradicting: list[str] = []
     notes: list[str] = []
-    verdict: Verdict = "supported"
+    verdict: Verdict = "insufficient"
     rank = {"supported": 0, "insufficient": 1, "contradicted": 2}
+    grounding = next((item for item in checks if item.kind == "grounding"), None)
     for check in checks:
-        supporting.extend(check.supporting_ids)
         contradicting.extend(check.contradicting_ids)
         if not check.passed:
             notes.append(check.note)
             candidate = check.verdict or "insufficient"
             if rank[candidate] > rank[verdict]:
                 verdict = candidate
-    if verdict == "supported":
-        notes = ["deterministic checks passed"]
-    return verdict, "; ".join(notes)[:400], list(dict.fromkeys(supporting)), list(dict.fromkeys(contradicting))
+    supporting = list(dict.fromkeys(grounding.supporting_ids if grounding and grounding.passed else []))
+    if not any(not item.passed for item in checks) and grounding is not None and grounding.passed and supporting:
+        return "supported", "evidence-grounded support", supporting, []
+    if not notes:
+        notes = ["no affirmative evidence support"]
+    return verdict, "; ".join(notes)[:400], supporting, list(dict.fromkeys(contradicting))
 
 
 def _unit_for_claim(knowledge: KnowledgeDocument, claim_id: str) -> KnowledgeUnit:
@@ -499,6 +562,44 @@ def formalize_plan(
     return plan.model_copy(update={"pages": pages, "omissions": extra_omissions})
 
 
+QUALITY_PREFIXES = ("[DRAFT]", "[EVIDENCE-ONLY]")
+
+
+def page_copy_grounded(
+    page: PageIntent,
+    *,
+    knowledge: KnowledgeDocument,
+    transcript: TranscriptDocument,
+    visual: VisualCatalogue,
+) -> bool:
+    """True when page title/notes/body_points are affirmed by the page's evidence."""
+
+    index = evidence_index(transcript, visual)
+    evidence_ids: list[str] = []
+    claim_ids = set(page.claim_ids)
+    for unit in knowledge.units:
+        for claim in unit.claims:
+            if claim.id in claim_ids:
+                evidence_ids.extend(claim.evidence_ids)
+    evidence_text = _join(dict.fromkeys(evidence_ids), index)
+    ev_tokens = content_tokens(evidence_text)
+    if not ev_tokens:
+        return False
+    texts: list[str] = [page.title, *page.body_points]
+    notes = page.notes
+    for prefix in QUALITY_PREFIXES:
+        if notes.startswith(prefix):
+            notes = notes[len(prefix) :].strip()
+    texts.append(notes)
+    for text in texts:
+        tokens = content_tokens(text)
+        if not tokens:
+            continue
+        if len(tokens & ev_tokens) < needed_overlap(tokens):
+            return False
+    return True
+
+
 def _is_practice(knowledge: KnowledgeDocument, claim_ids: list[str]) -> bool:
     claims = {claim.id: claim for claim in knowledge.iter_claims()}
     chosen = [claims[item] for item in claim_ids if item in claims]
@@ -555,7 +656,7 @@ def verify_claims(
     coverage_gaps: list[str] = []
     pending: list[str] = []
     removed: list[str] = []
-    repaired_ids: list[str] = []
+    repaired_ids: list[str] = list(existing.repaired_claim_ids) if existing is not None else []
     check_by_claim: dict[str, list[CheckResult]] = {}
     verdicts: dict[str, ClaimVerdict] = {}
 
@@ -565,7 +666,6 @@ def verify_claims(
                 verdicts[item.claim_id] = item
         pending.extend(item for item in existing.pending_review if item not in target_ids)
         removed.extend(item for item in existing.removed_from_formal if item not in target_ids)
-        repaired_ids.extend(item for item in existing.repaired_claim_ids if item not in target_ids)
 
     draft_verdicts: list[dict[str, Any]] = []
     current_knowledge = knowledge
@@ -645,7 +745,10 @@ def verify_claims(
         for claim_id, verdict in verdicts.items()
         if claim_id in target_ids and verdict.verdict != "supported"
     ]
+    already_repaired = set(repaired_ids)
     for claim_id in failed_ids:
+        if claim_id in already_repaired:
+            continue
         claim = next(item for item in current_knowledge.iter_claims() if item.id == claim_id)
         unit = _unit_for_claim(current_knowledge, claim_id)
         repair_payload = {
@@ -662,12 +765,13 @@ def verify_claims(
             cancel_event=cancel_event,
         )
         repaired = True
+        repaired_ids.append(claim_id)
+        already_repaired.add(claim_id)
         new_text = None
         if repaired_structured:
             new_text = repaired_structured.get("text")
         if isinstance(new_text, str) and new_text.strip() and new_text != claim.text:
             current_knowledge = _replace_claim_text(current_knowledge, claim_id, new_text.strip()[:4000])
-            repaired_ids.append(claim_id)
             claim = next(item for item in current_knowledge.iter_claims() if item.id == claim_id)
             checks = run_claim_checks(
                 claim,

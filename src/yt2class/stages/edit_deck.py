@@ -58,13 +58,6 @@ class PageCandidate:
     representative_example: bool = False
 
 
-def _unit_for_claim(knowledge: KnowledgeDocument, claim_id: str) -> KnowledgeUnit | None:
-    for unit in knowledge.units:
-        if any(claim.id == claim_id for claim in unit.claims):
-            return unit
-    return None
-
-
 def _unit_by_id(knowledge: KnowledgeDocument, unit_id: str) -> KnowledgeUnit | None:
     return next((unit for unit in knowledge.units if unit.id == unit_id), None)
 
@@ -453,6 +446,8 @@ def validate_editorial_payload(
     source_id: str,
     target_pages: int,
     order: DeckOrder,
+    required_page_ids: set[str] | None = None,
+    required_claim_ids: set[str] | None = None,
 ) -> EditorialPlan:
     if not isinstance(structured, dict):
         raise EditorContractError("editor result missing structured object")
@@ -479,6 +474,14 @@ def validate_editorial_payload(
         pages.append(page)
     if len(pages) > max_pages:
         raise EditorContractError("editorial pages exceed max_pages")
+    page_ids = {page.id for page in pages}
+    if required_page_ids and required_page_ids - page_ids:
+        raise EditorContractError(
+            f"model dropped required coverage {sorted(required_page_ids - page_ids)}"
+        )
+    selected_claims = {claim_id for page in pages for claim_id in page.claim_ids}
+    if required_claim_ids and required_claim_ids - selected_claims:
+        raise EditorContractError("model dropped the selected/omitted claim partition")
     omissions: list[Omission] = []
     for raw in structured.get("omissions") or []:
         if isinstance(raw, dict):
@@ -495,6 +498,64 @@ def validate_editorial_payload(
         pages=pages,
         omissions=omissions,
     )
+
+
+def apply_model_organization(
+    fallback: EditorialPlan,
+    structured: dict[str, Any] | None,
+    *,
+    allowed_claim_ids: set[str],
+    allowed_frame_ids: set[str],
+    order: DeckOrder,
+) -> EditorialPlan:
+    """Allow the model to rewrite copy/order only for the deterministic pages."""
+
+    required_ids = {page.id for page in fallback.pages}
+    required_claims = {claim_id for page in fallback.pages for claim_id in page.claim_ids}
+    planned = validate_editorial_payload(
+        structured,
+        allowed_claim_ids=allowed_claim_ids,
+        allowed_frame_ids=allowed_frame_ids,
+        max_pages=fallback.max_pages,
+        source_id=fallback.source_id,
+        target_pages=fallback.target_pages,
+        order=order,
+        required_page_ids=required_ids,
+        required_claim_ids=required_claims,
+    )
+    fallback_by_id = {page.id: page for page in fallback.pages}
+    model_by_id = {page.id: page for page in planned.pages}
+    extra = set(model_by_id) - required_ids
+    if extra:
+        raise EditorContractError(f"model added pages outside the selected partition {sorted(extra)}")
+    cover = next(page for page in fallback.pages if page.type == "cover")
+    summary = next((page for page in fallback.pages if page.type == "summary"), None)
+    body = [page for page in fallback.pages if page.id not in {cover.id, *( [summary.id] if summary else [])}]
+    model_body_order = [
+        page.id
+        for page in planned.pages
+        if page.id not in {cover.id, *( [summary.id] if summary else [])}
+    ]
+    if set(model_body_order) != {page.id for page in body}:
+        raise EditorContractError("model changed the selected page partition")
+    if order == "chronological":
+        model_body_order = [page.id for page in body]
+
+    def overlay(base: PageIntent, incoming: PageIntent) -> PageIntent:
+        return base.model_copy(
+            update={
+                "title": incoming.title,
+                "notes": incoming.notes,
+                "body_points": incoming.body_points,
+            }
+        )
+
+    merged = [overlay(cover, model_by_id[cover.id])]
+    for page_id in model_body_order:
+        merged.append(overlay(fallback_by_id[page_id], model_by_id[page_id]))
+    if summary is not None:
+        merged.append(overlay(summary, model_by_id[summary.id]))
+    return fallback.model_copy(update={"pages": merged, "omissions": list(fallback.omissions)})
 
 
 def _attach_payload(provider: Provider, payload: dict[str, Any]) -> None:
@@ -590,13 +651,11 @@ def edit_deck(
     _attach_payload(provider, payload)
     result = provider.complete(request, cancel_event=cancel_event)
     try:
-        planned = validate_editorial_payload(
+        planned = apply_model_organization(
+            fallback,
             result.structured,
             allowed_claim_ids=allowed_claims,
             allowed_frame_ids=allowed_frames,
-            max_pages=max_pages,
-            source_id=knowledge.source_id,
-            target_pages=target_pages,
             order=order,
         )
     except (EditorContractError, ValidationError):
