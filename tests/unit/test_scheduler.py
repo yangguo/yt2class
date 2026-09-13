@@ -25,7 +25,13 @@ def _schedule(duration: float, transcript=None, visual=None, caps=None, **kwargs
 
 def test_zero_duration_is_rejected():
     with pytest.raises(SchedulerError, match="non-positive"):
-        _schedule(0.0)
+        schedule_windows(
+            source_id="src-demo",
+            duration_seconds=0.0,
+            transcript=make_transcript([("cap-001", 0.0, 1.0, "x")], duration=1.0),
+            visual=empty_visual(duration=1.0),
+            capabilities=frames_caps(),
+        )
 
 
 @pytest.mark.parametrize("duration", [0.5, 5.0, 30.0])

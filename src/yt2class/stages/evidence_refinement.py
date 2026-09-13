@@ -371,6 +371,7 @@ def refine_window(
             course_map=course_map,
             provider=provider,
             cancel_event=cancel_event,
+            request_suffix=f":round-{budget.rounds_for(segment_id)}",
         )
         requests = _requests_from_units(current.units)
     return current, current_visual, budget

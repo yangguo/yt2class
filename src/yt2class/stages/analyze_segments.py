@@ -244,6 +244,7 @@ def analyze_window(
     provider: Provider,
     cancel_event: Event | None = None,
     analysis_mode: str = "frames",
+    request_suffix: str = "",
 ) -> SegmentAnalysisOutcome:
     """Analyze one window. HTTP-ok contract failures get at most one repair."""
 
@@ -269,7 +270,7 @@ def analyze_window(
         try:
             result = _complete_with_payload(
                 provider,
-                f"seg:{window.id}{suffix}",
+                f"seg:{window.id}{suffix}{request_suffix}",
                 payload,
                 image_count=image_count,
                 cancel_event=cancel_event,
@@ -283,7 +284,7 @@ def analyze_window(
             try:
                 repaired_result = _complete_with_payload(
                     provider,
-                    f"seg:{window.id}{suffix}:repair",
+                    f"seg:{window.id}{suffix}{request_suffix}:repair",
                     repair_payload,
                     image_count=image_count,
                     cancel_event=cancel_event,

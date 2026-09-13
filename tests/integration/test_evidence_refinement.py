@@ -48,7 +48,7 @@ def test_scheduler_rejects_out_of_range_modality_and_budget():
     caps = frames_caps(supports_video=False)
     assert (
         accept_refinement_request(
-            _request("unreadable_text", -1.0, 5.0, "frame"),
+            _request("unreadable_text", 50.0, 70.0, "frame"),
             window=window,
             duration_seconds=60.0,
             capabilities=caps,

@@ -302,6 +302,36 @@ class ReduceResult:
     problems: list[str]
 
 
+def _owning_relations(units: list[KnowledgeUnit]) -> list[KnowledgeUnit]:
+    """KnowledgeDocument only allows from_id to be a claim or the owning unit."""
+
+    by_id = {unit.id: unit for unit in units}
+    claim_ids = {claim.id for unit in units for claim in unit.claims}
+    extras: dict[str, list[KnowledgeRelation]] = {unit.id: [] for unit in units}
+    cleaned: list[KnowledgeUnit] = []
+    for unit in units:
+        keep: list[KnowledgeRelation] = []
+        for relation in unit.relations:
+            if relation.from_id == unit.id or relation.from_id in claim_ids:
+                keep.append(relation)
+            elif relation.from_id in by_id:
+                extras[relation.from_id].append(relation)
+            else:
+                keep.append(relation)
+        cleaned.append(unit.model_copy(update={"relations": keep}))
+    relocated: list[KnowledgeUnit] = []
+    for unit in cleaned:
+        relations = list(unit.relations)
+        seen = {(item.from_id, item.to_id, item.kind) for item in relations}
+        for item in extras.get(unit.id, []):
+            key = (item.from_id, item.to_id, item.kind)
+            if key not in seen:
+                relations.append(item)
+                seen.add(key)
+        relocated.append(unit.model_copy(update={"relations": relations}))
+    return relocated
+
+
 def reduce_knowledge(
     units: list[KnowledgeUnit],
     *,
@@ -311,6 +341,7 @@ def reduce_knowledge(
     merged = _merge_group(units)
     merged = retain_conflicts(merged)
     merged = link_cross_segment_relations(merged)
+    merged = _owning_relations(merged)
     problems = validate_procedure_order(merged)
     if problems:
         annotated: list[KnowledgeUnit] = []
