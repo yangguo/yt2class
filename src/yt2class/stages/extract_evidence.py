@@ -456,7 +456,7 @@ def _extract_evidence_unlocked(
                         caller_hash = content_sha256(caller_resolved)
                     except OSError as error:
                         raise ASRError(f"cannot hash ASR audio_path: {caller_resolved}") from error
-                    if caller_hash != extracted.audio_sha256:
+                    if caller_hash not in {extracted.audio_sha256, source.sha256}:
                         raise ASRError("ASR audio is not derived from verified source media")
             bound_request = asr_request.model_copy(update={"audio_path": extracted.output_path})
             asr_result = run_asr(bound_request, runner=asr_runner, cancel_event=cancel_event)
