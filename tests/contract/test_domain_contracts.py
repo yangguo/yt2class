@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -18,18 +19,23 @@ from yt2class.domain.common import (
     published_schema,
 )
 from yt2class.domain.course_map import CourseMap
-from yt2class.domain.editorial import EditorialPlan
-from yt2class.domain.knowledge import KnowledgeDocument
+from yt2class.domain.editorial import EditorialPlan, Omission
+from yt2class.domain.knowledge import (
+    KnowledgeClaim,
+    KnowledgeDocument,
+    KnowledgeEvidenceRequest,
+    Uncertainty,
+)
 from yt2class.domain.migration import assess_v2_migration, migrate_v2_to_v3
 from yt2class.domain.registry import SCHEMA_DESCRIPTIONS, SCHEMA_MODELS
 from yt2class.domain.render_report import RenderReport
 from yt2class.domain.resolvers import ClosureError, DocumentBundle, resolve_reference_closure
 from yt2class.domain.run_manifest import RunManifest
 from yt2class.domain.segment import SegmentManifest
-from yt2class.domain.slide_spec_v3 import SlideSpecV3
+from yt2class.domain.slide_spec_v3 import SlidePage, SlideSpecV3
 from yt2class.domain.source import SourceManifest
 from yt2class.domain.transcript import TranscriptDocument
-from yt2class.domain.verification import VerificationReport
+from yt2class.domain.verification import ClaimVerdict, VerificationReport
 from yt2class.domain.visual import VisualCatalogue
 from yt2class.slide_spec import SlideSpec as SlideSpecV2
 
@@ -152,6 +158,43 @@ def test_reference_closure_accepts_synthetic_bundle():
     resolve_reference_closure(valid_bundle())
 
 
+def test_reference_closure_allows_unselected_knowledge_claims():
+    bundle = valid_bundle()
+    knowledge = bundle.knowledge.model_copy(deep=True)
+    knowledge.units[0].claims.append(
+        KnowledgeClaim(
+            id="claim-omitted",
+            text="这个知识点因页面预算未选入讲义。",
+            evidence_ids=["cap-001"],
+            status="supported",
+            modality="audio",
+        )
+    )
+    verification = bundle.verification.model_copy(deep=True)
+    verification.verdicts.append(
+        ClaimVerdict(
+            claim_id="claim-omitted",
+            verdict="supported",
+            supporting_ids=["cap-001"],
+            reason="字幕支持该知识点",
+        )
+    )
+    editorial = bundle.editorial.model_copy(deep=True)
+    editorial.omissions.append(
+        Omission(claim_id="claim-omitted", reason="页面预算不足，保留在审阅记录中")
+    )
+    # EditorialPlan selects only claim-1; the omitted knowledge claim is still
+    # verified but does not need a SlideSpec claim.
+    resolve_reference_closure(
+        replace(
+            bundle,
+            knowledge=knowledge,
+            verification=verification,
+            editorial=editorial,
+        )
+    )
+
+
 def test_reference_closure_rejects_unknown_evidence():
     bundle = valid_bundle()
     broken = bundle.knowledge.model_copy(deep=True)
@@ -213,6 +256,250 @@ def test_reference_closure_rejects_unknown_claim():
                 verification=bundle.verification,
                 slide_spec=bundle.slide_spec,
             )
+        )
+
+
+def test_reference_closure_rejects_unknown_verification_evidence():
+    bundle = valid_bundle()
+    broken = bundle.verification.model_copy(deep=True)
+    broken.verdicts[0] = broken.verdicts[0].model_copy(
+        update={"supporting_ids": ["missing-evidence"]}
+    )
+    with pytest.raises(ClosureError, match="verification claim.*unknown evidence"):
+        resolve_reference_closure(replace(bundle, verification=broken))
+
+
+def test_reference_closure_rejects_verdict_mismatch_with_knowledge():
+    bundle = valid_bundle()
+    broken = bundle.knowledge.model_copy(deep=True)
+    broken.units[0].claims[0] = broken.units[0].claims[0].model_copy(
+        update={"status": "contradicted"}
+    )
+    with pytest.raises(ClosureError, match="does not match Knowledge status"):
+        resolve_reference_closure(replace(bundle, knowledge=broken))
+
+
+def test_reference_closure_rejects_verdict_mismatch_with_slidespec():
+    bundle = valid_bundle()
+    verification = bundle.verification.model_copy(update={"quality_mode": "draft"})
+    slide_spec = bundle.slide_spec.model_copy(deep=True)
+    slide_spec.quality_status = "review_required"
+    slide_spec.claims[0] = slide_spec.claims[0].model_copy(
+        update={"verdict": "contradicted"}
+    )
+    with pytest.raises(ClosureError, match="SlideSpec verdict"):
+        resolve_reference_closure(replace(bundle, verification=verification, slide_spec=slide_spec))
+
+
+def test_reference_closure_rejects_quality_mode_status_mismatch():
+    bundle = valid_bundle()
+    broken = bundle.slide_spec.model_copy(update={"quality_status": "review_required"})
+    with pytest.raises(ClosureError, match="quality_mode.*quality_status"):
+        resolve_reference_closure(replace(bundle, slide_spec=broken))
+
+
+def test_reference_closure_rejects_timestamps_past_source_duration():
+    bundle = valid_bundle()
+
+    transcript = bundle.transcript.model_copy(deep=True)
+    transcript.segments[0] = transcript.segments[0].model_copy(
+        update={"end_seconds": 90.0}
+    )
+    with pytest.raises(ClosureError, match="transcript segment"):
+        resolve_reference_closure(replace(bundle, transcript=transcript))
+
+    visual = bundle.visual.model_copy(deep=True)
+    visual.scenes[0] = visual.scenes[0].model_copy(update={"end_seconds": 90.0})
+    with pytest.raises(ClosureError, match="scene"):
+        resolve_reference_closure(replace(bundle, visual=visual))
+
+    visual = bundle.visual.model_copy(deep=True)
+    visual.occurrences[0] = visual.occurrences[0].model_copy(
+        update={"timestamp_seconds": 60.0}
+    )
+    with pytest.raises(ClosureError, match="occurrence.*timestamp"):
+        resolve_reference_closure(replace(bundle, visual=visual))
+
+    course_map = bundle.course_map.model_copy(deep=True)
+    course_map.topics[0] = course_map.topics[0].model_copy(update={"end_seconds": 90.0})
+    with pytest.raises(ClosureError, match="course topic"):
+        resolve_reference_closure(replace(bundle, course_map=course_map))
+
+    knowledge = bundle.knowledge.model_copy(deep=True)
+    knowledge.units[0].uncertainty = [
+        Uncertainty(
+            kind="missing_step",
+            start_seconds=50.0,
+            end_seconds=90.0,
+            note="超出视频",
+        )
+    ]
+    with pytest.raises(ClosureError, match="uncertainty"):
+        resolve_reference_closure(replace(bundle, knowledge=knowledge))
+
+    knowledge = bundle.knowledge.model_copy(deep=True)
+    knowledge.units[0].evidence_requests = [
+        KnowledgeEvidenceRequest(
+            start_seconds=50.0,
+            end_seconds=90.0,
+            reason="超出视频",
+            desired_modality="frame",
+        )
+    ]
+    with pytest.raises(ClosureError, match="evidence request"):
+        resolve_reference_closure(replace(bundle, knowledge=knowledge))
+
+
+def test_reference_closure_rejects_invalid_transcript_coverage():
+    bundle = valid_bundle()
+    transcript = bundle.transcript.model_copy(deep=True)
+    transcript.speech_coverage = transcript.speech_coverage.model_copy(
+        update={"covered_seconds": 30.0, "speech_seconds": 20.0}
+    )
+    with pytest.raises(ClosureError, match="covered duration exceeds speech"):
+        resolve_reference_closure(replace(bundle, transcript=transcript))
+
+
+def test_slidespec_rejects_inapplicable_page_fields():
+    payload = load_json("slide_spec_v3.valid.json")
+    payload["slides"][0]["hero_asset_id"] = "asset-frame-1"
+    with pytest.raises(ValidationError, match="does not allow field 'hero_asset_id'"):
+        SlideSpecV3.model_validate(payload)
+
+    payload = load_json("slide_spec_v3.valid.json")
+    payload["slides"][0].update(
+        {"type": "cover", "source_id": "src-demo", "layout": None}
+    )
+    with pytest.raises(ValidationError, match="does not allow field 'point_claim_ids'"):
+        SlideSpecV3.model_validate(payload)
+
+
+def test_sequence_layout_uses_steps_without_point_claims():
+    payload = load_json("slide_spec_v3.valid.json")
+    payload["slides"][0].update(
+        {
+            "layout": "sequence",
+            "point_claim_ids": [],
+            "frame_asset_ids": [],
+            "steps": [
+                {"asset_id": "asset-frame-1", "claim_ids": ["claim-1"]},
+                {"asset_id": "asset-frame-1", "claim_ids": ["claim-1"]},
+            ],
+        }
+    )
+    spec = SlideSpecV3.model_validate(payload)
+    assert spec.slides[0].layout == "sequence"
+    assert len(spec.slides[0].steps) == 2
+
+
+def test_sequence_layout_rejects_point_claims():
+    payload = load_json("slide_spec_v3.valid.json")
+    payload["slides"][0].update(
+        {
+            "layout": "sequence",
+            "point_claim_ids": ["claim-1"],
+            "frame_asset_ids": [],
+            "steps": [
+                {"asset_id": "asset-frame-1", "claim_ids": ["claim-1"]},
+                {"asset_id": "asset-frame-1", "claim_ids": ["claim-1"]},
+            ],
+        }
+    )
+    with pytest.raises(ValidationError, match="sequence layout must use steps"):
+        SlideSpecV3.model_validate(payload)
+
+
+def test_slidespec_rejects_wrong_asset_roles_and_time_binding():
+    payload = load_json("slide_spec_v3.valid.json")
+    payload["assets"].append(
+        {
+            "id": "asset-clip",
+            "role": "clip",
+            "path": "clips/c1.mp4",
+            "sha256": "d" * 64,
+            "mime_type": "video/mp4",
+            "timestamp_seconds": None,
+            "start_seconds": 10.0,
+            "end_seconds": 20.0,
+            "derived_from": None,
+            "transformations": [],
+        }
+    )
+    payload["slides"][0]["frame_asset_ids"] = ["asset-clip"]
+    with pytest.raises(ValidationError, match="must have role 'frame'"):
+        SlideSpecV3.model_validate(payload)
+
+    payload["slides"][0].update(
+        {
+            "layout": "sequence",
+            "point_claim_ids": [],
+            "frame_asset_ids": [],
+            "steps": [
+                {"asset_id": "asset-clip", "claim_ids": ["claim-1"]},
+                {"asset_id": "asset-clip", "claim_ids": ["claim-1"]},
+            ],
+        }
+    )
+    with pytest.raises(ValidationError, match="sequence asset.*role 'frame'"):
+        SlideSpecV3.model_validate(payload)
+
+    payload = load_json("slide_spec_v3.valid.json")
+    payload["assets"].append(
+        {
+            "id": "asset-clip",
+            "role": "clip",
+            "path": "clips/c1.mp4",
+            "sha256": "d" * 64,
+            "mime_type": "video/mp4",
+            "timestamp_seconds": None,
+            "start_seconds": 10.0,
+            "end_seconds": 20.0,
+            "derived_from": None,
+            "transformations": [],
+        }
+    )
+    payload["slides"].insert(
+        0,
+        {
+            "id": "cover-1",
+            "type": "cover",
+            "title": "封面",
+            "source_id": "src-demo",
+            "hero_asset_id": "asset-clip",
+        },
+    )
+    with pytest.raises(ValidationError, match="hero asset.*role 'frame'"):
+        SlideSpecV3.model_validate(payload)
+
+    payload = load_json("slide_spec_v3.valid.json")
+    payload["evidence"][0]["timestamp_seconds"] = 13.0
+    with pytest.raises(ValidationError, match="timestamp must match frame asset"):
+        SlideSpecV3.model_validate(payload)
+
+    payload = load_json("slide_spec_v3.valid.json")
+    payload["evidence"].append(
+        {
+            "id": "ev-transcript-1",
+            "kind": "transcript",
+            "asset_id": "asset-frame-1",
+            "start_seconds": 10.0,
+            "end_seconds": 20.0,
+            "text": "字幕",
+            "origin": "sidecar",
+        }
+    )
+    with pytest.raises(ValidationError, match="transcript asset"):
+        SlideSpecV3.model_validate(payload)
+
+
+def test_slidepage_validates_sequence_and_cover_asset_roles():
+    with pytest.raises(ValidationError, match="does not allow field 'point_claim_ids'"):
+        SlidePage(
+            id="cover",
+            type="cover",
+            title="封面",
+            source_id="src-demo",
+            point_claim_ids=["claim-1"],
         )
 
 

@@ -72,10 +72,16 @@ class SlideAsset(StrictModel):
         if self.role == "frame":
             if self.timestamp_seconds is None:
                 raise ValueError("frame asset requires timestamp_seconds")
-        elif self.role in {"clip", "audio"}:
+            if self.start_seconds is not None or self.end_seconds is not None:
+                raise ValueError("frame asset must not have a time range")
+        elif self.role in {"clip", "audio", "transcript"}:
             if self.start_seconds is None or self.end_seconds is None:
-                raise ValueError("clip/audio asset requires start_seconds and end_seconds")
+                raise ValueError(
+                    f"{self.role} asset requires start_seconds and end_seconds"
+                )
             validate_half_open(self.start_seconds, self.end_seconds, label="asset")
+            if self.timestamp_seconds is not None:
+                raise ValueError(f"{self.role} asset must not have timestamp_seconds")
         return self
 
 
@@ -170,29 +176,79 @@ class SlidePage(StrictModel):
 
     @model_validator(mode="after")
     def check_layout_contract(self) -> Self:
+        common_fields = {
+            "id",
+            "type",
+            "title",
+            "citation_ids",
+            "notes_claim_ids",
+            "continuation_of",
+            "notes",
+        }
+
+        def has_value(value: object) -> bool:
+            if value is None:
+                return False
+            if isinstance(value, (list, tuple, dict, set)):
+                return bool(value)
+            if isinstance(value, str):
+                return bool(value)
+            return True
+
+        allowed_fields = set(common_fields)
         if self.type == "cover":
+            allowed_fields.update({"subtitle", "source_id", "hero_asset_id"})
             if self.source_id is None:
                 raise ValueError("cover slide requires source_id")
         elif self.type == "content":
+            allowed_fields.add("layout")
             if self.layout is None:
                 raise ValueError("content slide requires layout")
-            if not 1 <= len(self.point_claim_ids) <= 4:
-                raise ValueError("content slide requires 1-4 point_claim_ids")
-            if self.layout == "image-text" and len(self.frame_asset_ids) != 1:
-                raise ValueError("image-text layout requires exactly 1 frame")
+            if self.layout != "sequence":
+                allowed_fields.add("point_claim_ids")
+                if not 1 <= len(self.point_claim_ids) <= 4:
+                    raise ValueError("content slide requires 1-4 point_claim_ids")
+            if self.layout == "image-text":
+                allowed_fields.add("frame_asset_ids")
+                if len(self.frame_asset_ids) != 1:
+                    raise ValueError("image-text layout requires exactly 1 frame")
             if self.layout == "text" and self.frame_asset_ids:
                 raise ValueError("text layout requires 0 frames")
             if self.layout == "comparison":
+                allowed_fields.update({"frame_asset_ids", "captions"})
                 if len(self.frame_asset_ids) != 2 or len(self.captions) != 2:
                     raise ValueError("comparison layout requires 2 frames and 2 captions")
-            if self.layout == "sequence" and not 2 <= len(self.steps) <= 3:
-                raise ValueError("sequence layout requires 2-3 steps")
+            if self.layout == "sequence":
+                allowed_fields.add("steps")
+                if self.point_claim_ids:
+                    raise ValueError("sequence layout must use steps, not point_claim_ids")
+                if not 2 <= len(self.steps) <= 3:
+                    raise ValueError("sequence layout requires 2-3 steps")
         elif self.type == "summary":
+            allowed_fields.add("claim_ids")
             if not 1 <= len(self.claim_ids) <= 4:
                 raise ValueError("summary slide requires 1-4 claim_ids")
         elif self.type == "quiz":
+            allowed_fields.add("questions")
             if not 1 <= len(self.questions) <= 3:
                 raise ValueError("quiz slide requires 1-3 questions")
+
+        for field_name in (
+            "layout",
+            "subtitle",
+            "source_id",
+            "hero_asset_id",
+            "point_claim_ids",
+            "frame_asset_ids",
+            "captions",
+            "steps",
+            "claim_ids",
+            "questions",
+        ):
+            if field_name not in allowed_fields and has_value(getattr(self, field_name)):
+                raise ValueError(
+                    f"{self.type} slide does not allow field {field_name!r}"
+                )
         return self
 
 
@@ -245,17 +301,30 @@ class SlideSpecV3(StrictModel):
                     raise ValueError("frame evidence requires a frame asset")
                 if item.timestamp_seconds >= duration:
                     raise ValueError("frame timestamp must be < source duration")
+                if asset.timestamp_seconds != item.timestamp_seconds:
+                    raise ValueError("frame evidence timestamp must match frame asset")
             elif isinstance(item, TranscriptEvidence):
-                if item.asset_id not in assets:
-                    raise ValueError("unknown transcript evidence asset")
+                asset = assets.get(item.asset_id)
+                if asset is None or asset.role != "transcript":
+                    raise ValueError("transcript evidence requires a transcript asset")
                 if item.end_seconds > duration:
                     raise ValueError("transcript evidence exceeds source duration")
+                if (asset.start_seconds, asset.end_seconds) != (
+                    item.start_seconds,
+                    item.end_seconds,
+                ):
+                    raise ValueError("transcript evidence range must match transcript asset")
             elif isinstance(item, ClipEvidence):
                 asset = assets.get(item.asset_id)
                 if asset is None or asset.role != "clip":
                     raise ValueError("clip evidence requires a clip asset")
                 if item.end_seconds > duration:
                     raise ValueError("clip evidence exceeds source duration")
+                if (asset.start_seconds, asset.end_seconds) != (
+                    item.start_seconds,
+                    item.end_seconds,
+                ):
+                    raise ValueError("clip evidence range must match clip asset")
             elif isinstance(item, OcrEvidence):
                 parent = evidence.get(item.parent_frame_evidence_id)
                 if parent is None or not isinstance(parent, FrameEvidence):
@@ -280,11 +349,19 @@ class SlideSpecV3(StrictModel):
             if slide.source_id is not None and slide.source_id != self.source.source_id:
                 raise ValueError("cover source_id must match SlideSpec source")
             for asset_id in slide.frame_asset_ids:
-                if asset_id not in assets:
+                asset = assets.get(asset_id)
+                if asset is None:
                     raise ValueError(f"unknown slide frame asset {asset_id!r}")
+                if asset.role != "frame":
+                    raise ValueError(f"slide frame asset {asset_id!r} must have role 'frame'")
             for step in slide.steps:
-                if step.asset_id not in assets:
+                asset = assets.get(step.asset_id)
+                if asset is None:
                     raise ValueError(f"unknown sequence asset {step.asset_id!r}")
+                if asset.role != "frame":
+                    raise ValueError(
+                        f"sequence asset {step.asset_id!r} must have role 'frame'"
+                    )
                 missing_claims = set(step.claim_ids) - set(claims)
                 if missing_claims:
                     raise ValueError(f"unknown sequence claim {sorted(missing_claims)}")
@@ -299,8 +376,14 @@ class SlideSpecV3(StrictModel):
             missing_citations = set(slide.citation_ids) - set(evidence)
             if missing_citations:
                 raise ValueError(f"unknown citation {sorted(missing_citations)}")
-            if slide.hero_asset_id is not None and slide.hero_asset_id not in assets:
-                raise ValueError(f"unknown hero asset {slide.hero_asset_id!r}")
+            if slide.hero_asset_id is not None:
+                hero = assets.get(slide.hero_asset_id)
+                if hero is None:
+                    raise ValueError(f"unknown hero asset {slide.hero_asset_id!r}")
+                if hero.role != "frame":
+                    raise ValueError(
+                        f"hero asset {slide.hero_asset_id!r} must have role 'frame'"
+                    )
         if len(self.slides) > self.render_policy.max_pages:
             raise ValueError("slides exceed render_policy.max_pages")
         return self

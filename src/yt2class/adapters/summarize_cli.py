@@ -155,9 +155,12 @@ def _slides_from_raw(raw: dict[str, Any], *, source: str | None) -> SummarizeSli
                 ocr_confidence=item.get("ocrConfidence", item.get("ocr_confidence")),
             )
         )
-    source_url = raw.get("sourceUrl") or raw.get("source_url") or source
+    raw_source_url = raw.get("sourceUrl") or raw.get("source_url")
+    source_url = source if source is not None else raw_source_url
     declared = raw.get("sourceKind") or raw.get("source_kind")
-    kind = declared if declared in {"youtube", "local", "url"} else classify_source(str(source_url or ""))
+    kind = classify_source(source) if source is not None else (
+        declared if declared in {"youtube", "local", "url"} else classify_source(str(source_url or ""))
+    )
     slides_dir = raw.get("slidesDir") or raw.get("slides_dir")
     if not slides_dir:
         raise SummarizeContractError("slides envelope is missing slidesDir")
@@ -177,9 +180,12 @@ def _extract_from_raw(raw: dict[str, Any] | str, *, source: str | None) -> Summa
             text=raw,
             segments=[],
         )
-    source_url = raw.get("sourceUrl") or raw.get("source_url") or source
+    raw_source_url = raw.get("sourceUrl") or raw.get("source_url")
+    source_url = source if source is not None else raw_source_url
     declared = raw.get("sourceKind") or raw.get("source_kind")
-    kind = declared if declared in {"youtube", "local", "url"} else classify_source(str(source_url or ""))
+    kind = classify_source(source) if source is not None else (
+        declared if declared in {"youtube", "local", "url"} else classify_source(str(source_url or ""))
+    )
     segments = []
     for item in raw.get("segments") or []:
         segments.append(
@@ -294,6 +300,23 @@ def compare_to_native(result: SummarizeResult, native: NativeIngestExpectation) 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 
 
+def _source_from_command(command: Sequence[str]) -> str:
+    """Extract the positional source after the ``--`` option separator."""
+
+    try:
+        separator = list(command).index("--")
+    except ValueError as error:
+        raise SummarizeContractError(
+            "summarize command must include '--' before its source"
+        ) from error
+    sources = list(command)[separator + 1 :]
+    if len(sources) != 1 or not sources[0]:
+        raise SummarizeContractError(
+            "summarize command must contain exactly one source after '--'"
+        )
+    return sources[0]
+
+
 def run_summarize(
     command: Sequence[str],
     *,
@@ -302,11 +325,18 @@ def run_summarize(
     cwd: Path | None = None,
     frame_root: Path | None = None,
     duration_seconds: float | None = None,
+    source: str | None = None,
 ) -> SummarizeResult:
     """Run summarize without a shell. Non-zero exits never become ``ok: true``."""
 
     if not command or command[0] != "summarize":
         raise SummarizeContractError("adapter only executes the summarize argv vector")
+    command_source = _source_from_command(command)
+    if source is not None and source != command_source:
+        raise SummarizeContractError(
+            "explicit source does not match the summarize command source"
+        )
+    input_source = command_source
     completed = runner(
         list(command),
         capture_output=True,
@@ -328,6 +358,7 @@ def run_summarize(
     return parse_summarize_json(
         payload,
         exit_code=completed.returncode,
+        source=input_source,
         frame_root=frame_root,
         duration_seconds=duration_seconds,
     )

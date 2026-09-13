@@ -124,12 +124,53 @@ def test_subprocess_adapter_uses_injected_runner():
     assert result.ok is True
 
 
+def test_subprocess_adapter_preserves_command_source_when_envelope_omits_it():
+    payload = load("slides_ok.json")
+    payload["slides"].pop("sourceUrl")
+    payload["slides"].pop("sourceKind")
+
+    def runner(command, **kwargs):
+        assert command[-1] == "https://youtu.be/input0001"
+        return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+
+    result = run_summarize(
+        build_slides_command("https://youtu.be/input0001", Path("out")),
+        runner=runner,
+        frame_root=FIXTURES,
+        duration_seconds=60.0,
+    )
+    assert result.slides is not None
+    assert result.slides.source_url == "https://youtu.be/input0001"
+    assert result.slides.source_kind == "youtube"
+
+
+def test_subprocess_adapter_rejects_explicit_source_conflicting_with_command():
+    called = False
+
+    def runner(command, **kwargs):
+        nonlocal called
+        called = True
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(load("slides_ok.json")),
+            stderr="",
+        )
+
+    with pytest.raises(SummarizeContractError, match="does not match"):
+        run_summarize(
+            build_slides_command("https://youtu.be/input0001", Path("out")),
+            source="./different-local.mp4",
+            runner=runner,
+        )
+    assert called is False
+
+
 def test_subprocess_nonzero_never_parses_as_success():
     def runner(command, **kwargs):
         return SimpleNamespace(returncode=2, stdout='{"ok": true, "slides": {}}', stderr="boom")
 
     with pytest.raises(SummarizeFailedError, match="exited 2"):
-        run_summarize(["summarize", "slides", "x", "--json"], runner=runner)
+        run_summarize(build_slides_command("x", Path("out")), runner=runner)
 
 
 def test_native_comparison_records_slides_max_gap():

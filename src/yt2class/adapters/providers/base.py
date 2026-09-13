@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import hashlib
+import json
 from threading import Event
 from typing import Any, Literal
 
@@ -53,6 +55,12 @@ class MissingUsage(ProviderError):
     code = "missing_usage"
 
 
+class RequestFingerprintConflict(ProviderError):
+    """The request ID was reused for a materially different request."""
+
+    code = "idempotency_conflict"
+
+
 class ProviderCapabilities(StrictModel):
     """Declared by configuration and smoke tests, not inferred from endpoint names."""
 
@@ -99,7 +107,7 @@ class ModelRequest(StrictModel):
     image_count: int = Field(default=0, ge=0)
     video_seconds: float = Field(default=0.0, ge=0, allow_inf_nan=False)
     require_structured_output: bool = True
-    payload_digest: Digest | None = None
+    payload_digest: Digest
 
 
 class ModelResult(StrictModel):
@@ -114,7 +122,25 @@ class Provider(ABC):
 
     def __init__(self, capabilities: ProviderCapabilities) -> None:
         self.capabilities = capabilities
-        self._completed: dict[str, ModelResult] = {}
+        self._completed: dict[str, tuple[str, ModelResult]] = {}
+
+    @staticmethod
+    def request_fingerprint(request: ModelRequest) -> str:
+        """Return a stable digest of every request field except its id.
+
+        ``request_id`` provides the idempotency slot.  The fingerprint makes
+        reusing that slot safe when a retry accidentally changes the role,
+        payload, modality, or token/payload budget.
+        """
+
+        payload = request.model_dump(mode="json", exclude={"request_id"})
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
 
     def check_request(self, request: ModelRequest) -> None:
         caps = self.capabilities
@@ -163,11 +189,18 @@ class Provider(ABC):
         self.check_request(request)
         if cancel_event is not None and cancel_event.is_set():
             raise RequestCancelled(f"request {request.request_id} cancelled")
+        fingerprint = self.request_fingerprint(request)
         cached = self._completed.get(request.request_id)
         if cached is not None:
-            return cached
+            cached_fingerprint, cached_result = cached
+            if cached_fingerprint != fingerprint:
+                raise RequestFingerprintConflict(
+                    f"request_id {request.request_id!r} was already completed "
+                    "with a different request fingerprint"
+                )
+            return cached_result
         result = self.ensure_result(request, self._complete(request, cancel_event=cancel_event))
-        self._completed[request.request_id] = result
+        self._completed[request.request_id] = (fingerprint, result)
         return result
 
     @abstractmethod

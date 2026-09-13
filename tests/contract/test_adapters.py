@@ -5,6 +5,7 @@ from __future__ import annotations
 from threading import Event
 
 import pytest
+from pydantic import ValidationError
 
 from yt2class.adapters.providers.base import (
     ContextOverflow,
@@ -14,11 +15,16 @@ from yt2class.adapters.providers.base import (
     ModelRequest,
     ProviderCapabilities,
     RequestCancelled,
+    RequestFingerprintConflict,
     RequestTimeout,
     UnsupportedModality,
     Usage,
 )
-from yt2class.adapters.render.base import FakeRenderer, RenderRequest
+from yt2class.adapters.render.base import (
+    FakeRenderer,
+    RenderRequest,
+    RequestFingerprintConflict as RenderRequestFingerprintConflict,
+)
 
 
 def frames_caps(**overrides) -> ProviderCapabilities:
@@ -44,6 +50,7 @@ def text_request(**overrides) -> ModelRequest:
         modalities=["text"],
         estimated_input_tokens=100,
         estimated_output_tokens=50,
+        payload_digest="f" * 64,
     )
     data.update(overrides)
     return ModelRequest.model_validate(data)
@@ -55,6 +62,13 @@ def test_unsupported_video_modality():
         provider.complete(
             text_request(modalities=["text", "video"], video_seconds=12.0, request_id="req-video")
         )
+
+
+def test_provider_request_requires_payload_digest():
+    payload = text_request().model_dump()
+    payload.pop("payload_digest")
+    with pytest.raises(ValidationError, match="payload_digest"):
+        ModelRequest.model_validate(payload)
 
 
 def test_context_overflow():
@@ -98,9 +112,7 @@ def test_missing_usage():
 def test_idempotent_request_ids():
     provider = FakeProvider(frames_caps(), structured={"topic": "合成"})
     first = provider.complete(text_request(request_id="req-same"))
-    second = provider.complete(
-        text_request(request_id="req-same", estimated_input_tokens=999)
-    )
+    second = provider.complete(text_request(request_id="req-same"))
     assert first is second
     assert first.usage == Usage(
         request_id="req-same",
@@ -114,11 +126,30 @@ def test_idempotent_request_ids():
     assert third is not first
 
 
+def test_provider_rejects_request_id_reuse_with_different_fingerprint():
+    provider = FakeProvider(frames_caps(), structured={"topic": "合成"})
+    provider.complete(text_request(request_id="req-conflict"))
+    with pytest.raises(RequestFingerprintConflict, match="different request fingerprint"):
+        provider.complete(
+            text_request(request_id="req-conflict", estimated_input_tokens=999)
+        )
+
+
+def test_provider_fingerprint_includes_payload_digest():
+    provider = FakeProvider(frames_caps(), structured={"topic": "合成"})
+    provider.complete(text_request(request_id="req-payload"))
+    with pytest.raises(RequestFingerprintConflict, match="different request fingerprint"):
+        provider.complete(
+            text_request(request_id="req-payload", payload_digest="e" * 64)
+        )
+
+
 def test_render_request_is_idempotent_and_reports_usage_of_preview_policy():
     renderer = FakeRenderer()
     request = RenderRequest(
         request_id="render-1",
         spec_path="delivery/slide-spec.json",
+        spec_digest="a" * 64,
         run_root="/tmp/run",
         output_path="delivery/lesson.pptx",
         preview_policy="off",
@@ -129,3 +160,30 @@ def test_render_request_is_idempotent_and_reports_usage_of_preview_policy():
     assert first.request_id == "render-1"
     assert first.visual_qa == "unavailable"
     assert first.render_complete is True
+
+
+def test_renderer_rejects_request_id_reuse_with_different_fingerprint():
+    renderer = FakeRenderer()
+    request = RenderRequest(
+        request_id="render-conflict",
+        spec_path="delivery/slide-spec.json",
+        spec_digest="a" * 64,
+        run_root="/tmp/run",
+        output_path="delivery/lesson.pptx",
+        preview_policy="off",
+    )
+    renderer.render(request)
+    with pytest.raises(RenderRequestFingerprintConflict, match="different request fingerprint"):
+        renderer.render(request.model_copy(update={"preview_policy": "required"}))
+
+
+def test_renderer_request_requires_spec_digest():
+    request = {
+        "request_id": "render-missing-digest",
+        "spec_path": "delivery/slide-spec.json",
+        "run_root": "/tmp/run",
+        "output_path": "delivery/lesson.pptx",
+        "preview_policy": "off",
+    }
+    with pytest.raises(ValidationError, match="spec_digest"):
+        RenderRequest.model_validate(request)

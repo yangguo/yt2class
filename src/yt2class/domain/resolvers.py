@@ -54,6 +54,131 @@ def evidence_universe(transcript: TranscriptDocument, visual: VisualCatalogue) -
     return ids
 
 
+def _check_point(value: float, duration: float, *, label: str) -> None:
+    if not 0 <= value < duration:
+        raise ClosureError(f"{label} {value} is outside source duration {duration}")
+
+
+def _check_range(start: float, end: float, duration: float, *, label: str) -> None:
+    if not 0 <= start < end <= duration:
+        raise ClosureError(
+            f"{label} [{start}, {end}) exceeds source duration {duration}"
+        )
+
+
+def _check_timeline_bounds(bundle: DocumentBundle) -> None:
+    """Enforce one source timebase across all cross-document intervals."""
+
+    duration = bundle.source.duration_seconds
+    coverage = bundle.transcript.speech_coverage
+    if coverage.speech_seconds > duration:
+        raise ClosureError("transcript speech coverage exceeds source duration")
+    if coverage.covered_seconds > duration:
+        raise ClosureError("transcript covered duration exceeds source duration")
+    if coverage.covered_seconds > coverage.speech_seconds:
+        raise ClosureError("transcript covered duration exceeds speech duration")
+
+    for segment in bundle.transcript.segments:
+        _check_range(
+            segment.start_seconds,
+            segment.end_seconds,
+            duration,
+            label=f"transcript segment {segment.id}",
+        )
+        for word in segment.words or []:
+            _check_range(
+                word.start_seconds,
+                word.end_seconds,
+                duration,
+                label=f"transcript word in {segment.id}",
+            )
+            if word.start_seconds < segment.start_seconds or word.end_seconds > segment.end_seconds:
+                raise ClosureError(
+                    f"transcript word in {segment.id} falls outside its segment"
+                )
+
+    scenes = {scene.id: scene for scene in bundle.visual.scenes}
+    for scene in bundle.visual.scenes:
+        _check_range(
+            scene.start_seconds,
+            scene.end_seconds,
+            duration,
+            label=f"scene {scene.id}",
+        )
+    for occurrence in bundle.visual.occurrences:
+        _check_point(
+            occurrence.requested_seconds,
+            duration,
+            label=f"occurrence {occurrence.id} requested timestamp",
+        )
+        _check_point(
+            occurrence.timestamp_seconds,
+            duration,
+            label=f"occurrence {occurrence.id} timestamp",
+        )
+        scene = scenes.get(occurrence.scene_id)
+        if scene is None:
+            raise ClosureError(
+                f"occurrence {occurrence.id} cites unknown scene {occurrence.scene_id}"
+            )
+        if not scene.start_seconds <= occurrence.timestamp_seconds < scene.end_seconds:
+            raise ClosureError(
+                f"occurrence {occurrence.id} timestamp is outside scene {scene.id}"
+            )
+
+    for topic in bundle.course_map.topics:
+        _check_range(
+            topic.start_seconds,
+            topic.end_seconds,
+            duration,
+            label=f"course topic {topic.id}",
+        )
+
+    for window in bundle.segments.windows:
+        _check_range(
+            window.core_start_seconds,
+            window.core_end_seconds,
+            duration,
+            label=f"analysis window {window.id} core",
+        )
+        _check_range(
+            window.context_start_seconds,
+            window.context_end_seconds,
+            duration,
+            label=f"analysis window {window.id} context",
+        )
+
+    for unit in bundle.knowledge.units:
+        _check_range(
+            unit.start_seconds,
+            unit.end_seconds,
+            duration,
+            label=f"knowledge unit {unit.id}",
+        )
+        for uncertainty in unit.uncertainty:
+            _check_range(
+                uncertainty.start_seconds,
+                uncertainty.end_seconds,
+                duration,
+                label=f"uncertainty in {unit.id}",
+            )
+        for request in unit.evidence_requests:
+            _check_range(
+                request.start_seconds,
+                request.end_seconds,
+                duration,
+                label=f"evidence request in {unit.id}",
+            )
+
+
+def _expected_verdict(status: str) -> str:
+    """Map intermediate knowledge statuses to the final verifier vocabulary."""
+
+    if status in {"draft", "unresolved"}:
+        return "insufficient"
+    return status
+
+
 def resolve_reference_closure(bundle: DocumentBundle) -> None:
     """Reject any dangling source, evidence, claim, asset, or page reference."""
 
@@ -70,8 +195,12 @@ def resolve_reference_closure(bundle: DocumentBundle) -> None:
     )
     if bundle.segments.duration_seconds != bundle.source.duration_seconds:
         raise ClosureError("SegmentManifest duration must match SourceManifest")
+    if bundle.slide_spec.source.duration_seconds != bundle.source.duration_seconds:
+        raise ClosureError("SlideSpec duration must match SourceManifest")
     if bundle.slide_spec.source.sha256 != bundle.source.sha256:
         raise ClosureError("SlideSpec source hash must match SourceManifest")
+
+    _check_timeline_bounds(bundle)
 
     evidence_ids = evidence_universe(bundle.transcript, bundle.visual)
     topics = {topic.id for topic in bundle.course_map.topics}
@@ -138,9 +267,72 @@ def resolve_reference_closure(bundle: DocumentBundle) -> None:
     if pending:
         raise ClosureError(f"verification pending_review cites unknown ids {sorted(pending)}")
 
-    spec_claims = {claim.id for claim in bundle.slide_spec.claims}
+    verification_by_claim = {
+        verdict.claim_id: verdict for verdict in bundle.verification.verdicts
+    }
+    for verdict in bundle.verification.verdicts:
+        supporting = set(verdict.supporting_ids)
+        contradicting = set(verdict.contradicting_ids)
+        overlap = supporting & contradicting
+        if overlap:
+            raise ClosureError(
+                f"verification claim {verdict.claim_id} cites evidence as both "
+                f"supporting and contradicting: {sorted(overlap)}"
+            )
+        missing_evidence = (supporting | contradicting) - evidence_ids
+        if missing_evidence:
+            raise ClosureError(
+                f"verification claim {verdict.claim_id} cites unknown evidence "
+                f"{sorted(missing_evidence)}"
+            )
+        if verdict.verdict == "supported" and not supporting:
+            raise ClosureError(
+                f"supported verification claim {verdict.claim_id} requires supporting evidence"
+            )
+        if verdict.verdict == "contradicted" and not contradicting:
+            raise ClosureError(
+                f"contradicted verification claim {verdict.claim_id} requires contradicting evidence"
+            )
+
+    spec_claims = {claim.id: claim for claim in bundle.slide_spec.claims}
+    # The binder may retain additional selected claims for notes or later
+    # repagination, but every SlideSpec claim must originate in Knowledge.
+    extra_spec_claims = set(spec_claims) - set(claims)
+    if extra_spec_claims:
+        raise ClosureError(f"SlideSpec cites unknown knowledge claims {sorted(extra_spec_claims)}")
+    quality_pairs = {
+        "strict": {"verified"},
+        "draft": {"review_required", "incomplete"},
+        "evidence-only": {"evidence-only"},
+    }
+    allowed_statuses = quality_pairs[bundle.verification.quality_mode]
+    if bundle.slide_spec.quality_status not in allowed_statuses:
+        raise ClosureError(
+            f"verification quality_mode {bundle.verification.quality_mode!r} is incompatible "
+            f"with SlideSpec quality_status {bundle.slide_spec.quality_status!r}"
+        )
+    if bundle.verification.quality_mode == "evidence-only" and any(
+        verdict.verdict == "supported" for verdict in bundle.verification.verdicts
+    ):
+        raise ClosureError("evidence-only verification cannot contain supported claims")
+
+    for claim_id, claim in claims.items():
+        verification = verification_by_claim[claim_id]
+        expected = _expected_verdict(claim.status)
+        if verification.verdict != expected:
+            raise ClosureError(
+                f"verification verdict for claim {claim_id} ({verification.verdict}) "
+                f"does not match Knowledge status {claim.status}"
+            )
+    for claim_id, slide_claim in spec_claims.items():
+        verification = verification_by_claim[claim_id]
+        if slide_claim.verdict != verification.verdict:
+            raise ClosureError(
+                f"SlideSpec verdict for claim {claim_id} ({slide_claim.verdict}) "
+                f"does not match verification verdict {verification.verdict}"
+            )
     for page in bundle.editorial.pages:
-        unbound = set(page.claim_ids) - spec_claims
+        unbound = set(page.claim_ids) - set(spec_claims)
         if unbound:
             raise ClosureError(
                 f"SlideSpec is missing editorial claim {sorted(unbound)}; "
