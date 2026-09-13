@@ -18,6 +18,16 @@ from yt2class.domain.common import (
 WindowStatus = Literal["scheduled", "running", "complete", "degraded", "failed"]
 
 
+class ImageBatch(StrictModel):
+    """One provider image/token batch for a core window. Analysis is not page-capped."""
+
+    id: Identifier
+    evidence_ids: list[Identifier] = Field(default_factory=list, max_length=50)
+    estimated_input_tokens: int = Field(default=0, ge=0)
+    estimated_output_tokens: int = Field(default=0, ge=0)
+    image_count: int = Field(default=0, ge=0)
+
+
 class AnalysisWindow(StrictModel):
     id: Identifier
     core_start_seconds: Seconds
@@ -26,6 +36,10 @@ class AnalysisWindow(StrictModel):
     context_end_seconds: Seconds
     evidence_ids: list[Identifier] = Field(default_factory=list)
     status: WindowStatus
+    image_batches: list[ImageBatch] = Field(default_factory=list)
+    estimated_input_tokens: int = Field(default=0, ge=0)
+    estimated_output_tokens: int = Field(default=0, ge=0)
+    failure_reason: str | None = Field(default=None, max_length=400)
 
     @model_validator(mode="after")
     def check_ranges(self) -> Self:
@@ -50,6 +64,46 @@ class SegmentManifest(StrictModel):
     def check_windows(self) -> Self:
         unique_ids(self.windows, label="analysis window")
         for window in self.windows:
+            unique_ids(window.image_batches, label="image batch")
             if window.context_end_seconds > self.duration_seconds:
                 raise ValueError("analysis window exceeds source duration")
         return self
+
+
+def core_intervals(windows: list[AnalysisWindow]) -> list[tuple[float, float]]:
+    return [
+        (float(window.core_start_seconds), float(window.core_end_seconds))
+        for window in windows
+    ]
+
+
+def cores_overlap(windows: list[AnalysisWindow], *, tol: float = 1e-9) -> bool:
+    ordered = sorted(core_intervals(windows), key=lambda item: (item[0], item[1]))
+    for index, (start, end) in enumerate(ordered[1:], start=1):
+        previous_end = ordered[index - 1][1]
+        if start < previous_end - tol:
+            return True
+    return False
+
+
+def cores_cover_duration(
+    windows: list[AnalysisWindow],
+    duration: float,
+    *,
+    tol: float = 1e-9,
+) -> bool:
+    """True when core ranges are a partition of ``[0, duration)``."""
+
+    if duration <= 0:
+        return not windows
+    if not windows or cores_overlap(windows, tol=tol):
+        return False
+    ordered = sorted(core_intervals(windows), key=lambda item: item[0])
+    if abs(ordered[0][0] - 0.0) > tol:
+        return False
+    cursor = ordered[0][1]
+    for start, end in ordered[1:]:
+        if abs(start - cursor) > tol:
+            return False
+        cursor = end
+    return abs(cursor - float(duration)) <= tol

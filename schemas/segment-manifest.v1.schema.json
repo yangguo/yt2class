@@ -48,6 +48,38 @@
           ],
           "title": "Status",
           "type": "string"
+        },
+        "image_batches": {
+          "items": {
+            "$ref": "#/$defs/ImageBatch"
+          },
+          "title": "Image Batches",
+          "type": "array"
+        },
+        "estimated_input_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Estimated Input Tokens",
+          "type": "integer"
+        },
+        "estimated_output_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Estimated Output Tokens",
+          "type": "integer"
+        },
+        "failure_reason": {
+          "anyOf": [
+            {
+              "maxLength": 400,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Failure Reason"
         }
       },
       "required": [
@@ -59,6 +91,51 @@
         "status"
       ],
       "title": "AnalysisWindow",
+      "type": "object"
+    },
+    "ImageBatch": {
+      "additionalProperties": false,
+      "description": "One provider image/token batch for a core window. Analysis is not page-capped.",
+      "properties": {
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "evidence_ids": {
+          "items": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 50,
+          "title": "Evidence Ids",
+          "type": "array"
+        },
+        "estimated_input_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Estimated Input Tokens",
+          "type": "integer"
+        },
+        "estimated_output_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Estimated Output Tokens",
+          "type": "integer"
+        },
+        "image_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Image Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "ImageBatch",
       "type": "object"
     }
   },

@@ -214,7 +214,11 @@ class Provider(ABC):
 
 
 class FakeProvider(Provider):
-    """Deterministic provider for contract tests. Not used by the prototype build."""
+    """Deterministic provider for contract tests and the M2 fake analysis path.
+
+    Not a live model. Stages may attach the hashed payload on ``last_payload``
+    so a responder can emit structurally valid CourseMap / KnowledgeUnit JSON.
+    """
 
     def __init__(
         self,
@@ -225,12 +229,33 @@ class FakeProvider(Provider):
         omit_usage: bool = False,
         timeout: bool = False,
         cancel: bool = False,
+        responder: Any | None = None,
+        sequential: list[Any] | None = None,
     ) -> None:
         super().__init__(capabilities)
         self._structured = None if omit_structured else (structured or {"ok": True})
         self._omit_usage = omit_usage
         self._timeout = timeout
         self._cancel = cancel
+        self._responder = responder
+        self._sequential = list(sequential or [])
+        self._seq_index = 0
+        self.requests: list[ModelRequest] = []
+        self.last_payload: dict[str, Any] | None = None
+
+    def _next_structured(self, request: ModelRequest) -> dict[str, Any] | None:
+        if self._sequential:
+            if self._seq_index >= len(self._sequential):
+                item = self._sequential[-1]
+            else:
+                item = self._sequential[self._seq_index]
+            self._seq_index += 1
+            if isinstance(item, BaseException):
+                raise item
+            return item
+        if self._responder is not None:
+            return self._responder(self, request)
+        return self._structured
 
     def _complete(
         self,
@@ -238,6 +263,7 @@ class FakeProvider(Provider):
         *,
         cancel_event: Event | None = None,
     ) -> ModelResult:
+        self.requests.append(request)
         if self._timeout:
             raise RequestTimeout(f"request {request.request_id} timed out")
         if self._cancel or (cancel_event is not None and cancel_event.is_set()):
@@ -246,7 +272,7 @@ class FakeProvider(Provider):
             return None  # type: ignore[return-value]
         return ModelResult(
             request_id=request.request_id,
-            structured=self._structured,
+            structured=self._next_structured(request),
             usage=Usage(
                 request_id=request.request_id,
                 input_tokens=request.estimated_input_tokens,
