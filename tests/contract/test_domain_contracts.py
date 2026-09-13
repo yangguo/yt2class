@@ -19,6 +19,7 @@ from yt2class.domain.common import (
     published_schema,
 )
 from yt2class.domain.course_map import CourseMap
+from yt2class.domain.evidence import EvidenceBundle
 from yt2class.domain.editorial import EditorialPlan, Omission
 from yt2class.domain.knowledge import (
     KnowledgeClaim,
@@ -45,6 +46,7 @@ SCHEMAS = ROOT / "schemas"
 
 DOCUMENTS = {
     "source_manifest.valid.json": SourceManifest,
+    "evidence_bundle.valid.json": EvidenceBundle,
     "transcript.valid.json": TranscriptDocument,
     "visual_catalogue.valid.json": VisualCatalogue,
     "segment_manifest.valid.json": SegmentManifest,

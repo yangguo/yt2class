@@ -71,6 +71,16 @@ def _check_timeline_bounds(bundle: DocumentBundle) -> None:
 
     duration = bundle.source.duration_seconds
     coverage = bundle.transcript.speech_coverage
+    if bundle.transcript.duration_seconds is not None and bundle.transcript.duration_seconds > duration:
+        raise ClosureError("transcript document duration exceeds source duration")
+    if coverage.denominator_seconds is not None and coverage.denominator_seconds > duration:
+        raise ClosureError("transcript coverage denominator exceeds source duration")
+    if (
+        coverage.denominator == "timeline"
+        and coverage.denominator_seconds is not None
+        and coverage.denominator_seconds != duration
+    ):
+        raise ClosureError("timeline transcript coverage denominator must match source duration")
     if coverage.speech_seconds > duration:
         raise ClosureError("transcript speech coverage exceeds source duration")
     if coverage.covered_seconds > duration:
@@ -96,6 +106,13 @@ def _check_timeline_bounds(bundle: DocumentBundle) -> None:
                 raise ClosureError(
                     f"transcript word in {segment.id} falls outside its segment"
                 )
+    for gap in bundle.transcript.gaps:
+        _check_range(
+            gap.start_seconds,
+            gap.end_seconds,
+            duration,
+            label=f"transcript gap {gap.id}",
+        )
 
     scenes = {scene.id: scene for scene in bundle.visual.scenes}
     for scene in bundle.visual.scenes:
@@ -111,20 +128,39 @@ def _check_timeline_bounds(bundle: DocumentBundle) -> None:
             duration,
             label=f"occurrence {occurrence.id} requested timestamp",
         )
-        _check_point(
-            occurrence.timestamp_seconds,
-            duration,
-            label=f"occurrence {occurrence.id} timestamp",
-        )
+        if occurrence.timestamp_seconds is not None:
+            _check_point(
+                occurrence.timestamp_seconds,
+                duration,
+                label=f"occurrence {occurrence.id} timestamp",
+            )
+        if occurrence.actual_source_seconds is not None:
+            _check_point(
+                occurrence.actual_source_seconds,
+                duration,
+                label=f"occurrence {occurrence.id} actual timestamp",
+            )
         scene = scenes.get(occurrence.scene_id)
         if scene is None:
             raise ClosureError(
                 f"occurrence {occurrence.id} cites unknown scene {occurrence.scene_id}"
             )
-        if not scene.start_seconds <= occurrence.timestamp_seconds < scene.end_seconds:
+        if (
+            occurrence.timestamp_seconds is not None
+            and not scene.start_seconds <= occurrence.timestamp_seconds < scene.end_seconds
+        ):
             raise ClosureError(
                 f"occurrence {occurrence.id} timestamp is outside scene {scene.id}"
             )
+        if (
+            occurrence.actual_source_seconds is not None
+            and not scene.start_seconds <= occurrence.actual_source_seconds < scene.end_seconds
+        ):
+            raise ClosureError(
+                f"occurrence {occurrence.id} actual timestamp is outside scene {scene.id}"
+            )
+    for gap in bundle.visual.gaps:
+        _check_range(gap.start_seconds, gap.end_seconds, duration, label=f"visual gap {gap.id}")
 
     for topic in bundle.course_map.topics:
         _check_range(

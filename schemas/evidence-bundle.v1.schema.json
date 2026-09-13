@@ -1,0 +1,1250 @@
+{
+  "$defs": {
+    "BoundingBox": {
+      "additionalProperties": false,
+      "properties": {
+        "x": {
+          "minimum": 0,
+          "title": "X",
+          "type": "number"
+        },
+        "y": {
+          "minimum": 0,
+          "title": "Y",
+          "type": "number"
+        },
+        "width": {
+          "exclusiveMinimum": 0,
+          "title": "Width",
+          "type": "number"
+        },
+        "height": {
+          "exclusiveMinimum": 0,
+          "title": "Height",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "width",
+        "height"
+      ],
+      "title": "BoundingBox",
+      "type": "object"
+    },
+    "EvidenceArtifact": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Kind",
+          "type": "string"
+        },
+        "path": {
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*\\\\)(?!.*:)(?!.*(?:^|/)\\.\\.(?:/|$)).+$",
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "path",
+        "sha256"
+      ],
+      "title": "EvidenceArtifact",
+      "type": "object"
+    },
+    "EvidenceGap": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "modality": {
+          "enum": [
+            "transcript",
+            "visual",
+            "ocr",
+            "asr"
+          ],
+          "title": "Modality",
+          "type": "string"
+        },
+        "start_seconds": {
+          "minimum": 0,
+          "title": "Start Seconds",
+          "type": "number"
+        },
+        "end_seconds": {
+          "minimum": 0,
+          "title": "End Seconds",
+          "type": "number"
+        },
+        "reason": {
+          "maxLength": 400,
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        },
+        "status": {
+          "default": "degraded",
+          "enum": [
+            "complete",
+            "degraded",
+            "failed",
+            "unavailable"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "modality",
+        "start_seconds",
+        "end_seconds",
+        "reason"
+      ],
+      "title": "EvidenceGap",
+      "type": "object"
+    },
+    "FrameOccurrence": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "scene_id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Scene Id",
+          "type": "string"
+        },
+        "asset_id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Asset Id",
+          "type": "string"
+        },
+        "requested_seconds": {
+          "minimum": 0,
+          "title": "Requested Seconds",
+          "type": "number"
+        },
+        "timestamp_seconds": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timestamp Seconds"
+        },
+        "actual_source_seconds": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Actual Source Seconds"
+        },
+        "cluster_id": {
+          "anyOf": [
+            {
+              "maxLength": 100,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cluster Id"
+        },
+        "reject_reason": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reject Reason"
+        },
+        "quality": {
+          "$ref": "#/$defs/FrameQuality"
+        },
+        "quality_flags": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 20,
+          "title": "Quality Flags",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "scene_id",
+        "asset_id",
+        "requested_seconds",
+        "quality"
+      ],
+      "title": "FrameOccurrence",
+      "type": "object"
+    },
+    "FrameQuality": {
+      "additionalProperties": false,
+      "properties": {
+        "width": {
+          "exclusiveMinimum": 0,
+          "title": "Width",
+          "type": "integer"
+        },
+        "height": {
+          "exclusiveMinimum": 0,
+          "title": "Height",
+          "type": "integer"
+        },
+        "brightness": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Brightness",
+          "type": "number"
+        },
+        "sharpness": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Sharpness",
+          "type": "number"
+        },
+        "ocr_density": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Ocr Density",
+          "type": "number"
+        }
+      },
+      "required": [
+        "width",
+        "height",
+        "brightness",
+        "sharpness",
+        "ocr_density"
+      ],
+      "title": "FrameQuality",
+      "type": "object"
+    },
+    "MediaStream": {
+      "additionalProperties": false,
+      "properties": {
+        "index": {
+          "minimum": 0,
+          "title": "Index",
+          "type": "integer"
+        },
+        "codec_type": {
+          "enum": [
+            "video",
+            "audio",
+            "subtitle"
+          ],
+          "title": "Codec Type",
+          "type": "string"
+        },
+        "codec_name": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Codec Name",
+          "type": "string"
+        },
+        "language": {
+          "anyOf": [
+            {
+              "maxLength": 35,
+              "minLength": 2,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Language"
+        },
+        "rotation_degrees": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rotation Degrees"
+        },
+        "fps": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fps"
+        },
+        "timebase": {
+          "anyOf": [
+            {
+              "maxLength": 32,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timebase"
+        }
+      },
+      "required": [
+        "index",
+        "codec_type",
+        "codec_name"
+      ],
+      "title": "MediaStream",
+      "type": "object"
+    },
+    "OcrRegion": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "asset_id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Asset Id",
+          "type": "string"
+        },
+        "parent_occurrence_id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Parent Occurrence Id",
+          "type": "string"
+        },
+        "bbox": {
+          "$ref": "#/$defs/BoundingBox"
+        },
+        "text": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "engine": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Engine",
+          "type": "string"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Confidence",
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "asset_id",
+        "parent_occurrence_id",
+        "bbox",
+        "text",
+        "engine",
+        "confidence"
+      ],
+      "title": "OcrRegion",
+      "type": "object"
+    },
+    "Scene": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "start_seconds": {
+          "minimum": 0,
+          "title": "Start Seconds",
+          "type": "number"
+        },
+        "end_seconds": {
+          "minimum": 0,
+          "title": "End Seconds",
+          "type": "number"
+        },
+        "detector": {
+          "enum": [
+            "content",
+            "adaptive"
+          ],
+          "title": "Detector",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "start_seconds",
+        "end_seconds",
+        "detector"
+      ],
+      "title": "Scene",
+      "type": "object"
+    },
+    "SourceManifest": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "1.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "source_id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Source Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "youtube",
+            "local"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "media_path": {
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*\\\\)(?!.*:)(?!.*(?:^|/)\\.\\.(?:/|$)).+$",
+          "title": "Media Path",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "duration_seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Duration Seconds",
+          "type": "number"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        },
+        "video_id": {
+          "anyOf": [
+            {
+              "maxLength": 32,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Video Id"
+        },
+        "streams": {
+          "items": {
+            "$ref": "#/$defs/MediaStream"
+          },
+          "minItems": 1,
+          "title": "Streams",
+          "type": "array"
+        },
+        "timebase": {
+          "maxLength": 32,
+          "minLength": 1,
+          "title": "Timebase",
+          "type": "string"
+        },
+        "local_mode": {
+          "default": "copy",
+          "enum": [
+            "copy",
+            "reference"
+          ],
+          "title": "Local Mode",
+          "type": "string"
+        },
+        "reference_path": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reference Path"
+        },
+        "transformations": {
+          "items": {
+            "$ref": "#/$defs/Transformation"
+          },
+          "title": "Transformations",
+          "type": "array"
+        }
+      },
+      "required": [
+        "schema_version",
+        "source_id",
+        "kind",
+        "title",
+        "media_path",
+        "sha256",
+        "duration_seconds",
+        "streams",
+        "timebase"
+      ],
+      "title": "SourceManifest",
+      "type": "object"
+    },
+    "SpeechCoverage": {
+      "additionalProperties": false,
+      "properties": {
+        "speech_seconds": {
+          "minimum": 0,
+          "title": "Speech Seconds",
+          "type": "number"
+        },
+        "covered_seconds": {
+          "minimum": 0,
+          "title": "Covered Seconds",
+          "type": "number"
+        },
+        "denominator": {
+          "enum": [
+            "vad-speech",
+            "timeline"
+          ],
+          "title": "Denominator",
+          "type": "string"
+        },
+        "coverage_ratio": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Coverage Ratio",
+          "type": "number"
+        },
+        "denominator_seconds": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Denominator Seconds"
+        }
+      },
+      "required": [
+        "speech_seconds",
+        "covered_seconds",
+        "denominator",
+        "coverage_ratio"
+      ],
+      "title": "SpeechCoverage",
+      "type": "object"
+    },
+    "TranscriptDocument": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "1.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "source_id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Source Id",
+          "type": "string"
+        },
+        "language": {
+          "maxLength": 35,
+          "minLength": 2,
+          "title": "Language",
+          "type": "string"
+        },
+        "raw_artifact_hash": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Raw Artifact Hash"
+        },
+        "alignment": {
+          "enum": [
+            "none",
+            "sentence",
+            "word"
+          ],
+          "title": "Alignment",
+          "type": "string"
+        },
+        "speech_coverage": {
+          "$ref": "#/$defs/SpeechCoverage"
+        },
+        "segments": {
+          "items": {
+            "$ref": "#/$defs/TranscriptSegment"
+          },
+          "title": "Segments",
+          "type": "array"
+        },
+        "duration_seconds": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duration Seconds"
+        },
+        "status": {
+          "default": "complete",
+          "enum": [
+            "complete",
+            "degraded",
+            "failed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "gaps": {
+          "items": {
+            "$ref": "#/$defs/TranscriptGap"
+          },
+          "title": "Gaps",
+          "type": "array"
+        }
+      },
+      "required": [
+        "schema_version",
+        "source_id",
+        "language",
+        "alignment",
+        "speech_coverage"
+      ],
+      "title": "TranscriptDocument",
+      "type": "object"
+    },
+    "TranscriptGap": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "start_seconds": {
+          "minimum": 0,
+          "title": "Start Seconds",
+          "type": "number"
+        },
+        "end_seconds": {
+          "minimum": 0,
+          "title": "End Seconds",
+          "type": "number"
+        },
+        "reason": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "start_seconds",
+        "end_seconds",
+        "reason"
+      ],
+      "title": "TranscriptGap",
+      "type": "object"
+    },
+    "TranscriptSegment": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "start_seconds": {
+          "minimum": 0,
+          "title": "Start Seconds",
+          "type": "number"
+        },
+        "end_seconds": {
+          "minimum": 0,
+          "title": "End Seconds",
+          "type": "number"
+        },
+        "text_original": {
+          "maxLength": 8000,
+          "minLength": 1,
+          "title": "Text Original",
+          "type": "string"
+        },
+        "language": {
+          "maxLength": 35,
+          "minLength": 2,
+          "title": "Language",
+          "type": "string"
+        },
+        "origin": {
+          "enum": [
+            "sidecar",
+            "manual-caption",
+            "auto-caption",
+            "asr"
+          ],
+          "title": "Origin",
+          "type": "string"
+        },
+        "raw_ref": {
+          "anyOf": [
+            {
+              "maxLength": 100,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Raw Ref"
+        },
+        "speaker_id": {
+          "anyOf": [
+            {
+              "maxLength": 100,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Speaker Id"
+        },
+        "words": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/TranscriptWord"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Words"
+        },
+        "alignment_status": {
+          "default": "unaligned",
+          "enum": [
+            "aligned",
+            "unaligned",
+            "partial"
+          ],
+          "title": "Alignment Status",
+          "type": "string"
+        },
+        "quality_flags": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 20,
+          "title": "Quality Flags",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "start_seconds",
+        "end_seconds",
+        "text_original",
+        "language",
+        "origin"
+      ],
+      "title": "TranscriptSegment",
+      "type": "object"
+    },
+    "TranscriptWord": {
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "start_seconds": {
+          "minimum": 0,
+          "title": "Start Seconds",
+          "type": "number"
+        },
+        "end_seconds": {
+          "minimum": 0,
+          "title": "End Seconds",
+          "type": "number"
+        },
+        "aligned": {
+          "default": true,
+          "title": "Aligned",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "text",
+        "start_seconds",
+        "end_seconds"
+      ],
+      "title": "TranscriptWord",
+      "type": "object"
+    },
+    "Transformation": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "copy",
+            "proxy",
+            "clip",
+            "audio-extract"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "parent_hash": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Hash"
+        },
+        "command_digest": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Command Digest"
+        },
+        "time_offset_seconds": {
+          "default": 0.0,
+          "minimum": 0,
+          "title": "Time Offset Seconds",
+          "type": "number"
+        },
+        "speed_ratio": {
+          "default": 1.0,
+          "exclusiveMinimum": 0,
+          "title": "Speed Ratio",
+          "type": "number"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "Transformation",
+      "type": "object"
+    },
+    "VisualAsset": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "role": {
+          "enum": [
+            "frame",
+            "clip"
+          ],
+          "title": "Role",
+          "type": "string"
+        },
+        "path": {
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*\\\\)(?!.*:)(?!.*(?:^|/)\\.\\.(?:/|$)).+$",
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "mime_type": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Mime Type",
+          "type": "string"
+        },
+        "width": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Width"
+        },
+        "height": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Height"
+        }
+      },
+      "required": [
+        "id",
+        "role",
+        "path",
+        "sha256",
+        "mime_type"
+      ],
+      "title": "VisualAsset",
+      "type": "object"
+    },
+    "VisualCatalogue": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "1.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "source_id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Source Id",
+          "type": "string"
+        },
+        "scenes": {
+          "items": {
+            "$ref": "#/$defs/Scene"
+          },
+          "title": "Scenes",
+          "type": "array"
+        },
+        "assets": {
+          "items": {
+            "$ref": "#/$defs/VisualAsset"
+          },
+          "title": "Assets",
+          "type": "array"
+        },
+        "occurrences": {
+          "items": {
+            "$ref": "#/$defs/FrameOccurrence"
+          },
+          "title": "Occurrences",
+          "type": "array"
+        },
+        "ocr_regions": {
+          "items": {
+            "$ref": "#/$defs/OcrRegion"
+          },
+          "title": "Ocr Regions",
+          "type": "array"
+        },
+        "profile": {
+          "anyOf": [
+            {
+              "enum": [
+                "content",
+                "adaptive"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Profile"
+        },
+        "status": {
+          "default": "complete",
+          "enum": [
+            "complete",
+            "degraded",
+            "failed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "gaps": {
+          "items": {
+            "$ref": "#/$defs/VisualGap"
+          },
+          "title": "Gaps",
+          "type": "array"
+        }
+      },
+      "required": [
+        "schema_version",
+        "source_id"
+      ],
+      "title": "VisualCatalogue",
+      "type": "object"
+    },
+    "VisualGap": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "start_seconds": {
+          "minimum": 0,
+          "title": "Start Seconds",
+          "type": "number"
+        },
+        "end_seconds": {
+          "minimum": 0,
+          "title": "End Seconds",
+          "type": "number"
+        },
+        "reason": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "start_seconds",
+        "end_seconds",
+        "reason"
+      ],
+      "title": "VisualGap",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source_id": {
+      "maxLength": 100,
+      "minLength": 1,
+      "title": "Source Id",
+      "type": "string"
+    },
+    "source_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Source Hash",
+      "type": "string"
+    },
+    "duration_seconds": {
+      "exclusiveMinimum": 0,
+      "title": "Duration Seconds",
+      "type": "number"
+    },
+    "source": {
+      "$ref": "#/$defs/SourceManifest"
+    },
+    "transcript": {
+      "$ref": "#/$defs/TranscriptDocument"
+    },
+    "visual": {
+      "$ref": "#/$defs/VisualCatalogue"
+    },
+    "status": {
+      "enum": [
+        "complete",
+        "degraded",
+        "failed",
+        "unavailable"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "gaps": {
+      "items": {
+        "$ref": "#/$defs/EvidenceGap"
+      },
+      "title": "Gaps",
+      "type": "array"
+    },
+    "artifacts": {
+      "items": {
+        "$ref": "#/$defs/EvidenceArtifact"
+      },
+      "title": "Artifacts",
+      "type": "array"
+    },
+    "transcript_path": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*\\\\)(?!.*:)(?!.*(?:^|/)\\.\\.(?:/|$)).+$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Transcript Path"
+    },
+    "visual_path": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*\\\\)(?!.*:)(?!.*(?:^|/)\\.\\.(?:/|$)).+$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Visual Path"
+    }
+  },
+  "required": [
+    "schema_version",
+    "source_id",
+    "source_hash",
+    "duration_seconds",
+    "source",
+    "transcript",
+    "visual",
+    "status"
+  ],
+  "title": "EvidenceBundle",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "EvidenceBundle 1.0 structural schema. Transcript/visual joins and explicit coverage gaps are enforced in Python."
+}

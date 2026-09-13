@@ -1,0 +1,67 @@
+{
+  "schema_version": "1.0",
+  "source_id": "src-demo",
+  "source_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "duration_seconds": 60.0,
+  "source": {
+    "schema_version": "1.0",
+    "source_id": "src-demo",
+    "kind": "local",
+    "title": "合成示例课程",
+    "media_path": "media/source.mp4",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "duration_seconds": 60.0,
+    "streams": [
+      {"index": 0, "codec_type": "video", "codec_name": "h264", "language": null},
+      {"index": 1, "codec_type": "audio", "codec_name": "aac", "language": "und"}
+    ],
+    "timebase": "1/90000",
+    "local_mode": "copy",
+    "transformations": []
+  },
+  "transcript": {
+    "schema_version": "1.0",
+    "source_id": "src-demo",
+    "language": "und",
+    "raw_artifact_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "alignment": "none",
+    "speech_coverage": {
+      "speech_seconds": 0.0,
+      "covered_seconds": 0.0,
+      "denominator": "timeline",
+      "coverage_ratio": 0.0,
+      "denominator_seconds": 60.0
+    },
+    "segments": [],
+    "duration_seconds": 60.0,
+    "status": "degraded",
+    "gaps": [
+      {"id": "gap-0001", "start_seconds": 0.0, "end_seconds": 60.0, "reason": "no subtitle"}
+    ]
+  },
+  "visual": {
+    "schema_version": "1.0",
+    "source_id": "src-demo",
+    "scenes": [],
+    "assets": [],
+    "occurrences": [],
+    "ocr_regions": [],
+    "profile": "content",
+    "status": "degraded",
+    "gaps": [
+      {"id": "visual-gap-0001", "start_seconds": 0.0, "end_seconds": 60.0, "reason": "frame extraction unavailable"}
+    ]
+  },
+  "status": "degraded",
+  "gaps": [
+    {"id": "transcript-gap-0001", "modality": "transcript", "start_seconds": 0.0, "end_seconds": 60.0, "reason": "no subtitle"},
+    {"id": "visual-gap-0001", "modality": "visual", "start_seconds": 0.0, "end_seconds": 60.0, "reason": "frame extraction unavailable"},
+    {"id": "ocr-unavailable", "modality": "ocr", "start_seconds": 0.0, "end_seconds": 60.0, "reason": "OCR engine is not configured", "status": "unavailable"}
+  ],
+  "artifacts": [
+    {"id": "artifact-transcript", "kind": "transcript-document", "path": "evidence/transcript-document.json", "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"},
+    {"id": "artifact-visual", "kind": "visual-catalogue", "path": "evidence/visual-catalogue.json", "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}
+  ],
+  "transcript_path": "evidence/transcript-document.json",
+  "visual_path": "evidence/visual-catalogue.json"
+}

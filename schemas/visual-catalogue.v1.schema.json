@@ -60,9 +60,30 @@
           "type": "number"
         },
         "timestamp_seconds": {
-          "minimum": 0,
-          "title": "Timestamp Seconds",
-          "type": "number"
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timestamp Seconds"
+        },
+        "actual_source_seconds": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Actual Source Seconds"
         },
         "cluster_id": {
           "anyOf": [
@@ -93,6 +114,14 @@
         },
         "quality": {
           "$ref": "#/$defs/FrameQuality"
+        },
+        "quality_flags": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 20,
+          "title": "Quality Flags",
+          "type": "array"
         }
       },
       "required": [
@@ -100,7 +129,6 @@
         "scene_id",
         "asset_id",
         "requested_seconds",
-        "timestamp_seconds",
         "quality"
       ],
       "title": "FrameOccurrence",
@@ -310,6 +338,41 @@
       ],
       "title": "VisualAsset",
       "type": "object"
+    },
+    "VisualGap": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "start_seconds": {
+          "minimum": 0,
+          "title": "Start Seconds",
+          "type": "number"
+        },
+        "end_seconds": {
+          "minimum": 0,
+          "title": "End Seconds",
+          "type": "number"
+        },
+        "reason": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "start_seconds",
+        "end_seconds",
+        "reason"
+      ],
+      "title": "VisualGap",
+      "type": "object"
     }
   },
   "additionalProperties": false,
@@ -351,6 +414,39 @@
         "$ref": "#/$defs/OcrRegion"
       },
       "title": "Ocr Regions",
+      "type": "array"
+    },
+    "profile": {
+      "anyOf": [
+        {
+          "enum": [
+            "content",
+            "adaptive"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Profile"
+    },
+    "status": {
+      "default": "complete",
+      "enum": [
+        "complete",
+        "degraded",
+        "failed"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "gaps": {
+      "items": {
+        "$ref": "#/$defs/VisualGap"
+      },
+      "title": "Gaps",
       "type": "array"
     }
   },

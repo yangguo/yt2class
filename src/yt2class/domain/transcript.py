@@ -20,6 +20,7 @@ TranscriptOrigin = Literal["sidecar", "manual-caption", "auto-caption", "asr"]
 AlignmentStatus = Literal["aligned", "unaligned", "partial"]
 AlignmentLevel = Literal["none", "sentence", "word"]
 CoverageDenominator = Literal["vad-speech", "timeline"]
+TranscriptStatus = Literal["complete", "degraded", "failed"]
 
 
 class TranscriptWord(StrictModel):
@@ -58,18 +59,70 @@ class SpeechCoverage(StrictModel):
     covered_seconds: Seconds
     denominator: CoverageDenominator
     coverage_ratio: UnitInterval
+    denominator_seconds: Seconds | None = None
+
+    @model_validator(mode="after")
+    def check_semantics(self) -> Self:
+        if self.denominator == "vad-speech" and self.covered_seconds > self.speech_seconds:
+            raise ValueError("covered seconds cannot exceed speech seconds")
+        if self.denominator_seconds is not None:
+            if self.covered_seconds > self.denominator_seconds:
+                raise ValueError("covered seconds cannot exceed denominator seconds")
+            expected = (
+                0.0
+                if self.denominator_seconds == 0
+                else self.covered_seconds / self.denominator_seconds
+            )
+            if abs(self.coverage_ratio - expected) > 1e-6:
+                raise ValueError("coverage ratio must equal covered/denominator seconds")
+        elif self.denominator == "vad-speech":
+            expected = 0.0 if self.speech_seconds == 0 else self.covered_seconds / self.speech_seconds
+            if abs(self.coverage_ratio - expected) > 1e-6:
+                raise ValueError("coverage ratio must equal covered/speech seconds")
+        return self
+
+
+class TranscriptGap(StrictModel):
+    id: Identifier
+    start_seconds: Seconds
+    end_seconds: Seconds
+    reason: str = Field(min_length=1, max_length=240)
+
+    @model_validator(mode="after")
+    def check_range(self) -> Self:
+        validate_half_open(self.start_seconds, self.end_seconds, label="transcript gap")
+        return self
 
 
 class TranscriptDocument(StrictModel):
     schema_version: Literal["1.0"]
     source_id: Identifier
     language: str = Field(min_length=2, max_length=35)
-    raw_artifact_hash: Digest
+    raw_artifact_hash: Digest | None = None
     alignment: AlignmentLevel
     speech_coverage: SpeechCoverage
     segments: list[TranscriptSegment] = Field(default_factory=list)
+    duration_seconds: Seconds | None = None
+    status: TranscriptStatus = "complete"
+    gaps: list[TranscriptGap] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def check_unique_segments(self) -> Self:
         unique_ids(self.segments, label="transcript segment")
+        unique_ids(self.gaps, label="transcript gap")
+        if self.segments and self.raw_artifact_hash is None:
+            raise ValueError("raw_artifact_hash is required when transcript has segments")
+        if self.status == "complete" and (not self.segments or self.gaps):
+            raise ValueError("complete transcript requires segments and no coverage gaps")
+        if (
+            self.status == "complete"
+            and self.speech_coverage.denominator == "timeline"
+            and self.speech_coverage.denominator_seconds is not None
+            and self.speech_coverage.coverage_ratio < 1.0 - 1e-6
+        ):
+            raise ValueError("complete timeline transcript cannot have uncovered duration")
+        if self.duration_seconds is not None:
+            for gap in self.gaps:
+                if gap.end_seconds > self.duration_seconds:
+                    raise ValueError("transcript gap exceeds duration")
         return self

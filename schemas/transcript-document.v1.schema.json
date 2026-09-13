@@ -26,6 +26,19 @@
           "minimum": 0,
           "title": "Coverage Ratio",
           "type": "number"
+        },
+        "denominator_seconds": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Denominator Seconds"
         }
       },
       "required": [
@@ -35,6 +48,41 @@
         "coverage_ratio"
       ],
       "title": "SpeechCoverage",
+      "type": "object"
+    },
+    "TranscriptGap": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "start_seconds": {
+          "minimum": 0,
+          "title": "Start Seconds",
+          "type": "number"
+        },
+        "end_seconds": {
+          "minimum": 0,
+          "title": "End Seconds",
+          "type": "number"
+        },
+        "reason": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "start_seconds",
+        "end_seconds",
+        "reason"
+      ],
+      "title": "TranscriptGap",
       "type": "object"
     },
     "TranscriptSegment": {
@@ -205,9 +253,17 @@
       "type": "string"
     },
     "raw_artifact_hash": {
-      "pattern": "^[0-9a-f]{64}$",
-      "title": "Raw Artifact Hash",
-      "type": "string"
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Raw Artifact Hash"
     },
     "alignment": {
       "enum": [
@@ -227,13 +283,42 @@
       },
       "title": "Segments",
       "type": "array"
+    },
+    "duration_seconds": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Duration Seconds"
+    },
+    "status": {
+      "default": "complete",
+      "enum": [
+        "complete",
+        "degraded",
+        "failed"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "gaps": {
+      "items": {
+        "$ref": "#/$defs/TranscriptGap"
+      },
+      "title": "Gaps",
+      "type": "array"
     }
   },
   "required": [
     "schema_version",
     "source_id",
     "language",
-    "raw_artifact_hash",
     "alignment",
     "speech_coverage"
   ],

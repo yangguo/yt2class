@@ -2,8 +2,8 @@
 
 `yt2class` 把一批 YouTube 课程链接整理成 PPTX 讲义：先下载视频和可用字幕，再按课件画面变化抓取候选帧，做感知去重，最后把经过校验的原始视频截图嵌入 PPT。它不会让模型重新生成课程图片。
 
-> 项目状态：完整目标架构与实施计划已经完成；当前代码是验证媒体处理、
-> 视觉模型选图和 PPTX 输出的原型，尚未实现完整目标系统。
+> 项目状态：M0 合同、M1 Task 1 媒体输入与 M1 Task 2 证据抽取已经落地；
+> 后续的全视频 LLM 理解、编辑核验和 PptxGenJS 交付仍按实施计划推进。
 
 目标系统让 LLM 覆盖整段课程，而不是在目标页数范围内预先截断候选画面：
 
@@ -106,6 +106,24 @@ notes 都带 `[Sources]`，原始截图以字节形式嵌入 PPTX。场景检测
 ```bash
 uv run pytest -q
 ```
+
+## M1 证据抽取能力
+
+当前 M1 stage `yt2class.stages.extract_evidence.extract_evidence` 接受已经校验的
+`SourceManifest` 和本地媒体，按 sidecar → 人工字幕 → 自动字幕 → 可选 ASR 的顺序
+选择语音证据，解析 VTT/SRT 并保留原始文件 hash、语言、来源、重叠和覆盖缺口。
+视觉证据使用 content/adaptive 场景 profile，在每个场景内多点采样并对长静态区间补帧；
+每个 occurrence 保留 requested/actual source timestamp、图片 hash、质量指标和局部感知
+cluster。OCR 是可选能力，未配置时会在 EvidenceBundle 中写出明确的 unavailable gap。
+
+WhisperX 只通过 `yt2class.workers.whisperx_worker` 独立进程调用，普通 `uv sync` 和
+CI 不会下载模型。使用真实模型前需在单独 worker 环境安装 WhisperX；普通测试使用受控
+runner 和合成媒体 fixture，不把 fake JSON 当成真实模型执行。
+
+证据文件写入运行目录的 `evidence/transcript-document.json`、
+`evidence/visual-catalogue.json` 和 `evidence/evidence-bundle.json`，重复运行使用稳定
+ID/hash；字幕或帧单侧失败会保留另一侧并生成可解释 gap。该 stage 不根据最终 PPT 页数
+截断候选证据。
 
 
 ## 完整目标设计
