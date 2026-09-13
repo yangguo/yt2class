@@ -1,0 +1,57 @@
+{
+  "schema_version": "2.0",
+  "title": "演示契约：原始画面复核",
+  "language": "zh-CN",
+  "source": {
+    "kind": "local",
+    "title": "合成示例，非真实课程",
+    "media_path": "media/source.mp4",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "duration_seconds": 60.0
+  },
+  "assets": [
+    {
+      "id": "frame-0001",
+      "path": "frames/frame-0001.jpg",
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "timestamp_seconds": 12.5
+    }
+  ],
+  "evidence": [
+    {
+      "id": "evidence-frame-0001",
+      "kind": "frame",
+      "start_seconds": 12.0,
+      "end_seconds": 14.0,
+      "asset_id": "frame-0001"
+    },
+    {
+      "id": "caption-0001",
+      "kind": "transcript",
+      "start_seconds": 12.0,
+      "end_seconds": 14.0,
+      "text": "请观察屏幕上的例句。",
+      "origin": "manual-caption"
+    }
+  ],
+  "slides": [
+    {
+      "id": "slide-0001",
+      "kind": "other",
+      "title": "观察原始例句",
+      "asset_id": "frame-0001",
+      "points": [
+        {
+          "text": "结合此处字幕复核原始画面。",
+          "evidence_ids": [
+            "evidence-frame-0001",
+            "caption-0001"
+          ]
+        }
+      ]
+    }
+  ],
+  "summary": [],
+  "quiz": [],
+  "analysis_mode": "offline"
+}

@@ -1,0 +1,130 @@
+# yt2class
+
+`yt2class` 把一批 YouTube 课程链接整理成 PPTX 讲义：先下载视频和可用字幕，再按课件画面变化抓取候选帧，做感知去重，最后把经过校验的原始视频截图嵌入 PPT。它不会让模型重新生成课程图片。
+
+## 快速开始
+
+需要 Python 3.11+、`uv`、Node.js、`yt-dlp` 和 `ffmpeg`。macOS 可以先安装外部命令：
+
+```bash
+brew install yt-dlp ffmpeg node
+uv sync
+```
+
+把链接逐行放入 `links.txt`（空行和 `#` 开头的行会被忽略）：
+
+```text
+https://www.youtube.com/watch?v=VXTA-hsnJEY
+```
+
+批量生成：
+
+```bash
+uv run yt2class build \
+  --links links.txt \
+  --output output \
+  --max-slides 12 \
+  --preview
+```
+
+`--force` 会重新分析并渲染；默认会复用已有的完整运行目录。使用
+`--no-preview` 可以跳过逐页 PNG 预览。当前批处理顺序执行，遇到失败会停止后续链接；阶段错误包装尚不完整。
+
+## 模型和人工复核
+
+没有模型凭据时，工具使用离线计划：仍然保留原始画面、时间戳和证据哈希，但解释会明确标注“当前没有可用字幕”，不会假装理解画面。可通过以下任一组环境变量接入兼容视觉模型：
+
+```bash
+export YT2CLASS_MODEL_URL="https://your-endpoint/v1/chat/completions"
+export YT2CLASS_MODEL_KEY="..."
+export YT2CLASS_MODEL="your-vision-model"
+```
+
+也支持 `OPENAI_API_KEY`（可选 `OPENAI_BASE_URL`）以及 Anthropic 兼容配置。
+当前 DeepSeek API 路由会被显式标记为文本模型并自动走离线回退，不会把图片误发给不支持视觉输入的端点；如果要得到逐图中文讲解，请配置真正支持图片输入的模型，或使用人工审核 JSON。
+
+人工审核文件必须是严格 JSON，并且只能用候选帧的 `frame_id`（例如
+`frame-0001`）；图片路径、图片 URL 等字段会被拒绝：
+
+```json
+{
+  "title": "辞書形",
+  "subtitle": "原始视频画面讲义",
+  "slides": [
+    {
+      "frame_id": "frame-0001",
+      "kind": "grammar",
+      "title": "重点画面",
+      "explanation_zh": "这里填写中文解释。",
+      "takeaway": "这里填写复习要点。"
+    }
+  ],
+  "summary": ["要点一", "要点二"],
+  "quiz": [{"prompt": "请填空：____。", "answer": "参考答案"}]
+}
+```
+
+单课人工复核时追加 `--selection-file reviewed.json`。候选帧和编号可在运行目录的
+`frames/`、`analysis/deck.json` 中查看。
+
+## 输出结构
+
+```text
+output/runs/<lesson-id>/
+├── media/source.mp4             # 下载的原视频
+├── frames/frame_*.jpg           # 场景检测后的原始截图
+├── analysis/deck.json            # 绑定截图路径的可审阅规格
+├── analysis/source-notes.txt     # URL、时间戳、路径和 SHA-256 来源清单
+├── analysis/previews/             # --preview 生成的逐页 PNG 和布局 JSON
+├── lesson.pptx
+└── manifest.json                 # 选择模式、字幕状态、截图哈希和讲义计划
+```
+
+当前导出依赖 Artifact Tool（不是 PptxGenJS），还需可用的 setup helper；
+代码会发现 Codex runtime 中的 helper，也可通过
+`YT2CLASS_ARTIFACT_SETUP` 指定兼容的 helper。仅安装上述外部命令不足以
+保证渲染可用。PptxGenJS 迁移与独立预览见下方设计计划。
+
+PPT 固定包含封面、按课程顺序排列的原始画面页、本课总结和小测验；每页 speaker
+notes 都带 `[Sources]`，原始截图以字节形式嵌入 PPTX。场景检测使用画面变化并对
+相似帧去重，不是固定每 15 秒截图；长时间静态课件会按有界间隔补候选帧。
+
+## 本地测试
+
+```bash
+uv run pytest -q
+```
+
+
+## 架构设计与下一阶段
+
+已按现有代码更新原设计文档：
+
+- [架构评估与完整设计](docs/plans/2026-08-11-youtube-to-ppt-design.md)：
+  ingestion、transcript、scene/keyframe、多模态知识分析、截图选择、PptxGenJS、来源回链与复用边界。
+- [分阶段实施计划](docs/plans/2026-08-11-youtube-to-ppt-implementation.md)：
+  具体文件、测试、验收与已完成/待实现状态。
+- [SlideSpec v2 JSON Schema](docs/schemas/slide-spec.v2.schema.json) 和
+  [合成示例](docs/examples/slide-spec.v2.json)。
+
+目前 `build` 仍是 v1：仅接受 YouTube 链接，没有本地视频 CLI、ASR、
+分段 KnowledgeUnit 或 PptxGenJS 后端。**v2 契约与校验已落地，但尚未接入 build。**
+不要把 v2 示例传给当前 `--selection-file`，该选项仍使用上方的 LessonPlan 格式。
+
+开发者可独立校验 v2：
+
+```python
+from pathlib import Path
+from yt2class.slide_spec import SlideSpec, validate_assets
+
+spec = SlideSpec.model_validate_json(Path("analysis/slide-spec.v2.json").read_text())
+validate_assets(spec, Path("output/runs/my-lesson"))
+```
+
+JSON Schema 校验结构，Python 模型额外检查引用、顺序与时间区间；
+`validate_assets` 检查真实文件路径和 SHA-256。示例中的哈希/文件为占位，
+只能演示结构，不能直接渲染。证据引用正确不代表模型解释已通过语义复核。
+
+2026-09-13 初始检查曾有 20 通过、3 失败，原因是 Artifact Tool helper 路径过期；
+现已改为运行时发现并修复。当前完整测试：**42 项通过**；JSON Schema 和示例另经
+Draft 2020-12 验证。尚未运行新的端到端视频生成验收。

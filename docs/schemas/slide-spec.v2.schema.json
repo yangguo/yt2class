@@ -1,0 +1,367 @@
+{
+  "$defs": {
+    "Asset": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "path": {
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*\\\\)(?!.*:)(?!.*(?:^|/)\\.\\.(?:/|$)).+$",
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "timestamp_seconds": {
+          "minimum": 0,
+          "title": "Timestamp Seconds",
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "path",
+        "sha256",
+        "timestamp_seconds"
+      ],
+      "title": "Asset",
+      "type": "object"
+    },
+    "Evidence": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "frame",
+            "transcript"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "start_seconds": {
+          "minimum": 0,
+          "title": "Start Seconds",
+          "type": "number"
+        },
+        "end_seconds": {
+          "minimum": 0,
+          "title": "End Seconds",
+          "type": "number"
+        },
+        "asset_id": {
+          "anyOf": [
+            {
+              "maxLength": 100,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Asset Id"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "maxLength": 4000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Text"
+        },
+        "origin": {
+          "anyOf": [
+            {
+              "enum": [
+                "manual-caption",
+                "auto-caption",
+                "asr"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Origin"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "start_seconds",
+        "end_seconds"
+      ],
+      "title": "Evidence",
+      "type": "object"
+    },
+    "GroundedText": {
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "evidence_ids": {
+          "items": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 20,
+          "minItems": 1,
+          "title": "Evidence Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "text",
+        "evidence_ids"
+      ],
+      "title": "GroundedText",
+      "type": "object"
+    },
+    "LearningSlide": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "grammar",
+            "example",
+            "table",
+            "confusion",
+            "other"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 80,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "asset_id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Asset Id",
+          "type": "string"
+        },
+        "points": {
+          "items": {
+            "$ref": "#/$defs/GroundedText"
+          },
+          "maxItems": 4,
+          "minItems": 1,
+          "title": "Points",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "title",
+        "asset_id",
+        "points"
+      ],
+      "title": "LearningSlide",
+      "type": "object"
+    },
+    "Quiz": {
+      "additionalProperties": false,
+      "properties": {
+        "prompt": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Prompt",
+          "type": "string"
+        },
+        "answer": {
+          "$ref": "#/$defs/GroundedText"
+        }
+      },
+      "required": [
+        "prompt",
+        "answer"
+      ],
+      "title": "Quiz",
+      "type": "object"
+    },
+    "Source": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "youtube",
+            "local"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "media_path": {
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*\\\\)(?!.*:)(?!.*(?:^|/)\\.\\.(?:/|$)).+$",
+          "title": "Media Path",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "duration_seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Duration Seconds",
+          "type": "number"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        }
+      },
+      "required": [
+        "kind",
+        "title",
+        "media_path",
+        "sha256",
+        "duration_seconds"
+      ],
+      "title": "Source",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "2.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "title": {
+      "maxLength": 160,
+      "minLength": 1,
+      "title": "Title",
+      "type": "string"
+    },
+    "language": {
+      "maxLength": 35,
+      "minLength": 2,
+      "title": "Language",
+      "type": "string"
+    },
+    "source": {
+      "$ref": "#/$defs/Source"
+    },
+    "assets": {
+      "items": {
+        "$ref": "#/$defs/Asset"
+      },
+      "minItems": 1,
+      "title": "Assets",
+      "type": "array"
+    },
+    "evidence": {
+      "items": {
+        "$ref": "#/$defs/Evidence"
+      },
+      "minItems": 1,
+      "title": "Evidence",
+      "type": "array"
+    },
+    "slides": {
+      "items": {
+        "$ref": "#/$defs/LearningSlide"
+      },
+      "maxItems": 30,
+      "minItems": 1,
+      "title": "Slides",
+      "type": "array"
+    },
+    "summary": {
+      "items": {
+        "$ref": "#/$defs/GroundedText"
+      },
+      "maxItems": 8,
+      "title": "Summary",
+      "type": "array"
+    },
+    "quiz": {
+      "items": {
+        "$ref": "#/$defs/Quiz"
+      },
+      "maxItems": 8,
+      "title": "Quiz",
+      "type": "array"
+    },
+    "analysis_mode": {
+      "enum": [
+        "model",
+        "reviewed",
+        "offline",
+        "offline-fallback"
+      ],
+      "title": "Analysis Mode",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "title",
+    "language",
+    "source",
+    "assets",
+    "evidence",
+    "slides",
+    "summary",
+    "quiz",
+    "analysis_mode"
+  ],
+  "title": "SlideSpec",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Trusted bound SlideSpec v2. Structural validation only; use Python validation for joins and validate_assets for file integrity."
+}

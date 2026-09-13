@@ -1,0 +1,25 @@
+# Local environments and caches
+.venv/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+.DS_Store
+
+# Downloaded source media and generated runs can be very large and may contain
+# user-provided or copyrighted material. Keep them local unless explicitly
+# publishing a fixture.
+*.mp4
+*.mkv
+*.webm
+*.mov
+output/
+test-output/
+
+# Per-machine renderer and model configuration
+.env
+.env.*
+!*.env.example
+
+# Local input lists may contain private URLs.
+links.txt
+test-links.txt
