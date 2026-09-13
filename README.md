@@ -118,8 +118,22 @@ uv run pytest -q
 - [分阶段实施计划](docs/plans/2026-08-11-youtube-to-ppt-implementation.md)：
   从合同与复用实验到完整视频理解、PPTX 交付、恢复、hybrid 视频模型和评测。
 - [SlideSpec v2 JSON Schema](docs/schemas/slide-spec.v2.schema.json) 和
-  [合成示例](docs/examples/slide-spec.v2.json) 是原型阶段合同；完整目标使用设计中的
-  SlideSpec 3.0，尚未生成 3.0 schema。
+  [合成示例](docs/examples/slide-spec.v2.json) 仍是原型合同，且 `slide_spec.py` 未改。
+  M0 已在 `schemas/` 增加 SlideSpec 3.0 与其它关键文档的 Draft 2020-12 schema；
+  它们是加法合同，**还没有**接到 `yt2class build`。
+
+## M0 合同基线
+
+里程碑 M0 只建立 3.0 合同与复用门槛，不重写原型流水线：
+
+- 领域模型在 `src/yt2class/domain/`（含跨文档引用闭包和 v2→3.0 迁移报告）。
+- summarize 采用结论见 [docs/experiments/summarize-adoption.md](docs/experiments/summarize-adoption.md)：默认仍走 yt-dlp/FFmpeg。
+- provider / renderer 抽象在 `src/yt2class/adapters/providers/` 与 `src/yt2class/adapters/render/`；阶段编排留给 M1+。
+
+```bash
+uv run pytest tests/contract -q
+uv run pytest -q
+```
 
 目前 `build` 仍是原型：仅接受 YouTube 链接，没有本地视频 CLI、ASR、
 整课 CourseMap、分段 KnowledgeUnit、事实核验或 PptxGenJS 后端。v2 契约与校验
