@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import errno
 import fcntl
 import os
 from pathlib import Path
 import re
+import stat
 from typing import Self
 
 
@@ -28,6 +30,25 @@ _RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _HELD_LOCKS: set[str] = set()
 
 
+def _close_lock_fd(fd: int | None) -> None:
+    if fd is None:
+        return
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+
+
+def _require_safe_lock_inode(fd: int, path: Path) -> None:
+    """Reject symlink targets, non-files, and extra hard links before writing."""
+
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode):
+        raise WorkspacePathError(f"workspace lock must be a regular file: {path}")
+    if info.st_nlink != 1:
+        raise WorkspacePathError(f"workspace lock must not be hard-linked: {path}")
+
+
 @dataclass
 class _WriteLock:
     """Exclusive run lock via flock. The lock file is kept; release is flock close."""
@@ -40,31 +61,61 @@ class _WriteLock:
         key = str(self.path)
         if key in _HELD_LOCKS:
             raise WorkspaceBusy(f"workspace is already locked: {self.path}")
+        flags = os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        if hasattr(os, "O_NONBLOCK"):
+            flags |= os.O_NONBLOCK
         try:
-            self._fd = os.open(self.path, os.O_CREAT | os.O_RDWR, 0o600)
+            self._fd = os.open(self.path, flags, 0o600)
         except OSError as error:
+            if error.errno == errno.ELOOP:
+                raise WorkspacePathError(
+                    f"workspace lock must not be a symlink: {self.path}"
+                ) from error
+            if error.errno == errno.EISDIR:
+                raise WorkspacePathError(
+                    f"workspace lock must be a regular file: {self.path}"
+                ) from error
             raise WorkspaceError(f"cannot create workspace lock: {self.path}") from error
+        try:
+            _require_safe_lock_inode(self._fd, self.path)
+        except (OSError, WorkspacePathError) as error:
+            _close_lock_fd(self._fd)
+            self._fd = None
+            if isinstance(error, WorkspacePathError):
+                raise
+            raise WorkspaceError(f"cannot inspect workspace lock: {self.path}") from error
         try:
             fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
-            os.close(self._fd)
+            _close_lock_fd(self._fd)
             self._fd = None
             raise WorkspaceBusy(f"workspace is already locked: {self.path}") from error
         except OSError as error:
-            os.close(self._fd)
+            _close_lock_fd(self._fd)
             self._fd = None
             raise WorkspaceError(f"cannot lock workspace: {self.path}") from error
         try:
+            _require_safe_lock_inode(self._fd, self.path)
             os.lseek(self._fd, 0, os.SEEK_SET)
             os.ftruncate(self._fd, 0)
             os.write(self._fd, f"pid={os.getpid()}\n".encode("ascii"))
             os.fsync(self._fd)
+        except WorkspacePathError:
+            try:
+                fcntl.flock(self._fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            _close_lock_fd(self._fd)
+            self._fd = None
+            raise
         except OSError:
             try:
                 fcntl.flock(self._fd, fcntl.LOCK_UN)
             except OSError:
                 pass
-            os.close(self._fd)
+            _close_lock_fd(self._fd)
             self._fd = None
             raise
         self._key = key

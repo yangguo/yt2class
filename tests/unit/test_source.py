@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import multiprocessing
+import os
 from pathlib import Path
 import time
 
@@ -218,3 +219,48 @@ def test_lock_handoff_cannot_produce_dual_owners(tmp_path: Path):
                 pass
     assert workspace.lock_path.is_file()
     assert workspace.lock_path.stat().st_ino == inode
+
+
+def test_write_lock_rejects_symlink_and_leaves_external_target_untouched(tmp_path: Path):
+    workspace = Workspace.create(tmp_path, run_id="lock-symlink")
+    outside = tmp_path / "outside-secret.txt"
+    original = "do-not-overwrite\n"
+    outside.write_text(original, encoding="ascii")
+    workspace.lock_path.symlink_to(outside)
+
+    with pytest.raises(WorkspacePathError, match="symlink"):
+        with workspace.write_lock():
+            pass
+
+    assert outside.read_text(encoding="ascii") == original
+    assert workspace.lock_path.is_symlink()
+    assert workspace.lock_path.readlink() == outside
+
+
+def test_write_lock_rejects_hard_link_to_external_file(tmp_path: Path):
+    workspace = Workspace.create(tmp_path, run_id="lock-hardlink")
+    outside = tmp_path / "outside-hard.txt"
+    original = "external-hardlink\n"
+    outside.write_text(original, encoding="ascii")
+    os.link(outside, workspace.lock_path)
+
+    with pytest.raises(WorkspacePathError, match="hard-linked"):
+        with workspace.write_lock():
+            pass
+
+    assert outside.read_text(encoding="ascii") == original
+    assert workspace.lock_path.stat().st_nlink == 2
+
+
+def test_write_lock_rejects_directory_and_fifo_lock_paths(tmp_path: Path):
+    directory_workspace = Workspace.create(tmp_path, run_id="lock-dir")
+    directory_workspace.lock_path.mkdir()
+    with pytest.raises(WorkspacePathError, match="regular file"):
+        with directory_workspace.write_lock():
+            pass
+
+    fifo_workspace = Workspace.create(tmp_path, run_id="lock-fifo")
+    os.mkfifo(fifo_workspace.lock_path)
+    with pytest.raises(WorkspacePathError, match="regular file"):
+        with fifo_workspace.write_lock():
+            pass
