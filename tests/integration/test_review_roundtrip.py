@@ -43,7 +43,25 @@ def _verified_bundle():
 
 
 def test_review_bundle_shows_frames_claims_transcript_time_links_and_omissions():
-    outcome, transcript, visual, topics = _verified_bundle()
+    doc, topics, transcript, visual = lecture_knowledge()
+    provider = FakeProvider(frames_caps())
+    plan = edit_deck(
+        doc,
+        course_map=topics,
+        transcript=transcript,
+        visual=visual,
+        provider=provider,
+        target_pages=4,
+        max_pages=4,
+    )
+    outcome = verify_claims(
+        doc,
+        plan=plan,
+        transcript=transcript,
+        visual=visual,
+        provider=provider,
+        quality_mode="draft",
+    )
     bundle = build_review_bundle(
         knowledge=outcome.knowledge,
         plan=outcome.plan,

@@ -582,7 +582,11 @@ def edit_deck(
         "allowed_frame_ids": sorted(allowed_frames),
         "constraints": {"external_knowledge": False, "page_budget": max_pages},
     }
-    request = model_request(request_id="editor:plan", role="editor", payload=payload)
+    request = model_request(
+        request_id=f"editor:plan:{order}:{target_pages}:{max_pages}",
+        role="editor",
+        payload=payload,
+    )
     _attach_payload(provider, payload)
     result = provider.complete(request, cancel_event=cancel_event)
     try:

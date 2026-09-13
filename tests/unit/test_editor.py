@@ -171,6 +171,7 @@ def test_representative_examples_are_preferred_over_all_examples():
     example_claims = [
         claim_id
         for page in plan.pages
+        if page.type == "content"
         for claim_id in page.claim_ids
         if claim_id.startswith("claim-ex-")
     ]

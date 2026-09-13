@@ -620,7 +620,10 @@ def verify_claims(
         "constraints": {"model_agreement_is_not_sufficient": True},
     }
     structured = _complete_verifier(
-        provider, payload, request_id="verifier:batch", cancel_event=cancel_event
+        provider,
+        payload,
+        request_id=f"verifier:batch:{'-'.join(sorted(target_ids))[:80]}",
+        cancel_event=cancel_event,
     )
     if structured and isinstance(structured.get("verdicts"), list):
         for raw in structured["verdicts"]:
