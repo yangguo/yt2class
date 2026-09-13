@@ -1,0 +1,224 @@
+"""Provider capability and request/result contracts. No stage orchestration."""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from threading import Event
+from typing import Any, Literal
+
+from pydantic import Field, model_validator
+
+from yt2class.domain.common import (
+    Digest,
+    Identifier,
+    Seconds,
+    StrictModel,
+    validate_half_open,
+)
+
+Modality = Literal["text", "image", "audio", "video"]
+ProviderRole = Literal["outline", "segment", "editor", "verifier"]
+DesiredModality = Literal["frame", "clip", "audio"]
+RemoteRetention = Literal["none", "ephemeral", "unknown"]
+
+
+class ProviderError(RuntimeError):
+    code: str = "provider_error"
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
+class UnsupportedModality(ProviderError):
+    code = "unsupported_modality"
+
+
+class ContextOverflow(ProviderError):
+    code = "context_overflow"
+
+
+class MissingStructuredOutput(ProviderError):
+    code = "missing_structured_output"
+
+
+class RequestCancelled(ProviderError):
+    code = "cancelled"
+
+
+class RequestTimeout(ProviderError):
+    code = "timeout"
+
+
+class MissingUsage(ProviderError):
+    code = "missing_usage"
+
+
+class ProviderCapabilities(StrictModel):
+    """Declared by configuration and smoke tests, not inferred from endpoint names."""
+
+    supports_images: bool
+    supports_video: bool
+    supports_audio: bool
+    supports_structured_output: bool
+    reports_usage: bool
+    max_input_tokens: int = Field(gt=0)
+    max_output_tokens: int = Field(gt=0)
+    max_images: int = Field(ge=0)
+    max_video_seconds: float = Field(ge=0, allow_inf_nan=False)
+    remote_retention: RemoteRetention = "none"
+    can_delete_remote: bool = False
+
+
+class Usage(StrictModel):
+    request_id: Identifier
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    image_count: int = Field(default=0, ge=0)
+    video_seconds: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+    estimated_usd: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+
+
+class EvidenceRequest(StrictModel):
+    start_seconds: Seconds
+    end_seconds: Seconds
+    reason: str = Field(min_length=1, max_length=240)
+    desired_modality: DesiredModality
+
+    @model_validator(mode="after")
+    def check_range(self) -> EvidenceRequest:
+        validate_half_open(self.start_seconds, self.end_seconds, label="evidence request")
+        return self
+
+
+class ModelRequest(StrictModel):
+    request_id: Identifier
+    role: ProviderRole
+    modalities: list[Modality] = Field(min_length=1)
+    estimated_input_tokens: int = Field(ge=0)
+    estimated_output_tokens: int = Field(ge=0)
+    image_count: int = Field(default=0, ge=0)
+    video_seconds: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+    require_structured_output: bool = True
+    payload_digest: Digest | None = None
+
+
+class ModelResult(StrictModel):
+    request_id: Identifier
+    structured: dict[str, Any] | None = None
+    usage: Usage
+    evidence_requests: list[EvidenceRequest] = Field(default_factory=list)
+
+
+class Provider(ABC):
+    """Shared contract checks. Concrete adapters implement ``_complete`` only."""
+
+    def __init__(self, capabilities: ProviderCapabilities) -> None:
+        self.capabilities = capabilities
+        self._completed: dict[str, ModelResult] = {}
+
+    def check_request(self, request: ModelRequest) -> None:
+        caps = self.capabilities
+        if "image" in request.modalities and not caps.supports_images:
+            raise UnsupportedModality("provider does not support image modality")
+        if "audio" in request.modalities and not caps.supports_audio:
+            raise UnsupportedModality("provider does not support audio modality")
+        if "video" in request.modalities and not caps.supports_video:
+            raise UnsupportedModality("provider does not support video modality")
+        if request.image_count > 0 and not caps.supports_images:
+            raise UnsupportedModality("provider does not support image payloads")
+        if request.video_seconds > 0 and not caps.supports_video:
+            raise UnsupportedModality("provider does not support video payloads")
+        if request.require_structured_output and not caps.supports_structured_output:
+            raise MissingStructuredOutput("provider does not support structured output")
+        if (
+            request.estimated_input_tokens > caps.max_input_tokens
+            or request.estimated_output_tokens > caps.max_output_tokens
+            or request.image_count > caps.max_images
+            or request.video_seconds > caps.max_video_seconds
+        ):
+            raise ContextOverflow("request exceeds provider context or payload limits")
+
+    def ensure_result(self, request: ModelRequest, result: ModelResult | None) -> ModelResult:
+        if result is None or result.usage is None:
+            raise MissingUsage("provider result missing usage")
+        if result.request_id != request.request_id:
+            raise ProviderError("provider result request_id does not match the request")
+        if result.usage.request_id != request.request_id:
+            raise ProviderError("usage request_id does not match the request")
+        if not self.capabilities.reports_usage and (
+            result.usage.input_tokens or result.usage.output_tokens
+        ):
+            # Still accept explicit zeros; nonzero usage without reporting is fine if present.
+            pass
+        if request.require_structured_output and result.structured is None:
+            raise MissingStructuredOutput("provider result missing structured output")
+        return result
+
+    def complete(
+        self,
+        request: ModelRequest,
+        *,
+        cancel_event: Event | None = None,
+    ) -> ModelResult:
+        self.check_request(request)
+        if cancel_event is not None and cancel_event.is_set():
+            raise RequestCancelled(f"request {request.request_id} cancelled")
+        cached = self._completed.get(request.request_id)
+        if cached is not None:
+            return cached
+        result = self.ensure_result(request, self._complete(request, cancel_event=cancel_event))
+        self._completed[request.request_id] = result
+        return result
+
+    @abstractmethod
+    def _complete(
+        self,
+        request: ModelRequest,
+        *,
+        cancel_event: Event | None = None,
+    ) -> ModelResult:
+        raise NotImplementedError
+
+
+class FakeProvider(Provider):
+    """Deterministic provider for contract tests. Not used by the prototype build."""
+
+    def __init__(
+        self,
+        capabilities: ProviderCapabilities,
+        *,
+        structured: dict[str, Any] | None = None,
+        omit_structured: bool = False,
+        omit_usage: bool = False,
+        timeout: bool = False,
+        cancel: bool = False,
+    ) -> None:
+        super().__init__(capabilities)
+        self._structured = None if omit_structured else (structured or {"ok": True})
+        self._omit_usage = omit_usage
+        self._timeout = timeout
+        self._cancel = cancel
+
+    def _complete(
+        self,
+        request: ModelRequest,
+        *,
+        cancel_event: Event | None = None,
+    ) -> ModelResult:
+        if self._timeout:
+            raise RequestTimeout(f"request {request.request_id} timed out")
+        if self._cancel or (cancel_event is not None and cancel_event.is_set()):
+            raise RequestCancelled(f"request {request.request_id} cancelled")
+        if self._omit_usage:
+            return None  # type: ignore[return-value]
+        return ModelResult(
+            request_id=request.request_id,
+            structured=self._structured,
+            usage=Usage(
+                request_id=request.request_id,
+                input_tokens=request.estimated_input_tokens,
+                output_tokens=1,
+                image_count=request.image_count,
+                video_seconds=request.video_seconds,
+            ),
+        )
