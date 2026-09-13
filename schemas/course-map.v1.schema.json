@@ -1,0 +1,138 @@
+{
+  "$defs": {
+    "Topic": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "goal": {
+          "maxLength": 400,
+          "minLength": 1,
+          "title": "Goal",
+          "type": "string"
+        },
+        "start_seconds": {
+          "minimum": 0,
+          "title": "Start Seconds",
+          "type": "number"
+        },
+        "end_seconds": {
+          "minimum": 0,
+          "title": "End Seconds",
+          "type": "number"
+        },
+        "evidence_ids": {
+          "items": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 50,
+          "title": "Evidence Ids",
+          "type": "array"
+        },
+        "speculative": {
+          "default": false,
+          "title": "Speculative",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "goal",
+        "start_seconds",
+        "end_seconds"
+      ],
+      "title": "Topic",
+      "type": "object"
+    },
+    "TopicRelation": {
+      "additionalProperties": false,
+      "properties": {
+        "from_topic_id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "From Topic Id",
+          "type": "string"
+        },
+        "to_topic_id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "To Topic Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "prerequisite",
+            "follows",
+            "contrasts"
+          ],
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "from_topic_id",
+        "to_topic_id",
+        "kind"
+      ],
+      "title": "TopicRelation",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source_id": {
+      "maxLength": 100,
+      "minLength": 1,
+      "title": "Source Id",
+      "type": "string"
+    },
+    "topics": {
+      "items": {
+        "$ref": "#/$defs/Topic"
+      },
+      "title": "Topics",
+      "type": "array"
+    },
+    "relations": {
+      "items": {
+        "$ref": "#/$defs/TopicRelation"
+      },
+      "title": "Relations",
+      "type": "array"
+    },
+    "unverified_guesses": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 50,
+      "title": "Unverified Guesses",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "source_id"
+  ],
+  "title": "CourseMap",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "CourseMap 1.0 structural schema. Topic relations and speculative-field policy are enforced in Python."
+}

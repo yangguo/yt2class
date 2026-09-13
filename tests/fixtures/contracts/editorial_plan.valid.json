@@ -1,0 +1,30 @@
+{
+  "schema_version": "1.0",
+  "source_id": "src-demo",
+  "target_pages": 4,
+  "max_pages": 20,
+  "order": "chronological",
+  "pages": [
+    {
+      "id": "intent-cover",
+      "type": "cover",
+      "layout": null,
+      "title": "合成示例课程",
+      "claim_ids": [],
+      "frame_ids": [],
+      "notes": "",
+      "selection_reason": "封面"
+    },
+    {
+      "id": "intent-1",
+      "type": "content",
+      "layout": "image-text",
+      "title": "原始课程画面",
+      "claim_ids": ["claim-1"],
+      "frame_ids": ["frame-001"],
+      "notes": "",
+      "selection_reason": "唯一可读原图"
+    }
+  ],
+  "omissions": []
+}

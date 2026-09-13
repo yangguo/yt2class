@@ -1,0 +1,36 @@
+{
+  "schema_version": "1.0",
+  "source_id": "src-demo",
+  "units": [
+    {
+      "id": "unit-1",
+      "topic_id": "topic-1",
+      "segment_ids": ["seg-001"],
+      "start_seconds": 10.0,
+      "end_seconds": 20.0,
+      "kind": "concept",
+      "claims": [
+        {
+          "id": "claim-1",
+          "text": "此画面为课程原始截图。",
+          "evidence_ids": ["cap-001", "frame-001"],
+          "status": "supported",
+          "qualifiers": [],
+          "modality": "both",
+          "provenance": "source"
+        }
+      ],
+      "relations": [],
+      "visual_candidates": [
+        {
+          "frame_id": "frame-001",
+          "relevance": 1.0,
+          "legibility": 0.8,
+          "selection_reason": "完整课件画面"
+        }
+      ],
+      "uncertainty": [],
+      "evidence_requests": []
+    }
+  ]
+}

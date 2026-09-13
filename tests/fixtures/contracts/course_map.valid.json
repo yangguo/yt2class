@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0",
+  "source_id": "src-demo",
+  "topics": [
+    {
+      "id": "topic-1",
+      "title": "原始截图",
+      "goal": "识别课程画面来源",
+      "start_seconds": 0.0,
+      "end_seconds": 60.0,
+      "evidence_ids": ["cap-001", "frame-001"],
+      "speculative": false
+    }
+  ],
+  "relations": [],
+  "unverified_guesses": []
+}

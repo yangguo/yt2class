@@ -1,0 +1,872 @@
+{
+  "$defs": {
+    "BoundingBox": {
+      "additionalProperties": false,
+      "properties": {
+        "x": {
+          "minimum": 0,
+          "title": "X",
+          "type": "number"
+        },
+        "y": {
+          "minimum": 0,
+          "title": "Y",
+          "type": "number"
+        },
+        "width": {
+          "exclusiveMinimum": 0,
+          "title": "Width",
+          "type": "number"
+        },
+        "height": {
+          "exclusiveMinimum": 0,
+          "title": "Height",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "width",
+        "height"
+      ],
+      "title": "BoundingBox",
+      "type": "object"
+    },
+    "ClipEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "clip",
+          "title": "Kind",
+          "type": "string"
+        },
+        "asset_id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Asset Id",
+          "type": "string"
+        },
+        "start_seconds": {
+          "minimum": 0,
+          "title": "Start Seconds",
+          "type": "number"
+        },
+        "end_seconds": {
+          "minimum": 0,
+          "title": "End Seconds",
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "asset_id",
+        "start_seconds",
+        "end_seconds"
+      ],
+      "title": "ClipEvidence",
+      "type": "object"
+    },
+    "FrameEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "frame",
+          "title": "Kind",
+          "type": "string"
+        },
+        "asset_id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Asset Id",
+          "type": "string"
+        },
+        "timestamp_seconds": {
+          "minimum": 0,
+          "title": "Timestamp Seconds",
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "asset_id",
+        "timestamp_seconds"
+      ],
+      "title": "FrameEvidence",
+      "type": "object"
+    },
+    "OcrEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "ocr",
+          "title": "Kind",
+          "type": "string"
+        },
+        "parent_frame_evidence_id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Parent Frame Evidence Id",
+          "type": "string"
+        },
+        "bbox": {
+          "$ref": "#/$defs/BoundingBox"
+        },
+        "text": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "engine": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Engine",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "parent_frame_evidence_id",
+        "bbox",
+        "text",
+        "engine"
+      ],
+      "title": "OcrEvidence",
+      "type": "object"
+    },
+    "QuizQuestion": {
+      "additionalProperties": false,
+      "properties": {
+        "prompt": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Prompt",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "source-question",
+            "generated-practice"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "answer_claim_ids": {
+          "items": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 4,
+          "title": "Answer Claim Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "prompt",
+        "kind"
+      ],
+      "title": "QuizQuestion",
+      "type": "object"
+    },
+    "RenderPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "max_pages": {
+          "maximum": 100,
+          "minimum": 4,
+          "title": "Max Pages",
+          "type": "integer"
+        },
+        "min_font_pt": {
+          "exclusiveMinimum": 0,
+          "title": "Min Font Pt",
+          "type": "number"
+        },
+        "aspect_ratio": {
+          "const": "16:9",
+          "title": "Aspect Ratio",
+          "type": "string"
+        },
+        "overflow": {
+          "const": "repaginate-or-fail",
+          "title": "Overflow",
+          "type": "string"
+        }
+      },
+      "required": [
+        "max_pages",
+        "min_font_pt",
+        "aspect_ratio",
+        "overflow"
+      ],
+      "title": "RenderPolicy",
+      "type": "object"
+    },
+    "SequenceStep": {
+      "additionalProperties": false,
+      "properties": {
+        "asset_id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Asset Id",
+          "type": "string"
+        },
+        "claim_ids": {
+          "items": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 4,
+          "minItems": 1,
+          "title": "Claim Ids",
+          "type": "array"
+        },
+        "caption": {
+          "anyOf": [
+            {
+              "maxLength": 160,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Caption"
+        }
+      },
+      "required": [
+        "asset_id",
+        "claim_ids"
+      ],
+      "title": "SequenceStep",
+      "type": "object"
+    },
+    "SlideAsset": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "role": {
+          "enum": [
+            "frame",
+            "clip",
+            "audio",
+            "transcript"
+          ],
+          "title": "Role",
+          "type": "string"
+        },
+        "path": {
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*\\\\)(?!.*:)(?!.*(?:^|/)\\.\\.(?:/|$)).+$",
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "mime_type": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Mime Type",
+          "type": "string"
+        },
+        "timestamp_seconds": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timestamp Seconds"
+        },
+        "start_seconds": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Start Seconds"
+        },
+        "end_seconds": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End Seconds"
+        },
+        "derived_from": {
+          "anyOf": [
+            {
+              "maxLength": 100,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Derived From"
+        },
+        "transformations": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 10,
+          "title": "Transformations",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "role",
+        "path",
+        "sha256",
+        "mime_type"
+      ],
+      "title": "SlideAsset",
+      "type": "object"
+    },
+    "SlideClaim": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "text": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "evidence_ids": {
+          "items": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 20,
+          "minItems": 1,
+          "title": "Evidence Ids",
+          "type": "array"
+        },
+        "verdict": {
+          "enum": [
+            "supported",
+            "contradicted",
+            "insufficient"
+          ],
+          "title": "Verdict",
+          "type": "string"
+        },
+        "provenance": {
+          "enum": [
+            "source",
+            "generated-practice"
+          ],
+          "title": "Provenance",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "text",
+        "evidence_ids",
+        "verdict",
+        "provenance"
+      ],
+      "title": "SlideClaim",
+      "type": "object"
+    },
+    "SlidePage": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "cover",
+            "content",
+            "summary",
+            "quiz"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 80,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "layout": {
+          "anyOf": [
+            {
+              "enum": [
+                "image-text",
+                "text",
+                "comparison",
+                "sequence"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Layout"
+        },
+        "subtitle": {
+          "anyOf": [
+            {
+              "maxLength": 160,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Subtitle"
+        },
+        "source_id": {
+          "anyOf": [
+            {
+              "maxLength": 100,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Id"
+        },
+        "hero_asset_id": {
+          "anyOf": [
+            {
+              "maxLength": 100,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hero Asset Id"
+        },
+        "point_claim_ids": {
+          "items": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 4,
+          "title": "Point Claim Ids",
+          "type": "array"
+        },
+        "frame_asset_ids": {
+          "items": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 3,
+          "title": "Frame Asset Ids",
+          "type": "array"
+        },
+        "captions": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 3,
+          "title": "Captions",
+          "type": "array"
+        },
+        "steps": {
+          "items": {
+            "$ref": "#/$defs/SequenceStep"
+          },
+          "title": "Steps",
+          "type": "array"
+        },
+        "claim_ids": {
+          "items": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 4,
+          "title": "Claim Ids",
+          "type": "array"
+        },
+        "questions": {
+          "items": {
+            "$ref": "#/$defs/QuizQuestion"
+          },
+          "title": "Questions",
+          "type": "array"
+        },
+        "citation_ids": {
+          "items": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Citation Ids",
+          "type": "array"
+        },
+        "notes_claim_ids": {
+          "items": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Notes Claim Ids",
+          "type": "array"
+        },
+        "continuation_of": {
+          "anyOf": [
+            {
+              "maxLength": 100,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Continuation Of"
+        },
+        "notes": {
+          "default": "",
+          "maxLength": 8000,
+          "title": "Notes",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "title"
+      ],
+      "title": "SlidePage",
+      "type": "object"
+    },
+    "SlideSource": {
+      "additionalProperties": false,
+      "properties": {
+        "source_id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Source Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "youtube",
+            "local"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "media_path": {
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*\\\\)(?!.*:)(?!.*(?:^|/)\\.\\.(?:/|$)).+$",
+          "title": "Media Path",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "duration_seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Duration Seconds",
+          "type": "number"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        }
+      },
+      "required": [
+        "source_id",
+        "kind",
+        "title",
+        "media_path",
+        "sha256",
+        "duration_seconds"
+      ],
+      "title": "SlideSource",
+      "type": "object"
+    },
+    "Theme": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "const": "course-white-blue",
+          "title": "Name",
+          "type": "string"
+        },
+        "font_family": {
+          "maxLength": 80,
+          "minLength": 1,
+          "title": "Font Family",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "font_family"
+      ],
+      "title": "Theme",
+      "type": "object"
+    },
+    "TranscriptEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "transcript",
+          "title": "Kind",
+          "type": "string"
+        },
+        "asset_id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Asset Id",
+          "type": "string"
+        },
+        "start_seconds": {
+          "minimum": 0,
+          "title": "Start Seconds",
+          "type": "number"
+        },
+        "end_seconds": {
+          "minimum": 0,
+          "title": "End Seconds",
+          "type": "number"
+        },
+        "text": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "origin": {
+          "enum": [
+            "sidecar",
+            "manual-caption",
+            "auto-caption",
+            "asr"
+          ],
+          "title": "Origin",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "asset_id",
+        "start_seconds",
+        "end_seconds",
+        "text",
+        "origin"
+      ],
+      "title": "TranscriptEvidence",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "3.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "spec_revision": {
+      "minimum": 1,
+      "title": "Spec Revision",
+      "type": "integer"
+    },
+    "producer_version": {
+      "maxLength": 80,
+      "minLength": 1,
+      "title": "Producer Version",
+      "type": "string"
+    },
+    "analysis_mode": {
+      "enum": [
+        "frames",
+        "native-video",
+        "hybrid"
+      ],
+      "title": "Analysis Mode",
+      "type": "string"
+    },
+    "quality_status": {
+      "enum": [
+        "verified",
+        "review_required",
+        "incomplete",
+        "evidence-only"
+      ],
+      "title": "Quality Status",
+      "type": "string"
+    },
+    "source": {
+      "$ref": "#/$defs/SlideSource"
+    },
+    "assets": {
+      "items": {
+        "$ref": "#/$defs/SlideAsset"
+      },
+      "title": "Assets",
+      "type": "array"
+    },
+    "evidence": {
+      "items": {
+        "discriminator": {
+          "mapping": {
+            "clip": "#/$defs/ClipEvidence",
+            "frame": "#/$defs/FrameEvidence",
+            "ocr": "#/$defs/OcrEvidence",
+            "transcript": "#/$defs/TranscriptEvidence"
+          },
+          "propertyName": "kind"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/$defs/FrameEvidence"
+          },
+          {
+            "$ref": "#/$defs/TranscriptEvidence"
+          },
+          {
+            "$ref": "#/$defs/ClipEvidence"
+          },
+          {
+            "$ref": "#/$defs/OcrEvidence"
+          }
+        ]
+      },
+      "title": "Evidence",
+      "type": "array"
+    },
+    "claims": {
+      "items": {
+        "$ref": "#/$defs/SlideClaim"
+      },
+      "title": "Claims",
+      "type": "array"
+    },
+    "slides": {
+      "items": {
+        "$ref": "#/$defs/SlidePage"
+      },
+      "minItems": 1,
+      "title": "Slides",
+      "type": "array"
+    },
+    "theme": {
+      "$ref": "#/$defs/Theme"
+    },
+    "render_policy": {
+      "$ref": "#/$defs/RenderPolicy"
+    }
+  },
+  "required": [
+    "schema_version",
+    "spec_revision",
+    "producer_version",
+    "analysis_mode",
+    "quality_status",
+    "source",
+    "slides",
+    "theme",
+    "render_policy"
+  ],
+  "title": "SlideSpecV3",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "SlideSpec 3.0 structural schema. Layout unions, claim/evidence/asset closure, and verified-vs-evidence-only policy are enforced in Python. Path/hash filesystem binding is deferred to binder tests."
+}

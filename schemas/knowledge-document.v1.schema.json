@@ -1,0 +1,352 @@
+{
+  "$defs": {
+    "KnowledgeClaim": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "text": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "evidence_ids": {
+          "items": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 20,
+          "minItems": 1,
+          "title": "Evidence Ids",
+          "type": "array"
+        },
+        "status": {
+          "enum": [
+            "draft",
+            "supported",
+            "contradicted",
+            "insufficient",
+            "unresolved"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "qualifiers": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 20,
+          "title": "Qualifiers",
+          "type": "array"
+        },
+        "modality": {
+          "default": "both",
+          "enum": [
+            "audio",
+            "visual",
+            "both"
+          ],
+          "title": "Modality",
+          "type": "string"
+        },
+        "provenance": {
+          "default": "source",
+          "enum": [
+            "source",
+            "generated-practice"
+          ],
+          "title": "Provenance",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "text",
+        "evidence_ids",
+        "status"
+      ],
+      "title": "KnowledgeClaim",
+      "type": "object"
+    },
+    "KnowledgeEvidenceRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "start_seconds": {
+          "minimum": 0,
+          "title": "Start Seconds",
+          "type": "number"
+        },
+        "end_seconds": {
+          "minimum": 0,
+          "title": "End Seconds",
+          "type": "number"
+        },
+        "reason": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        },
+        "desired_modality": {
+          "enum": [
+            "frame",
+            "clip",
+            "audio"
+          ],
+          "title": "Desired Modality",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start_seconds",
+        "end_seconds",
+        "reason",
+        "desired_modality"
+      ],
+      "title": "KnowledgeEvidenceRequest",
+      "type": "object"
+    },
+    "KnowledgeRelation": {
+      "additionalProperties": false,
+      "properties": {
+        "from_id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "From Id",
+          "type": "string"
+        },
+        "to_id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "To Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "supports",
+            "contrasts",
+            "prerequisite",
+            "step_before"
+          ],
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "from_id",
+        "to_id",
+        "kind"
+      ],
+      "title": "KnowledgeRelation",
+      "type": "object"
+    },
+    "KnowledgeUnit": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "topic_id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Topic Id",
+          "type": "string"
+        },
+        "segment_ids": {
+          "items": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 20,
+          "minItems": 1,
+          "title": "Segment Ids",
+          "type": "array"
+        },
+        "start_seconds": {
+          "minimum": 0,
+          "title": "Start Seconds",
+          "type": "number"
+        },
+        "end_seconds": {
+          "minimum": 0,
+          "title": "End Seconds",
+          "type": "number"
+        },
+        "kind": {
+          "enum": [
+            "concept",
+            "example",
+            "procedure",
+            "comparison",
+            "warning",
+            "recap"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "claims": {
+          "items": {
+            "$ref": "#/$defs/KnowledgeClaim"
+          },
+          "minItems": 1,
+          "title": "Claims",
+          "type": "array"
+        },
+        "relations": {
+          "items": {
+            "$ref": "#/$defs/KnowledgeRelation"
+          },
+          "title": "Relations",
+          "type": "array"
+        },
+        "visual_candidates": {
+          "items": {
+            "$ref": "#/$defs/VisualCandidate"
+          },
+          "title": "Visual Candidates",
+          "type": "array"
+        },
+        "uncertainty": {
+          "items": {
+            "$ref": "#/$defs/Uncertainty"
+          },
+          "title": "Uncertainty",
+          "type": "array"
+        },
+        "evidence_requests": {
+          "items": {
+            "$ref": "#/$defs/KnowledgeEvidenceRequest"
+          },
+          "title": "Evidence Requests",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "topic_id",
+        "segment_ids",
+        "start_seconds",
+        "end_seconds",
+        "kind",
+        "claims"
+      ],
+      "title": "KnowledgeUnit",
+      "type": "object"
+    },
+    "Uncertainty": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "conflict",
+            "missing_audio",
+            "unreadable_text",
+            "missing_step"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "start_seconds": {
+          "minimum": 0,
+          "title": "Start Seconds",
+          "type": "number"
+        },
+        "end_seconds": {
+          "minimum": 0,
+          "title": "End Seconds",
+          "type": "number"
+        },
+        "note": {
+          "maxLength": 400,
+          "minLength": 1,
+          "title": "Note",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "start_seconds",
+        "end_seconds",
+        "note"
+      ],
+      "title": "Uncertainty",
+      "type": "object"
+    },
+    "VisualCandidate": {
+      "additionalProperties": false,
+      "properties": {
+        "frame_id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Frame Id",
+          "type": "string"
+        },
+        "relevance": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Relevance",
+          "type": "number"
+        },
+        "legibility": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Legibility",
+          "type": "number"
+        },
+        "selection_reason": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Selection Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "frame_id",
+        "relevance",
+        "legibility",
+        "selection_reason"
+      ],
+      "title": "VisualCandidate",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source_id": {
+      "maxLength": 100,
+      "minLength": 1,
+      "title": "Source Id",
+      "type": "string"
+    },
+    "units": {
+      "items": {
+        "$ref": "#/$defs/KnowledgeUnit"
+      },
+      "title": "Units",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "source_id"
+  ],
+  "title": "KnowledgeDocument",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "KnowledgeDocument 1.0 structural schema. Claim/unit ID uniqueness and relation closure are enforced in Python."
+}

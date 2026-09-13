@@ -1,0 +1,194 @@
+{
+  "$defs": {
+    "Omission": {
+      "additionalProperties": false,
+      "properties": {
+        "topic_id": {
+          "anyOf": [
+            {
+              "maxLength": 100,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Topic Id"
+        },
+        "claim_id": {
+          "anyOf": [
+            {
+              "maxLength": 100,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Claim Id"
+        },
+        "reason": {
+          "maxLength": 400,
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "title": "Omission",
+      "type": "object"
+    },
+    "PageIntent": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "cover",
+            "content",
+            "summary",
+            "quiz"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "layout": {
+          "anyOf": [
+            {
+              "enum": [
+                "image-text",
+                "text",
+                "comparison",
+                "sequence"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Layout"
+        },
+        "title": {
+          "maxLength": 80,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "claim_ids": {
+          "items": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 8,
+          "title": "Claim Ids",
+          "type": "array"
+        },
+        "frame_ids": {
+          "items": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 3,
+          "title": "Frame Ids",
+          "type": "array"
+        },
+        "notes": {
+          "default": "",
+          "maxLength": 4000,
+          "title": "Notes",
+          "type": "string"
+        },
+        "selection_reason": {
+          "maxLength": 400,
+          "minLength": 1,
+          "title": "Selection Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "title",
+        "selection_reason"
+      ],
+      "title": "PageIntent",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source_id": {
+      "maxLength": 100,
+      "minLength": 1,
+      "title": "Source Id",
+      "type": "string"
+    },
+    "target_pages": {
+      "maximum": 100,
+      "minimum": 4,
+      "title": "Target Pages",
+      "type": "integer"
+    },
+    "max_pages": {
+      "maximum": 100,
+      "minimum": 4,
+      "title": "Max Pages",
+      "type": "integer"
+    },
+    "order": {
+      "default": "chronological",
+      "enum": [
+        "chronological",
+        "teaching"
+      ],
+      "title": "Order",
+      "type": "string"
+    },
+    "pages": {
+      "items": {
+        "$ref": "#/$defs/PageIntent"
+      },
+      "minItems": 1,
+      "title": "Pages",
+      "type": "array"
+    },
+    "omissions": {
+      "items": {
+        "$ref": "#/$defs/Omission"
+      },
+      "title": "Omissions",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "source_id",
+    "target_pages",
+    "max_pages",
+    "pages"
+  ],
+  "title": "EditorialPlan",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "EditorialPlan 1.0 structural schema. Paths/hashes are forbidden; claim and frame joins are enforced in Python resolvers."
+}

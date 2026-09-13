@@ -1,0 +1,74 @@
+{
+  "schema_version": "3.0",
+  "spec_revision": 1,
+  "producer_version": "design-example",
+  "analysis_mode": "frames",
+  "quality_status": "verified",
+  "source": {
+    "source_id": "src-demo",
+    "kind": "local",
+    "title": "合成示例课程",
+    "media_path": "media/source.mp4",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "duration_seconds": 60.0
+  },
+  "assets": [
+    {
+      "id": "asset-frame-1",
+      "role": "frame",
+      "path": "frames/f1.jpg",
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "mime_type": "image/jpeg",
+      "timestamp_seconds": 12.5,
+      "start_seconds": null,
+      "end_seconds": null,
+      "derived_from": null,
+      "transformations": []
+    }
+  ],
+  "evidence": [
+    {
+      "id": "ev-frame-1",
+      "kind": "frame",
+      "asset_id": "asset-frame-1",
+      "timestamp_seconds": 12.5
+    }
+  ],
+  "claims": [
+    {
+      "id": "claim-1",
+      "text": "此画面为课程原始截图。",
+      "evidence_ids": ["ev-frame-1"],
+      "verdict": "supported",
+      "provenance": "source"
+    }
+  ],
+  "slides": [
+    {
+      "id": "page-1",
+      "type": "content",
+      "title": "原始课程画面",
+      "layout": "image-text",
+      "subtitle": null,
+      "source_id": null,
+      "hero_asset_id": null,
+      "point_claim_ids": ["claim-1"],
+      "frame_asset_ids": ["asset-frame-1"],
+      "captions": [],
+      "steps": [],
+      "claim_ids": [],
+      "questions": [],
+      "citation_ids": ["ev-frame-1"],
+      "notes_claim_ids": [],
+      "continuation_of": null,
+      "notes": ""
+    }
+  ],
+  "theme": {"name": "course-white-blue", "font_family": "Noto Sans CJK SC"},
+  "render_policy": {
+    "max_pages": 20,
+    "min_font_pt": 18,
+    "aspect_ratio": "16:9",
+    "overflow": "repaginate-or-fail"
+  }
+}

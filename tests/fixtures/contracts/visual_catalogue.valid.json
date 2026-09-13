@@ -1,0 +1,42 @@
+{
+  "schema_version": "1.0",
+  "source_id": "src-demo",
+  "scenes": [
+    {
+      "id": "scene-001",
+      "start_seconds": 0.0,
+      "end_seconds": 60.0,
+      "detector": "content"
+    }
+  ],
+  "assets": [
+    {
+      "id": "asset-frame-1",
+      "role": "frame",
+      "path": "frames/f1.jpg",
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "mime_type": "image/jpeg",
+      "width": 1280,
+      "height": 720
+    }
+  ],
+  "occurrences": [
+    {
+      "id": "frame-001",
+      "scene_id": "scene-001",
+      "asset_id": "asset-frame-1",
+      "requested_seconds": 12.5,
+      "timestamp_seconds": 12.5,
+      "cluster_id": null,
+      "reject_reason": null,
+      "quality": {
+        "width": 1280,
+        "height": 720,
+        "brightness": 0.5,
+        "sharpness": 0.7,
+        "ocr_density": 0.2
+      }
+    }
+  ],
+  "ocr_regions": []
+}

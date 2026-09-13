@@ -1,0 +1,16 @@
+{
+  "schema_version": "1.0",
+  "source_id": "src-demo",
+  "kind": "local",
+  "title": "合成示例课程",
+  "media_path": "media/source.mp4",
+  "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "duration_seconds": 60.0,
+  "streams": [
+    {"index": 0, "codec_type": "video", "codec_name": "h264", "language": null},
+    {"index": 1, "codec_type": "audio", "codec_name": "aac", "language": "und"}
+  ],
+  "timebase": "1/90000",
+  "local_mode": "copy",
+  "transformations": []
+}

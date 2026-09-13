@@ -1,0 +1,117 @@
+{
+  "$defs": {
+    "ClaimVerdict": {
+      "additionalProperties": false,
+      "properties": {
+        "claim_id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Claim Id",
+          "type": "string"
+        },
+        "verdict": {
+          "enum": [
+            "supported",
+            "contradicted",
+            "insufficient"
+          ],
+          "title": "Verdict",
+          "type": "string"
+        },
+        "supporting_ids": {
+          "items": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Supporting Ids",
+          "type": "array"
+        },
+        "contradicting_ids": {
+          "items": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Contradicting Ids",
+          "type": "array"
+        },
+        "reason": {
+          "maxLength": 400,
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "claim_id",
+        "verdict",
+        "reason"
+      ],
+      "title": "ClaimVerdict",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source_id": {
+      "maxLength": 100,
+      "minLength": 1,
+      "title": "Source Id",
+      "type": "string"
+    },
+    "quality_mode": {
+      "enum": [
+        "strict",
+        "draft",
+        "evidence-only"
+      ],
+      "title": "Quality Mode",
+      "type": "string"
+    },
+    "verdicts": {
+      "items": {
+        "$ref": "#/$defs/ClaimVerdict"
+      },
+      "title": "Verdicts",
+      "type": "array"
+    },
+    "structural_errors": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Structural Errors",
+      "type": "array"
+    },
+    "pending_review": {
+      "items": {
+        "maxLength": 100,
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Pending Review",
+      "type": "array"
+    },
+    "coverage_gaps": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Coverage Gaps",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "source_id",
+    "quality_mode"
+  ],
+  "title": "VerificationReport",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "VerificationReport 1.0 structural schema. Strict-mode unresolved claims are rejected in Python."
+}

@@ -1,0 +1,28 @@
+{
+  "schema_version": "1.0",
+  "source_id": "src-demo",
+  "language": "zh-CN",
+  "raw_artifact_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "alignment": "sentence",
+  "speech_coverage": {
+    "speech_seconds": 20.0,
+    "covered_seconds": 20.0,
+    "denominator": "timeline",
+    "coverage_ratio": 1.0
+  },
+  "segments": [
+    {
+      "id": "cap-001",
+      "start_seconds": 10.0,
+      "end_seconds": 20.0,
+      "text_original": "此画面为课程原始截图。",
+      "language": "zh-CN",
+      "origin": "sidecar",
+      "raw_ref": null,
+      "speaker_id": null,
+      "words": null,
+      "alignment_status": "aligned",
+      "quality_flags": []
+    }
+  ]
+}

@@ -1,0 +1,105 @@
+{
+  "$defs": {
+    "PageMapEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "page_id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Page Id",
+          "type": "string"
+        },
+        "pptx_slide_index": {
+          "minimum": 0,
+          "title": "Pptx Slide Index",
+          "type": "integer"
+        },
+        "layout": {
+          "maxLength": 40,
+          "minLength": 1,
+          "title": "Layout",
+          "type": "string"
+        }
+      },
+      "required": [
+        "page_id",
+        "pptx_slide_index",
+        "layout"
+      ],
+      "title": "PageMapEntry",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "spec_revision": {
+      "minimum": 1,
+      "title": "Spec Revision",
+      "type": "integer"
+    },
+    "request_id": {
+      "maxLength": 100,
+      "minLength": 1,
+      "title": "Request Id",
+      "type": "string"
+    },
+    "pptx_path": {
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*\\\\)(?!.*:)(?!.*(?:^|/)\\.\\.(?:/|$)).+$",
+      "title": "Pptx Path",
+      "type": "string"
+    },
+    "pptx_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Pptx Sha256",
+      "type": "string"
+    },
+    "page_map": {
+      "items": {
+        "$ref": "#/$defs/PageMapEntry"
+      },
+      "minItems": 1,
+      "title": "Page Map",
+      "type": "array"
+    },
+    "render_complete": {
+      "title": "Render Complete",
+      "type": "boolean"
+    },
+    "visual_qa": {
+      "enum": [
+        "passed",
+        "failed",
+        "unavailable"
+      ],
+      "title": "Visual Qa",
+      "type": "string"
+    },
+    "layout_issues": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Layout Issues",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "spec_revision",
+    "request_id",
+    "pptx_path",
+    "pptx_sha256",
+    "page_map",
+    "render_complete",
+    "visual_qa"
+  ],
+  "title": "RenderReport",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "RenderReport 1.0 structural schema. Unique page mappings are enforced in Python."
+}

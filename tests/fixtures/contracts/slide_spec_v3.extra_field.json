@@ -1,0 +1,34 @@
+{
+  "schema_version": "3.0",
+  "spec_revision": 1,
+  "producer_version": "design-example",
+  "analysis_mode": "frames",
+  "quality_status": "verified",
+  "unexpected": true,
+  "source": {
+    "source_id": "src-demo",
+    "kind": "local",
+    "title": "合成示例课程",
+    "media_path": "media/source.mp4",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "duration_seconds": 60.0
+  },
+  "assets": [],
+  "evidence": [],
+  "claims": [],
+  "slides": [
+    {
+      "id": "page-cover",
+      "type": "cover",
+      "title": "合成示例课程",
+      "source_id": "src-demo"
+    }
+  ],
+  "theme": {"name": "course-white-blue", "font_family": "Noto Sans CJK SC"},
+  "render_policy": {
+    "max_pages": 20,
+    "min_font_pt": 18,
+    "aspect_ratio": "16:9",
+    "overflow": "repaginate-or-fail"
+  }
+}

@@ -1,0 +1,244 @@
+{
+  "$defs": {
+    "SpeechCoverage": {
+      "additionalProperties": false,
+      "properties": {
+        "speech_seconds": {
+          "minimum": 0,
+          "title": "Speech Seconds",
+          "type": "number"
+        },
+        "covered_seconds": {
+          "minimum": 0,
+          "title": "Covered Seconds",
+          "type": "number"
+        },
+        "denominator": {
+          "enum": [
+            "vad-speech",
+            "timeline"
+          ],
+          "title": "Denominator",
+          "type": "string"
+        },
+        "coverage_ratio": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Coverage Ratio",
+          "type": "number"
+        }
+      },
+      "required": [
+        "speech_seconds",
+        "covered_seconds",
+        "denominator",
+        "coverage_ratio"
+      ],
+      "title": "SpeechCoverage",
+      "type": "object"
+    },
+    "TranscriptSegment": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "start_seconds": {
+          "minimum": 0,
+          "title": "Start Seconds",
+          "type": "number"
+        },
+        "end_seconds": {
+          "minimum": 0,
+          "title": "End Seconds",
+          "type": "number"
+        },
+        "text_original": {
+          "maxLength": 8000,
+          "minLength": 1,
+          "title": "Text Original",
+          "type": "string"
+        },
+        "language": {
+          "maxLength": 35,
+          "minLength": 2,
+          "title": "Language",
+          "type": "string"
+        },
+        "origin": {
+          "enum": [
+            "sidecar",
+            "manual-caption",
+            "auto-caption",
+            "asr"
+          ],
+          "title": "Origin",
+          "type": "string"
+        },
+        "raw_ref": {
+          "anyOf": [
+            {
+              "maxLength": 100,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Raw Ref"
+        },
+        "speaker_id": {
+          "anyOf": [
+            {
+              "maxLength": 100,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Speaker Id"
+        },
+        "words": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/TranscriptWord"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Words"
+        },
+        "alignment_status": {
+          "default": "unaligned",
+          "enum": [
+            "aligned",
+            "unaligned",
+            "partial"
+          ],
+          "title": "Alignment Status",
+          "type": "string"
+        },
+        "quality_flags": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 20,
+          "title": "Quality Flags",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "start_seconds",
+        "end_seconds",
+        "text_original",
+        "language",
+        "origin"
+      ],
+      "title": "TranscriptSegment",
+      "type": "object"
+    },
+    "TranscriptWord": {
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "start_seconds": {
+          "minimum": 0,
+          "title": "Start Seconds",
+          "type": "number"
+        },
+        "end_seconds": {
+          "minimum": 0,
+          "title": "End Seconds",
+          "type": "number"
+        },
+        "aligned": {
+          "default": true,
+          "title": "Aligned",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "text",
+        "start_seconds",
+        "end_seconds"
+      ],
+      "title": "TranscriptWord",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source_id": {
+      "maxLength": 100,
+      "minLength": 1,
+      "title": "Source Id",
+      "type": "string"
+    },
+    "language": {
+      "maxLength": 35,
+      "minLength": 2,
+      "title": "Language",
+      "type": "string"
+    },
+    "raw_artifact_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Raw Artifact Hash",
+      "type": "string"
+    },
+    "alignment": {
+      "enum": [
+        "none",
+        "sentence",
+        "word"
+      ],
+      "title": "Alignment",
+      "type": "string"
+    },
+    "speech_coverage": {
+      "$ref": "#/$defs/SpeechCoverage"
+    },
+    "segments": {
+      "items": {
+        "$ref": "#/$defs/TranscriptSegment"
+      },
+      "title": "Segments",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "source_id",
+    "language",
+    "raw_artifact_hash",
+    "alignment",
+    "speech_coverage"
+  ],
+  "title": "TranscriptDocument",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "TranscriptDocument 1.0 structural schema. Unique segment IDs and half-open ranges are enforced in Python."
+}

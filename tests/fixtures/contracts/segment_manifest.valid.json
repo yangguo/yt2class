@@ -1,0 +1,16 @@
+{
+  "schema_version": "1.0",
+  "source_id": "src-demo",
+  "duration_seconds": 60.0,
+  "windows": [
+    {
+      "id": "seg-001",
+      "core_start_seconds": 0.0,
+      "core_end_seconds": 60.0,
+      "context_start_seconds": 0.0,
+      "context_end_seconds": 60.0,
+      "evidence_ids": ["cap-001", "frame-001"],
+      "status": "complete"
+    }
+  ]
+}

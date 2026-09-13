@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0",
+  "spec_revision": 1,
+  "request_id": "render-1",
+  "pptx_path": "delivery/lesson.pptx",
+  "pptx_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "page_map": [
+    {"page_id": "page-1", "pptx_slide_index": 0, "layout": "image-text"}
+  ],
+  "render_complete": true,
+  "visual_qa": "unavailable",
+  "layout_issues": []
+}

@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0",
+  "source_id": "src-demo",
+  "quality_mode": "strict",
+  "verdicts": [
+    {
+      "claim_id": "claim-1",
+      "verdict": "supported",
+      "supporting_ids": ["cap-001", "frame-001"],
+      "contradicting_ids": [],
+      "reason": "字幕与画面一致"
+    }
+  ],
+  "structural_errors": [],
+  "pending_review": [],
+  "coverage_gaps": []
+}

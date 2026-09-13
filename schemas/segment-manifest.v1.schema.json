@@ -1,0 +1,100 @@
+{
+  "$defs": {
+    "AnalysisWindow": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "core_start_seconds": {
+          "minimum": 0,
+          "title": "Core Start Seconds",
+          "type": "number"
+        },
+        "core_end_seconds": {
+          "minimum": 0,
+          "title": "Core End Seconds",
+          "type": "number"
+        },
+        "context_start_seconds": {
+          "minimum": 0,
+          "title": "Context Start Seconds",
+          "type": "number"
+        },
+        "context_end_seconds": {
+          "minimum": 0,
+          "title": "Context End Seconds",
+          "type": "number"
+        },
+        "evidence_ids": {
+          "items": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Evidence Ids",
+          "type": "array"
+        },
+        "status": {
+          "enum": [
+            "scheduled",
+            "running",
+            "complete",
+            "degraded",
+            "failed"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "core_start_seconds",
+        "core_end_seconds",
+        "context_start_seconds",
+        "context_end_seconds",
+        "status"
+      ],
+      "title": "AnalysisWindow",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source_id": {
+      "maxLength": 100,
+      "minLength": 1,
+      "title": "Source Id",
+      "type": "string"
+    },
+    "duration_seconds": {
+      "exclusiveMinimum": 0,
+      "title": "Duration Seconds",
+      "type": "number"
+    },
+    "windows": {
+      "items": {
+        "$ref": "#/$defs/AnalysisWindow"
+      },
+      "title": "Windows",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "source_id",
+    "duration_seconds"
+  ],
+  "title": "SegmentManifest",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "SegmentManifest 1.0 structural schema. Core/context interval pairing is enforced in Python."
+}

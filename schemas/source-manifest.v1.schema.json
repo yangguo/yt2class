@@ -1,0 +1,223 @@
+{
+  "$defs": {
+    "MediaStream": {
+      "additionalProperties": false,
+      "properties": {
+        "index": {
+          "minimum": 0,
+          "title": "Index",
+          "type": "integer"
+        },
+        "codec_type": {
+          "enum": [
+            "video",
+            "audio",
+            "subtitle"
+          ],
+          "title": "Codec Type",
+          "type": "string"
+        },
+        "codec_name": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Codec Name",
+          "type": "string"
+        },
+        "language": {
+          "anyOf": [
+            {
+              "maxLength": 35,
+              "minLength": 2,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Language"
+        }
+      },
+      "required": [
+        "index",
+        "codec_type",
+        "codec_name"
+      ],
+      "title": "MediaStream",
+      "type": "object"
+    },
+    "Transformation": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "copy",
+            "proxy",
+            "clip",
+            "audio-extract"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "parent_hash": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Hash"
+        },
+        "command_digest": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Command Digest"
+        },
+        "time_offset_seconds": {
+          "default": 0.0,
+          "minimum": 0,
+          "title": "Time Offset Seconds",
+          "type": "number"
+        },
+        "speed_ratio": {
+          "default": 1.0,
+          "exclusiveMinimum": 0,
+          "title": "Speed Ratio",
+          "type": "number"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "Transformation",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source_id": {
+      "maxLength": 100,
+      "minLength": 1,
+      "title": "Source Id",
+      "type": "string"
+    },
+    "kind": {
+      "enum": [
+        "youtube",
+        "local"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "title": {
+      "maxLength": 160,
+      "minLength": 1,
+      "title": "Title",
+      "type": "string"
+    },
+    "media_path": {
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*\\\\)(?!.*:)(?!.*(?:^|/)\\.\\.(?:/|$)).+$",
+      "title": "Media Path",
+      "type": "string"
+    },
+    "sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Sha256",
+      "type": "string"
+    },
+    "duration_seconds": {
+      "exclusiveMinimum": 0,
+      "title": "Duration Seconds",
+      "type": "number"
+    },
+    "url": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Url"
+    },
+    "video_id": {
+      "anyOf": [
+        {
+          "maxLength": 32,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Video Id"
+    },
+    "streams": {
+      "items": {
+        "$ref": "#/$defs/MediaStream"
+      },
+      "minItems": 1,
+      "title": "Streams",
+      "type": "array"
+    },
+    "timebase": {
+      "maxLength": 32,
+      "minLength": 1,
+      "title": "Timebase",
+      "type": "string"
+    },
+    "local_mode": {
+      "default": "copy",
+      "enum": [
+        "copy",
+        "reference"
+      ],
+      "title": "Local Mode",
+      "type": "string"
+    },
+    "transformations": {
+      "items": {
+        "$ref": "#/$defs/Transformation"
+      },
+      "title": "Transformations",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "source_id",
+    "kind",
+    "title",
+    "media_path",
+    "sha256",
+    "duration_seconds",
+    "streams",
+    "timebase"
+  ],
+  "title": "SourceManifest",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "SourceManifest 1.0 structural schema. Joins, half-open intervals, and filesystem binding are enforced in Python."
+}

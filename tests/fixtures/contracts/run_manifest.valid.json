@@ -1,0 +1,26 @@
+{
+  "schema_version": "1.0",
+  "run_id": "run-demo",
+  "source_id": "src-demo",
+  "analysis_mode": "frames",
+  "quality_status": "verified",
+  "stages": [
+    {"name": "ingest", "status": "complete", "cache_key": "ingest-1", "error": null},
+    {"name": "bind_spec", "status": "complete", "cache_key": "bind-1", "error": null}
+  ],
+  "tool_versions": {
+    "producer_version": "yt2class-m0",
+    "yt_dlp": null,
+    "ffmpeg": null,
+    "provider": null,
+    "prompt": null
+  },
+  "usage": {
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "image_count": 0,
+    "video_seconds": 0.0,
+    "estimated_usd": 0.0
+  },
+  "errors": []
+}
