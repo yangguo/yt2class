@@ -10,6 +10,9 @@ from yt2class.stages.edit_deck import edit_deck
 from yt2class.stages.verify_claims import (
     StrictVerificationError,
     VerifyOutcome,
+    copy_is_affirmed,
+    scalar_directions,
+    scalar_terms,
     verify_claims,
 )
 from tests.helpers.m2 import frames_caps, make_transcript, make_visual
@@ -665,6 +668,82 @@ def test_matching_scalar_predicates_stay_supported():
     verdict = next(item for item in outcome.report.verdicts if item.claim_id == "claim-p")
     assert verdict.verdict == "supported"
     assert outcome.report.quality_mode == "strict"
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["水流变多少", "转速变快慢", "水位变高低", "尺寸变大小", "时间变长短", "增多少"],
+)
+def test_measure_interrogatives_carry_no_polarity(text):
+    """变多少 asks how much changed; reading 变多 out of it invents a direction."""
+
+    assert scalar_terms(text) == []
+    assert scalar_directions(text) == set()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "水流变多还是变少尚未确定",
+        "水流变多？其实是下降了",
+        "水流变多或者变少",
+        "水流会变多吗",
+        "水流可能变多",
+        "水流是否变多不清楚",
+        "the flow increases or decreases",
+    ],
+)
+def test_unsettled_scalar_predicates_assert_nothing(text):
+    assert scalar_terms(text)
+    assert scalar_directions(text) == set()
+
+
+def test_settled_predicate_survives_a_nearby_question_and_a_second_subject():
+    # The questioned occurrence is dropped, the asserted one still counts.
+    assert scalar_directions("水流变多吗？是的，确实变多了") == {"up"}
+    # Opposite directions about different subjects are both genuine assertions.
+    assert scalar_directions("加热使温度升高并且压力降低") == {"up", "down"}
+    assert scalar_directions("如果温度升高就停止") == {"up"}
+
+
+@pytest.mark.parametrize(
+    "evidence_text",
+    [
+        "阀门打开后水流变多少取决于阀门",
+        "阀门打开后水流变多还是变少尚未确定",
+        "阀门打开后水流变多？其实是下降了",
+        "阀门打开后水流可能变多",
+        "阀门打开后水流会变多吗",
+    ],
+)
+def test_unsettled_evidence_never_supports_a_one_sided_claim(evidence_text):
+    outcome, fixtures = _polarity_outcome("阀门打开后水流变多", evidence_text)
+    verdict = next(item for item in outcome.report.verdicts if item.claim_id == "claim-p")
+    assert verdict.verdict != "supported"
+    assert not verdict.supporting_ids
+    assert not any(page.quality_label == "verified" for page in outcome.plan.pages)
+    assert copy_is_affirmed("阀门打开后水流变多", evidence_text) is False
+    doc, _topics, transcript, visual, plan = fixtures
+    with pytest.raises(StrictVerificationError):
+        verify_claims(
+            doc,
+            plan=plan,
+            transcript=transcript,
+            visual=visual,
+            provider=FakeProvider(frames_caps()),
+            quality_mode="strict",
+        )
+
+
+def test_measure_evidence_does_not_forge_a_contradiction():
+    """变多少 is not evidence for 变多, but it does not oppose 变少 either."""
+
+    outcome, _fixtures = _polarity_outcome(
+        "阀门打开后水流变少", "阀门打开后水流变多少取决于阀门"
+    )
+    verdict = next(item for item in outcome.report.verdicts if item.claim_id == "claim-p")
+    assert verdict.verdict == "insufficient"
+    assert not verdict.contradicting_ids
 
 
 def test_empty_strict_report_fails_m3_gate_and_requires_claim_closure():

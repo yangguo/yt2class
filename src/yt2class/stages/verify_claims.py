@@ -148,6 +148,66 @@ SCALAR_WORD_RE = re.compile(
 SCALAR_WORD_DIRECTION = {
     word: direction for direction, words in SCALAR_WORDS.items() for word in words
 }
+HOW_MUCH_RE = re.compile(r"\bhow\s+$", re.I)
+# Connectives join two predicates without introducing a new subject, so
+# "变多还是变少" and "变多？其实是下降了" both talk about one proposition while
+# "温度升高并且压力降低" does not.
+CONNECTIVE_MARKERS = (
+    "还是",
+    "或者",
+    "或是",
+    "亦或",
+    "抑或",
+    "或",
+    "而是",
+    "其实",
+    "实际上",
+    "事实上",
+    "准确地说",
+    "反而",
+    "并且",
+    "而且",
+    "以及",
+    "但是",
+    "不过",
+    "然而",
+    "actually",
+    "in fact",
+    "instead",
+    "rather",
+    "and",
+    "or",
+    "but",
+)
+# A predicate inside a questioned, alternative, or undecided clause is not asserted.
+HEDGE_MARKERS = (
+    "吗",
+    "呢",
+    "还是",
+    "或者",
+    "是否",
+    "会不会",
+    "是不是",
+    "可能",
+    "也许",
+    "大概",
+    "未必",
+    "尚未",
+    "不确定",
+    "未确定",
+    "不清楚",
+    "待定",
+    "多少",
+    "whether",
+    "maybe",
+    "perhaps",
+    "unclear",
+    "unknown",
+    "undetermined",
+    "how much",
+    "how many",
+)
+CLAUSE_SPLIT_RE = re.compile(r"[。！!？?；;\n]")
 QUALITY_PREFIXES = ("[DRAFT]", "[EVIDENCE-ONLY]")
 
 
@@ -282,6 +342,14 @@ def _has_term(text: str, term: str) -> bool:
     return term in text
 
 
+@dataclass(frozen=True)
+class ScalarTerm:
+    text: str
+    direction: str
+    start: int
+    end: int
+
+
 def _scalar_direction(match: re.Match[str]) -> str | None:
     """Direction of one comparative predicate: the signed morpheme wins."""
 
@@ -291,21 +359,93 @@ def _scalar_direction(match: re.Match[str]) -> str | None:
     return SCALAR_DIRECTION.get(prefix[0]) or SCALAR_DIRECTION.get(root)
 
 
-def scalar_terms(text: str) -> list[tuple[str, str]]:
-    """Comparative/scalar predicates in ``text`` paired with their up/down polarity."""
+def _is_measure_form(text: str, match: re.Match[str], direction: str) -> bool:
+    """变多少 / 变快慢 ask how much something changed; they carry no direction."""
 
-    found: list[tuple[str, str]] = []
+    tail = text[match.end() : match.end() + 1]
+    return bool(tail) and SCALAR_DIRECTION.get(tail) not in {None, direction}
+
+
+def scalar_terms(text: str) -> list[ScalarTerm]:
+    """Comparative/scalar predicates in ``text`` with their up/down polarity and span."""
+
+    found: list[ScalarTerm] = []
     for match in SCALAR_RE.finditer(text):
         direction = _scalar_direction(match)
-        if direction is not None:
-            found.append((match.group(0), direction))
+        if direction is None or _is_measure_form(text, match, direction):
+            continue
+        found.append(ScalarTerm(match.group(0), direction, match.start(), match.end()))
     for match in SCALAR_WORD_RE.finditer(text):
-        found.append((match.group(0), SCALAR_WORD_DIRECTION[match.group(0).lower()]))
-    return found
+        if HOW_MUCH_RE.search(text[max(0, match.start() - 8) : match.start()]):
+            continue
+        found.append(
+            ScalarTerm(
+                match.group(0),
+                SCALAR_WORD_DIRECTION[match.group(0).lower()],
+                match.start(),
+                match.end(),
+            )
+        )
+    return sorted(found, key=lambda item: item.start)
+
+
+def _strip_connectives(text: str) -> str:
+    stripped = text
+    for marker in CONNECTIVE_MARKERS:
+        stripped = re.sub(re.escape(marker), " ", stripped, flags=re.I)
+    return stripped
+
+
+def _same_proposition(between: str) -> bool:
+    """True when only connectives separate two predicates, so they share a subject."""
+
+    return not content_tokens(_strip_connectives(between))
+
+
+def _clause_around(text: str, term: ScalarTerm) -> str:
+    start, end = 0, len(text)
+    for match in CLAUSE_SPLIT_RE.finditer(text):
+        if match.end() <= term.start:
+            start = match.end()
+        elif match.start() >= term.end:
+            end = match.start()
+            break
+    return text[start:end]
+
+
+def _is_hedged(text: str, term: ScalarTerm) -> bool:
+    clause = _clause_around(text, term).lower()
+    return any(marker.lower() in clause for marker in HEDGE_MARKERS)
+
+
+def settled_scalar_terms(text: str) -> list[ScalarTerm]:
+    """Scalar predicates ``text`` actually asserts.
+
+    A predicate is dropped when the text offers the opposite direction for the same
+    proposition ("变多还是变少", "变多？其实是下降了") or when its clause is a
+    question or leaves the outcome open, so unsettled evidence affirms nothing.
+    """
+
+    terms = scalar_terms(text)
+    unsettled: set[int] = set()
+    for index, (first, second) in enumerate(zip(terms, terms[1:])):
+        if first.direction == second.direction:
+            continue
+        if _same_proposition(text[first.end : second.start]):
+            unsettled.update({index, index + 1})
+    unsettled.update(index for index, term in enumerate(terms) if _is_hedged(text, term))
+    return [term for index, term in enumerate(terms) if index not in unsettled]
+
+
+def scalar_directions(text: str) -> set[str]:
+    return {term.direction for term in settled_scalar_terms(text)}
 
 
 def _strip_scalars(text: str) -> str:
-    return SCALAR_WORD_RE.sub(" ", SCALAR_RE.sub(" ", text))
+    stripped = text
+    for term in reversed(scalar_terms(text)):
+        stripped = f"{stripped[: term.start]} {stripped[term.end :]}"
+    return stripped
 
 
 def predicate_skeleton(text: str) -> set[str]:
@@ -324,8 +464,8 @@ def _same_skeleton(left: set[str], right: set[str]) -> bool:
 def direction_conflicts(left: str, right: str) -> list[str]:
     """One-sided opposite polarity on the same subject/object skeleton."""
 
-    left_dirs = {direction for _, direction in scalar_terms(left)}
-    right_dirs = {direction for _, direction in scalar_terms(right)}
+    left_dirs = scalar_directions(left)
+    right_dirs = scalar_directions(right)
     if len(left_dirs) != 1 or len(right_dirs) != 1 or left_dirs == right_dirs:
         return []
     if not _same_skeleton(predicate_skeleton(left), predicate_skeleton(right)):
@@ -334,17 +474,18 @@ def direction_conflicts(left: str, right: str) -> list[str]:
 
 
 def unaffirmed_predicates(text: str, evidence_text: str) -> list[str]:
-    """Scalar predicates in ``text`` with no same-direction match in the evidence."""
+    """Scalar predicates in ``text`` the evidence does not settle in the same direction.
 
-    evidence_dirs = {direction for _, direction in scalar_terms(evidence_text)}
-    missing: list[str] = []
-    for term, direction in scalar_terms(text):
-        if term in evidence_text:
-            continue
-        if direction in evidence_dirs:
-            continue
-        missing.append(term)
-    return list(dict.fromkeys(missing))
+    Substring presence is not affirmation: 变多 occurs inside 变多少, and evidence that
+    only raises the direction as a question or an alternative never affirms it.
+    """
+
+    affirmed = scalar_directions(evidence_text)
+    return list(
+        dict.fromkeys(
+            term.text for term in scalar_terms(text) if term.direction not in affirmed
+        )
+    )
 
 
 def predicate_conflicts(left: str, right: str) -> list[str]:
