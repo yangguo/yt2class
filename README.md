@@ -2,6 +2,18 @@
 
 `yt2class` 把一批 YouTube 课程链接整理成 PPTX 讲义：先下载视频和可用字幕，再按课件画面变化抓取候选帧，做感知去重，最后把经过校验的原始视频截图嵌入 PPT。它不会让模型重新生成课程图片。
 
+> 项目状态：完整目标架构与实施计划已经完成；当前代码是验证媒体处理、
+> 视觉模型选图和 PPTX 输出的原型，尚未实现完整目标系统。
+
+目标系统让 LLM 覆盖整段课程，而不是在目标页数范围内预先截断候选画面：
+
+```text
+视频 → 字幕/ASR＋场景/帧/OCR → 整课主题地图
+     → 分段多模态理解 → KnowledgeDocument
+     → 全局编辑与证据核验 → SlideSpec 3.0
+     → PptxGenJS → PPTX＋来源索引＋预览/QA
+```
+
 ## 快速开始
 
 需要 Python 3.11+、`uv`、Node.js、`yt-dlp` 和 `ffmpeg`。macOS 可以先安装外部命令：
@@ -96,19 +108,22 @@ uv run pytest -q
 ```
 
 
-## 架构设计与下一阶段
+## 完整目标设计
 
 已按现有代码更新原设计文档：
 
-- [架构评估与完整设计](docs/plans/2026-08-11-youtube-to-ppt-design.md)：
-  ingestion、transcript、scene/keyframe、多模态知识分析、截图选择、PptxGenJS、来源回链与复用边界。
+- [完整架构设计](docs/plans/2026-08-11-youtube-to-ppt-design.md)：
+  产品边界、开源复用、ingestion、整段视频 LLM 理解、知识组织、截图选择、
+  核验/审阅、SlideSpec 3.0、PptxGenJS、来源回链、缓存、成本和验收。
 - [分阶段实施计划](docs/plans/2026-08-11-youtube-to-ppt-implementation.md)：
-  具体文件、测试、验收与已完成/待实现状态。
+  从合同与复用实验到完整视频理解、PPTX 交付、恢复、hybrid 视频模型和评测。
 - [SlideSpec v2 JSON Schema](docs/schemas/slide-spec.v2.schema.json) 和
-  [合成示例](docs/examples/slide-spec.v2.json)。
+  [合成示例](docs/examples/slide-spec.v2.json) 是原型阶段合同；完整目标使用设计中的
+  SlideSpec 3.0，尚未生成 3.0 schema。
 
-目前 `build` 仍是 v1：仅接受 YouTube 链接，没有本地视频 CLI、ASR、
-分段 KnowledgeUnit 或 PptxGenJS 后端。**v2 契约与校验已落地，但尚未接入 build。**
+目前 `build` 仍是原型：仅接受 YouTube 链接，没有本地视频 CLI、ASR、
+整课 CourseMap、分段 KnowledgeUnit、事实核验或 PptxGenJS 后端。v2 契约与校验
+已落地但尚未接入 build；它不会自动升级成目标 3.0。
 不要把 v2 示例传给当前 `--selection-file`，该选项仍使用上方的 LessonPlan 格式。
 
 开发者可独立校验 v2：
