@@ -5,14 +5,21 @@ from threading import Event
 import pytest
 
 from yt2class.adapters.providers.base import RequestCancelled
-from yt2class.domain.segment import cores_cover_duration, cores_overlap
+from yt2class.domain.segment import AnalysisWindow, cores_cover_duration, cores_overlap
 from yt2class.orchestration.scheduler import (
     SchedulerConfig,
     SchedulerError,
     schedule_windows,
     sentence_boundaries,
 )
-from tests.helpers.m2 import empty_visual, frames_caps, make_transcript, make_visual
+from yt2class.stages.analyze_segments import estimate_segment_request_tokens
+from yt2class.stages.llm_util import (
+    estimate_serialized_tokens,
+    frames_in_range,
+    load_prompt,
+    transcript_in_range,
+)
+from tests.helpers.m2 import empty_visual, frames_caps, make_transcript, make_visual, sample_course_map
 
 
 def _schedule(duration: float, transcript=None, visual=None, caps=None, **kwargs):
@@ -209,3 +216,59 @@ def test_core_union_property_across_durations():
         assert cores_cover_duration(manifest.windows, duration)
         assert not cores_overlap(manifest.windows)
         assert all(window.status == "scheduled" for window in manifest.windows)
+
+
+def test_reduced_probe_underestimate_is_not_scheduled():
+    transcript = make_transcript(
+        [("cap-001", 0.0, 40.0, "讲解要点。" * 30)],
+        duration=40.0,
+    )
+    visual = make_visual(
+        [(f"frame-{index:03d}", float(4 + index * 4), "scene-001") for index in range(8)],
+        duration=40.0,
+        ocr=[("ocr-001", "frame-000", "板书要点"), ("ocr-002", "frame-001", "步骤提示")],
+    )
+    course_map = sample_course_map(duration=40.0)
+    window = AnalysisWindow(
+        id="seg-0001",
+        core_start_seconds=0.0,
+        core_end_seconds=40.0,
+        context_start_seconds=0.0,
+        context_end_seconds=40.0,
+        evidence_ids=[],
+        status="scheduled",
+    )
+    frames = frames_in_range(visual, 0.0, 40.0)
+    reduced_probe = {
+        "prompt": load_prompt("segment.md"),
+        "transcript": transcript_in_range(transcript, 0.0, 40.0),
+        "frames": frames[:8],
+        "core_range": [0.0, 40.0],
+    }
+    old_estimate = estimate_serialized_tokens(reduced_probe, image_count=8)
+    actual = estimate_segment_request_tokens(
+        window,
+        transcript=transcript,
+        visual=visual,
+        course_map=course_map,
+        batch_evidence_ids=[frame["id"] for frame in frames[:8]],
+        image_count=8,
+    )
+    assert actual > old_estimate
+    cap = frames_caps(max_input_tokens=(old_estimate + actual) // 2)
+    manifest = _schedule(40.0, transcript=transcript, visual=visual, caps=cap, course_map=course_map)
+    assert cores_cover_duration(manifest.windows, 40.0)
+    for scheduled in manifest.windows:
+        if scheduled.status != "scheduled":
+            continue
+        for batch in scheduled.image_batches:
+            tokens = estimate_segment_request_tokens(
+                scheduled,
+                transcript=transcript,
+                visual=visual,
+                course_map=course_map,
+                batch_evidence_ids=list(batch.evidence_ids),
+                image_count=batch.image_count,
+            )
+            assert tokens <= cap.max_input_tokens
+            assert batch.estimated_input_tokens == tokens

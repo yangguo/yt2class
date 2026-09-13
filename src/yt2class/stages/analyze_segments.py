@@ -25,6 +25,7 @@ from yt2class.orchestration.scheduler import set_window_status
 from yt2class.stages.llm_util import (
     OUTPUT_RESERVE_TOKENS,
     contains_path_literal,
+    estimate_serialized_tokens,
     frames_in_range,
     load_prompt,
     model_request,
@@ -208,20 +209,45 @@ def _collect_text(unit: KnowledgeUnit) -> str:
     return " ".join(claim.text for claim in unit.claims)
 
 
-def _cited_temporal_support(unit: KnowledgeUnit, allowed_frames: set[str], clip_ids: set[str]) -> int:
-    cited_frames = {
-        item
-        for claim in unit.claims
-        for item in claim.evidence_ids
-        if item in allowed_frames
-    }
-    cited_clips = {
-        item
-        for claim in unit.claims
-        for item in claim.evidence_ids
-        if item in clip_ids
-    }
+def _cited_temporal_support(evidence_ids: Iterable[str], allowed_frames: set[str], clip_ids: set[str]) -> int:
+    cited_frames = {item for item in evidence_ids if item in allowed_frames}
+    cited_clips = {item for item in evidence_ids if item in clip_ids}
     return len(cited_frames) + (2 if cited_clips else 0)
+
+
+def _claim_is_temporal(claim: object, unit: KnowledgeUnit) -> bool:
+    if unit.kind == "procedure":
+        return True
+    claim_id = getattr(claim, "id", None)
+    if any(
+        relation.kind == "step_before" and claim_id in {relation.from_id, relation.to_id}
+        for relation in unit.relations
+    ):
+        return True
+    return _looks_temporal(getattr(claim, "text", ""))
+
+
+def estimate_segment_request_tokens(
+    window: AnalysisWindow,
+    *,
+    transcript: TranscriptDocument,
+    visual: VisualCatalogue,
+    course_map: CourseMap,
+    batch_evidence_ids: list[str] | None,
+    image_count: int,
+    extra_clips: Iterable[object] | None = None,
+) -> int:
+    """Token estimate for the serialized request the analyzer will dispatch."""
+
+    payload = build_segment_payload(
+        window,
+        transcript=transcript,
+        visual=visual,
+        course_map=course_map,
+        batch_evidence_ids=batch_evidence_ids,
+        extra_clips=extra_clips,
+    )
+    return estimate_serialized_tokens(payload, image_count=image_count)
 
 
 def validate_knowledge_units(
@@ -276,15 +302,13 @@ def validate_knowledge_units(
                     f"unit {unit.id} visual candidate cites unknown frame {candidate.frame_id}"
                 )
 
-        temporal = (
-            unit.kind == "procedure"
-            or any(relation.kind == "step_before" for relation in unit.relations)
-            or _looks_temporal(_collect_text(unit))
-        )
-        if temporal and _cited_temporal_support(unit, allowed_frames, clip_ids) < 2:
-            raise SegmentContractError(
-                f"unit {unit.id} claims a temporal sequence from a single frame"
-            )
+        for claim in unit.claims:
+            if not _claim_is_temporal(claim, unit):
+                continue
+            if _cited_temporal_support(claim.evidence_ids, allowed_frames, clip_ids) < 2:
+                raise SegmentContractError(
+                    f"claim {claim.id} claims a temporal sequence from a single frame"
+                )
 
         local_transcript = " ".join(
             str(row.get("text_original") or "")

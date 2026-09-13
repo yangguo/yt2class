@@ -178,6 +178,50 @@ def test_contradictory_claims_sharing_a_frame_both_survive():
     assert len(document.units) == 2
 
 
+def test_unrelated_adjacent_procedures_do_not_get_step_before():
+    demo_a = unit(
+        "unit-lamp",
+        topic_id="topic-lab",
+        start=0.0,
+        end=15.0,
+        kind="procedure",
+        claims=[claim("claim-lamp", "演示：点燃酒精灯", ["frame-a"])],
+    )
+    demo_b = unit(
+        "unit-app",
+        topic_id="topic-software",
+        segment_ids=["seg-0002"],
+        start=15.0,
+        end=30.0,
+        kind="procedure",
+        claims=[claim("claim-app", "演示：打开软件设置", ["frame-b"])],
+    )
+    document = reduce_knowledge([demo_a, demo_b], source_id="src-demo")
+    assert not any(relation.kind == "step_before" for item in document.units for relation in item.relations)
+
+
+def test_unrelated_concepts_do_not_get_prerequisite():
+    definition = unit(
+        "unit-def",
+        topic_id="topic-grammar",
+        start=0.0,
+        end=15.0,
+        kind="concept",
+        claims=[claim("claim-def", "自动词的定义", ["cap-001"])],
+    )
+    safety = unit(
+        "unit-safety",
+        topic_id="topic-lab-safety",
+        segment_ids=["seg-0002"],
+        start=15.0,
+        end=30.0,
+        kind="concept",
+        claims=[claim("claim-safety", "实验室安全守则", ["cap-002"])],
+    )
+    document = reduce_knowledge([definition, safety], source_id="src-demo")
+    assert not any(relation.kind == "prerequisite" for item in document.units for relation in item.relations)
+
+
 def test_unrelated_steps_sharing_a_frame_are_not_collapsed():
     open_valve = unit(
         "unit-open",

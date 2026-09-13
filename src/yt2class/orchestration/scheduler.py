@@ -7,6 +7,7 @@ import re
 from threading import Event
 
 from yt2class.adapters.providers.base import ProviderCapabilities, RequestCancelled
+from yt2class.domain.course_map import CourseMap
 from yt2class.domain.segment import (
     AnalysisWindow,
     ImageBatch,
@@ -18,12 +19,7 @@ from yt2class.domain.visual import VisualCatalogue
 from yt2class.stages.llm_util import (
     OUTPUT_RESERVE_TOKENS,
     evidence_in_range,
-    estimate_serialized_tokens,
-    estimate_tokens,
     frames_in_range,
-    join_texts,
-    load_prompt,
-    transcript_in_range,
 )
 
 DEFAULT_CORE_SECONDS = 120.0
@@ -80,21 +76,55 @@ def _choose_cut(
     return later[0] if later else limit
 
 
+def _scheduling_course_map(course_map: CourseMap | None, source_id: str) -> CourseMap:
+    if course_map is not None:
+        return course_map
+    return CourseMap(schema_version="1.0", source_id=source_id, topics=[])
+
+
+def _estimate_dispatch_tokens(
+    window: AnalysisWindow,
+    *,
+    transcript: TranscriptDocument,
+    visual: VisualCatalogue,
+    course_map: CourseMap,
+    frame_ids: list[str],
+    image_count: int,
+) -> int:
+    # Imported lazily: analyze_segments imports set_window_status from this module.
+    from yt2class.stages.analyze_segments import estimate_segment_request_tokens
+
+    return estimate_segment_request_tokens(
+        window,
+        transcript=transcript,
+        visual=visual,
+        course_map=course_map,
+        batch_evidence_ids=frame_ids,
+        image_count=image_count,
+    )
+
+
 def _batch_frames(
     frames: list[dict[str, object]],
     *,
-    window_id: str,
+    window: AnalysisWindow,
+    transcript: TranscriptDocument,
+    visual: VisualCatalogue,
+    course_map: CourseMap,
     max_images: int,
-    transcript_text: str,
     output_tokens: int,
-    serialized_tokens: int | None = None,
 ) -> tuple[list[ImageBatch], int]:
     if max_images <= 0 or not frames:
-        tokens = serialized_tokens if serialized_tokens is not None else estimate_tokens(
-            transcript_text, image_count=0
+        tokens = _estimate_dispatch_tokens(
+            window,
+            transcript=transcript,
+            visual=visual,
+            course_map=course_map,
+            frame_ids=[],
+            image_count=0,
         )
         batch = ImageBatch(
-            id=f"{window_id}-batch-01",
+            id=f"{window.id}-batch-01",
             evidence_ids=[],
             estimated_input_tokens=tokens,
             estimated_output_tokens=output_tokens,
@@ -106,16 +136,20 @@ def _batch_frames(
     total_tokens = 0
     for index in range(0, len(frames), max_images):
         chunk = frames[index : index + max_images]
+        frame_ids = [str(frame["id"]) for frame in chunk]
         image_count = len(chunk)
-        tokens = (
-            serialized_tokens
-            if serialized_tokens is not None and image_count == len(frames)
-            else estimate_tokens(transcript_text, image_count=image_count)
+        tokens = _estimate_dispatch_tokens(
+            window,
+            transcript=transcript,
+            visual=visual,
+            course_map=course_map,
+            frame_ids=frame_ids,
+            image_count=image_count,
         )
         batches.append(
             ImageBatch(
-                id=f"{window_id}-batch-{len(batches) + 1:02d}",
-                evidence_ids=[str(frame["id"]) for frame in chunk],
+                id=f"{window.id}-batch-{len(batches) + 1:02d}",
+                evidence_ids=frame_ids,
                 estimated_input_tokens=tokens,
                 estimated_output_tokens=output_tokens,
                 image_count=image_count,
@@ -138,23 +172,6 @@ def _window_fits_budget(
     )
 
 
-def _estimate_payload_tokens(
-    *,
-    transcript: TranscriptDocument,
-    visual: VisualCatalogue,
-    start: float,
-    end: float,
-    image_count: int,
-) -> int:
-    payload = {
-        "prompt": load_prompt("segment.md"),
-        "transcript": transcript_in_range(transcript, start, end),
-        "frames": frames_in_range(visual, start, end)[: max(image_count, 0)],
-        "core_range": [start, end],
-    }
-    return estimate_serialized_tokens(payload, image_count=image_count)
-
-
 def rebuild_window_batches(
     window: AnalysisWindow,
     *,
@@ -162,6 +179,8 @@ def rebuild_window_batches(
     visual: VisualCatalogue,
     capabilities: ProviderCapabilities,
     config: SchedulerConfig | None = None,
+    course_map: CourseMap | None = None,
+    source_id: str = "src-unknown",
 ) -> AnalysisWindow:
     """Refresh image batches from the current catalogue so refined frames are visible."""
 
@@ -175,26 +194,15 @@ def rebuild_window_batches(
         max_images = 0
     output_tokens = min(cfg.output_reserve_tokens, capabilities.max_output_tokens)
     frames = frames_in_range(visual, window.context_start_seconds, window.context_end_seconds)
-    text = join_texts(
-        segment.text_original
-        for segment in transcript.segments
-        if segment.end_seconds > window.context_start_seconds
-        and segment.start_seconds < window.context_end_seconds
-    )
-    serialized = _estimate_payload_tokens(
-        transcript=transcript,
-        visual=visual,
-        start=window.context_start_seconds,
-        end=window.context_end_seconds,
-        image_count=min(len(frames), max_images) if max_images else 0,
-    )
+    active_map = _scheduling_course_map(course_map, source_id)
     batches, token_total = _batch_frames(
         frames if max_images else [],
-        window_id=window.id,
+        window=window,
+        transcript=transcript,
+        visual=visual,
+        course_map=active_map,
         max_images=max_images if max_images > 0 else 0,
-        transcript_text=text,
         output_tokens=output_tokens,
-        serialized_tokens=serialized,
     )
     return window.model_copy(
         update={
@@ -221,33 +229,13 @@ def _build_window(
     max_images: int,
     status: str,
     failure_reason: str | None,
+    course_map: CourseMap,
 ) -> AnalysisWindow:
     context_start = max(0.0, core_start - cfg.context_seconds)
     context_end = min(duration, core_end + cfg.context_seconds)
     output_tokens = min(cfg.output_reserve_tokens, capabilities.max_output_tokens)
     context_frames = frames_in_range(visual, context_start, context_end)
-    context_text = join_texts(
-        segment.text_original
-        for segment in transcript.segments
-        if segment.end_seconds > context_start and segment.start_seconds < context_end
-    )
-    probe_images = 0 if max_images == 0 else min(len(context_frames), max_images)
-    serialized = _estimate_payload_tokens(
-        transcript=transcript,
-        visual=visual,
-        start=context_start,
-        end=context_end,
-        image_count=probe_images,
-    )
-    batches, token_total = _batch_frames(
-        context_frames if max_images else [],
-        window_id=window_id,
-        max_images=max_images if max_images > 0 else 0,
-        transcript_text=context_text,
-        output_tokens=output_tokens,
-        serialized_tokens=serialized,
-    )
-    return AnalysisWindow(
+    probe = AnalysisWindow(
         id=window_id,
         core_start_seconds=core_start,
         core_end_seconds=core_end,
@@ -255,10 +243,22 @@ def _build_window(
         context_end_seconds=context_end,
         evidence_ids=evidence_in_range(transcript, visual, context_start, context_end),
         status=status,
-        image_batches=batches,
-        estimated_input_tokens=token_total,
+        image_batches=[],
+        estimated_input_tokens=0,
         estimated_output_tokens=output_tokens,
         failure_reason=failure_reason,
+    )
+    batches, token_total = _batch_frames(
+        context_frames if max_images else [],
+        window=probe,
+        transcript=transcript,
+        visual=visual,
+        course_map=course_map,
+        max_images=max_images if max_images > 0 else 0,
+        output_tokens=output_tokens,
+    )
+    return probe.model_copy(
+        update={"image_batches": batches, "estimated_input_tokens": token_total}
     )
 
 
@@ -288,6 +288,7 @@ def _split_until_fit(
     max_images: int,
     index_start: int,
     boundaries: list[float],
+    course_map: CourseMap,
 ) -> list[AnalysisWindow]:
     window_id = f"seg-{index_start:04d}"
     candidate = _build_window(
@@ -302,6 +303,7 @@ def _split_until_fit(
         max_images=max_images,
         status="scheduled",
         failure_reason=None,
+        course_map=course_map,
     )
     if _fits(candidate, capabilities):
         return [candidate]
@@ -333,6 +335,7 @@ def _split_until_fit(
         max_images=max_images,
         index_start=index_start,
         boundaries=boundaries,
+        course_map=course_map,
     )
     right = _split_until_fit(
         mid,
@@ -345,6 +348,7 @@ def _split_until_fit(
         max_images=max_images,
         index_start=index_start + len(left),
         boundaries=boundaries,
+        course_map=course_map,
     )
     return left + right
 
@@ -358,6 +362,7 @@ def schedule_windows(
     capabilities: ProviderCapabilities,
     config: SchedulerConfig | None = None,
     cancel_event: Event | None = None,
+    course_map: CourseMap | None = None,
 ) -> SegmentManifest:
     """Tile ``[0, duration)`` with non-overlapping cores and overlapping context.
 
@@ -380,6 +385,7 @@ def schedule_windows(
     )
     if capabilities.max_images == 0:
         max_images = 0
+    active_map = _scheduling_course_map(course_map, source_id)
     boundaries = sentence_boundaries(transcript)
     windows: list[AnalysisWindow] = []
     cursor = 0.0
@@ -410,6 +416,7 @@ def schedule_windows(
             max_images=max_images,
             index_start=index,
             boundaries=boundaries,
+            course_map=active_map,
         )
         windows.extend(pieces)
         cursor = pieces[-1].core_end_seconds

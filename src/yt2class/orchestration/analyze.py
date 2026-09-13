@@ -95,6 +95,7 @@ def analyze_course(
         capabilities=caps,
         config=scheduler_config,
         cancel_event=cancel_event,
+        course_map=course_map,
     )
     segments, units, outcomes = analyze_segments(
         segments,

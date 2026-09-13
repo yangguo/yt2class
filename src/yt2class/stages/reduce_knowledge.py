@@ -178,6 +178,49 @@ def _step_claims(unit: KnowledgeUnit) -> list[KnowledgeClaim]:
     return list(unit.claims)
 
 
+STEP_INDEX = re.compile(r"(?:步骤\s*|step\s+)(\d+)", re.I)
+
+
+def _unit_evidence_ids(unit: KnowledgeUnit) -> set[str]:
+    return {item for claim in unit.claims for item in claim.evidence_ids}
+
+
+def _concept_text_overlap(left: KnowledgeUnit, right: KnowledgeUnit) -> bool:
+    left_keys = {normalize_concept(claim.text) for claim in left.claims if normalize_concept(claim.text)}
+    right_keys = {normalize_concept(claim.text) for claim in right.claims if normalize_concept(claim.text)}
+    for first in left_keys:
+        for second in right_keys:
+            if first == second or first in second or second in first:
+                return True
+    return False
+
+
+def _step_indexes(unit: KnowledgeUnit) -> list[int]:
+    found: list[int] = []
+    for claim in unit.claims:
+        match = STEP_INDEX.search(claim.text)
+        if match:
+            found.append(int(match.group(1)))
+    return found
+
+
+def _justified_sequence(left: KnowledgeUnit, right: KnowledgeUnit, *, kind: str) -> bool:
+    """True only when a cross-unit edge is supported by topic, evidence, or steps."""
+
+    shared_topic = bool(left.topic_id and left.topic_id == right.topic_id)
+    shared_evidence = bool(_unit_evidence_ids(left) & _unit_evidence_ids(right))
+    if shared_evidence:
+        return True
+    if kind == "step_before":
+        left_steps = _step_indexes(left)
+        right_steps = _step_indexes(right)
+        numbered = bool(left_steps and right_steps and min(right_steps) == max(left_steps) + 1)
+        return numbered or (shared_topic and _concept_text_overlap(left, right))
+    if kind == "prerequisite":
+        return shared_topic and _concept_text_overlap(left, right)
+    return False
+
+
 def link_cross_segment_relations(units: list[KnowledgeUnit]) -> list[KnowledgeUnit]:
     """Connect prerequisite, comparison, and procedure steps across windows."""
 
@@ -187,6 +230,8 @@ def link_cross_segment_relations(units: list[KnowledgeUnit]) -> list[KnowledgeUn
     procedures = [unit for unit in units if unit.kind == "procedure"]
     procedures.sort(key=lambda unit: (unit.start_seconds, unit.id))
     for previous, current in zip(procedures, procedures[1:]):
+        if not _justified_sequence(previous, current, kind="step_before"):
+            continue
         extras[previous.id].append(
             KnowledgeRelation(from_id=previous.id, to_id=current.id, kind="step_before")
         )
@@ -215,6 +260,8 @@ def link_cross_segment_relations(units: list[KnowledgeUnit]) -> list[KnowledgeUn
     concepts = [unit for unit in units if unit.kind == "concept"]
     concepts.sort(key=lambda unit: unit.start_seconds)
     for previous, current in zip(concepts, concepts[1:]):
+        if not _justified_sequence(previous, current, kind="prerequisite"):
+            continue
         extras[previous.id].append(
             KnowledgeRelation(from_id=previous.id, to_id=current.id, kind="prerequisite")
         )

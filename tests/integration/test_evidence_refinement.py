@@ -115,6 +115,17 @@ def test_scheduler_rejects_out_of_range_modality_and_budget():
         segment_id=window.id,
     )
     assert accepted.accepted is True
+    clipped = accept_refinement_request(
+        _request("unreadable_text", 50.0, 80.0, "frame"),
+        window=window,
+        duration_seconds=120.0,
+        capabilities=caps,
+        budget=RefinementBudget(),
+        segment_id=window.id,
+    )
+    assert clipped.accepted is True
+    assert clipped.request.start_seconds == 50.0
+    assert clipped.request.end_seconds == 60.0
 
 
 def test_unreadable_text_pulls_nearby_hd_frames_and_reanalyzes_only_that_window():

@@ -244,6 +244,47 @@ def test_out_of_window_known_ids_are_rejected():
         )
 
 
+def test_temporal_claim_does_not_borrow_sibling_frames():
+    transcript = make_transcript([("cap-001", 10.0, 20.0, "然后打开，之后关闭。")], duration=60.0)
+    visual = make_visual(
+        [("frame-001", 12.5, "scene-001"), ("frame-002", 40.0, "scene-001")],
+        duration=60.0,
+    )
+    payload = build_segment_payload(
+        _window(),
+        transcript=transcript,
+        visual=visual,
+        course_map=sample_course_map(),
+    )
+    with pytest.raises(SegmentContractError, match="temporal sequence"):
+        validate_knowledge_units(
+            {"units": [_valid_unit(
+                kind="concept",
+                claims=[
+                    {
+                        "id": "claim-temporal",
+                        "text": "然后打开，之后关闭。",
+                        "evidence_ids": ["frame-001"],
+                        "status": "draft",
+                        "qualifiers": [],
+                        "modality": "visual",
+                        "provenance": "source",
+                    },
+                    {
+                        "id": "claim-other",
+                        "text": "标题可见。",
+                        "evidence_ids": ["frame-002"],
+                        "status": "draft",
+                        "qualifiers": [],
+                        "modality": "visual",
+                        "provenance": "source",
+                    },
+                ],
+            )]},
+            payload,
+        )
+
+
 def test_single_cited_frame_temporal_fails_even_if_two_frames_supplied():
     transcript = make_transcript([("cap-001", 10.0, 20.0, "然后打开，之后关闭。")], duration=60.0)
     visual = make_visual(

@@ -117,8 +117,14 @@ def accept_refinement_request(
         return RefinementDecision(False, "out_of_range", request, "request exceeds source duration")
     if request.end_seconds <= request.start_seconds:
         return RefinementDecision(False, "out_of_range", request, "empty request range")
-    if request.end_seconds <= window.context_start_seconds or request.start_seconds >= window.context_end_seconds:
+    overlap_start = max(request.start_seconds, window.context_start_seconds)
+    overlap_end = min(request.end_seconds, window.context_end_seconds)
+    if overlap_end <= overlap_start:
         return RefinementDecision(False, "out_of_range", request, "request is outside the analysis window")
+    if overlap_start != request.start_seconds or overlap_end != request.end_seconds:
+        request = request.model_copy(
+            update={"start_seconds": overlap_start, "end_seconds": overlap_end}
+        )
 
     kind = classify_request(request)
     if request.desired_modality == "clip" or (
@@ -348,7 +354,7 @@ def refine_window(
                 unresolved_note = decision.note
                 continue
             pulled = pull_refinement_evidence(
-                request,
+                decision.request,
                 visual=current_visual,
                 duration_seconds=duration_seconds,
                 budget=budget,
@@ -379,6 +385,7 @@ def refine_window(
             transcript=transcript,
             visual=current_visual,
             capabilities=capabilities,
+            course_map=course_map,
         )
         current = analyze_window(
             refreshed,
