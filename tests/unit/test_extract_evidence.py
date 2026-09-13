@@ -38,6 +38,21 @@ def _failing_detector(path, **kwargs):
     raise RuntimeError("scene detector exploded")
 
 
+def _audio_runner(command, **kwargs):
+    Path(command[-1]).write_bytes(b"extracted-from-verified-media")
+    return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+
+def _asr_runner(command, **kwargs):
+    return SimpleNamespace(
+        returncode=0,
+        stdout=json.dumps(
+            {"segments": [{"start": 0.0, "end": 1.5, "text": "hello"}], "language": "en"}
+        ),
+        stderr="",
+    )
+
+
 def test_extract_evidence_rejects_media_that_does_not_match_manifest_hash(tmp_path: Path):
     media = _write_media(tmp_path / "source.mp4")
     manifest = _manifest(media)
@@ -87,6 +102,7 @@ def test_asr_from_another_source_becomes_explicit_failure(tmp_path: Path):
         tmp_path / "run-asr-source",
         asr_request=request,
         asr_runner=runner,
+        audio_runner=_audio_runner,
         detector=_failing_detector,
         ocr_engine="none",
     )
@@ -95,35 +111,60 @@ def test_asr_from_another_source_becomes_explicit_failure(tmp_path: Path):
     assert any("source_id" in gap.reason for gap in bundle.transcript.gaps)
 
 
-def test_asr_records_audio_hash_and_parent_manifest_binding(tmp_path: Path):
+def test_asr_records_extract_transform_from_verified_media(tmp_path: Path):
     media = _write_media(tmp_path / "source.mp4")
     manifest = _manifest(media)
-    audio = tmp_path / "audio.wav"
-    audio.write_bytes(b"asr-audio")
-    request = ASRRequest(request_id="asr-1", source_id=manifest.source_id, audio_path=audio)
-
-    def runner(command, **kwargs):
-        return SimpleNamespace(
-            returncode=0,
-            stdout=json.dumps(
-                {"segments": [{"start": 0.0, "end": 1.5, "text": "hello"}], "language": "en"}
-            ),
-            stderr="",
-        )
-
+    request = ASRRequest(
+        request_id="asr-1",
+        source_id=manifest.source_id,
+        audio_path=tmp_path / "unused-placeholder.wav",
+    )
+    run_root = tmp_path / "run-asr-bound"
     bundle = extract_evidence(
         manifest,
         media,
-        tmp_path / "run-asr-bound",
+        run_root,
         asr_request=request,
-        asr_runner=runner,
+        asr_runner=_asr_runner,
+        audio_runner=_audio_runner,
         detector=_failing_detector,
         ocr_engine="none",
     )
+    extracted = run_root / "tmp/asr-audio.wav"
+    assert extracted.is_file()
     assert bundle.transcript.segments
-    assert bundle.transcript.audio_input_hash == content_sha256(audio)
+    assert bundle.transcript.audio_input_hash == content_sha256(extracted)
     assert bundle.transcript.audio_parent_hash == manifest.sha256
+    assert bundle.transcript.audio_command_digest
     assert bundle.transcript.time_offset_seconds == 0.0
+
+
+def test_arbitrary_external_wav_is_rejected_as_unrelated_asr_audio(tmp_path: Path):
+    media = _write_media(tmp_path / "source.mp4")
+    manifest = _manifest(media)
+    external = tmp_path / "external.wav"
+    external.write_bytes(b"arbitrary-external-wav")
+    request = ASRRequest(
+        request_id="asr-1",
+        source_id=manifest.source_id,
+        audio_path=external,
+    )
+    bundle = extract_evidence(
+        manifest,
+        media,
+        tmp_path / "run-asr-unrelated",
+        asr_request=request,
+        asr_runner=_asr_runner,
+        audio_runner=_audio_runner,
+        detector=_failing_detector,
+        ocr_engine="none",
+    )
+    assert bundle.transcript.segments == []
+    assert bundle.transcript.audio_input_hash is None
+    assert any(
+        "not derived" in gap.reason or "unrelated" in gap.reason
+        for gap in bundle.transcript.gaps
+    )
 
 
 def test_asr_result_requires_audio_provenance_and_matching_source():

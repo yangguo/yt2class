@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import fcntl
 import os
 from pathlib import Path
 import re
@@ -24,78 +25,85 @@ class WorkspacePathError(WorkspaceError):
 _RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
-def _pid_is_running(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+_HELD_LOCKS: set[str] = set()
 
 
-def _lock_owner_pid(path: Path) -> int | None:
-    try:
-        text = path.read_text(encoding="ascii").strip()
-    except OSError:
-        return None
-    if not text.startswith("pid="):
-        return None
-    try:
-        return int(text.split("=", 1)[1].split()[0])
-    except ValueError:
-        return None
+def _same_inode(left: os.stat_result, right: os.stat_result) -> bool:
+    return left.st_ino == right.st_ino and left.st_dev == right.st_dev
 
 
 @dataclass
 class _WriteLock:
-    """Exclusive lock represented by an atomically-created marker file."""
+    """Exclusive run lock via flock; inode-checked unlink on release."""
 
     path: Path
     _fd: int | None = None
+    _key: str | None = None
+    _owned: os.stat_result | None = None
 
     def __enter__(self) -> Self:
+        key = str(self.path)
+        if key in _HELD_LOCKS:
+            raise WorkspaceBusy(f"workspace is already locked: {self.path}")
         try:
-            self._fd = os.open(
-                self.path,
-                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-                0o600,
-            )
-        except FileExistsError as error:
-            owner = _lock_owner_pid(self.path)
-            if owner is None or _pid_is_running(owner):
-                raise WorkspaceBusy(f"workspace is already locked: {self.path}") from error
-            try:
-                self.path.unlink()
-            except OSError as unlink_error:
-                raise WorkspaceBusy(f"workspace is already locked: {self.path}") from unlink_error
-            try:
-                self._fd = os.open(
-                    self.path,
-                    os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-                    0o600,
-                )
-            except FileExistsError as retry_error:
-                raise WorkspaceBusy(f"workspace is already locked: {self.path}") from retry_error
+            self._fd = os.open(self.path, os.O_CREAT | os.O_RDWR, 0o600)
         except OSError as error:
             raise WorkspaceError(f"cannot create workspace lock: {self.path}") from error
         try:
-            os.write(self._fd, f"pid={os.getpid()}\n".encode("ascii"))
-        except OSError:
+            fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
             os.close(self._fd)
             self._fd = None
-            self.path.unlink(missing_ok=True)
+            raise WorkspaceBusy(f"workspace is already locked: {self.path}") from error
+        except OSError as error:
+            os.close(self._fd)
+            self._fd = None
+            raise WorkspaceError(f"cannot lock workspace: {self.path}") from error
+        try:
+            os.lseek(self._fd, 0, os.SEEK_SET)
+            os.ftruncate(self._fd, 0)
+            os.write(self._fd, f"pid={os.getpid()}\n".encode("ascii"))
+            os.fsync(self._fd)
+            self._owned = os.fstat(self._fd)
+        except OSError:
+            try:
+                fcntl.flock(self._fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            os.close(self._fd)
+            self._fd = None
             raise
+        self._key = key
+        _HELD_LOCKS.add(key)
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
+        if self._key is not None:
+            _HELD_LOCKS.discard(self._key)
+            self._key = None
         if self._fd is None:
             return
+        owned = self._owned or os.fstat(self._fd)
+        same = False
+        try:
+            current = os.stat(self.path)
+            same = _same_inode(owned, current)
+        except OSError:
+            same = False
+        try:
+            fcntl.flock(self._fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
         os.close(self._fd)
         self._fd = None
-        self.path.unlink(missing_ok=True)
+        self._owned = None
+        if same:
+            try:
+                current = os.stat(self.path)
+                if _same_inode(owned, current):
+                    os.unlink(self.path)
+            except OSError:
+                pass
 
 
 @dataclass(frozen=True)

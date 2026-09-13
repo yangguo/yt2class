@@ -146,6 +146,43 @@ def test_evidence_bundle_cannot_claim_complete_with_component_gaps():
         EvidenceBundle.model_validate(value)
 
 
+def test_complete_bundle_rejects_one_second_transcript_and_empty_scene():
+    value = payload()
+    value["status"] = "complete"
+    value["gaps"] = []
+    value["transcript"]["status"] = "complete"
+    value["transcript"]["gaps"] = []
+    value["transcript"]["duration_seconds"] = 60.0
+    value["transcript"]["segments"] = [
+        {
+            "id": "seg-1s",
+            "start_seconds": 0.0,
+            "end_seconds": 1.0,
+            "text_original": "one second",
+            "language": "en",
+            "origin": "sidecar",
+        }
+    ]
+    value["transcript"]["raw_artifact_hash"] = "c" * 64
+    value["transcript"]["speech_coverage"] = {
+        "speech_seconds": 1.0,
+        "covered_seconds": 1.0,
+        "denominator": "timeline",
+        "coverage_ratio": 1.0 / 60.0,
+        "denominator_seconds": 60.0,
+    }
+    value["visual"]["status"] = "complete"
+    value["visual"]["scenes"] = [
+        {"id": "scene-1", "start_seconds": 0.0, "end_seconds": 60.0, "detector": "content"}
+    ]
+    value["visual"]["assets"] = []
+    value["visual"]["occurrences"] = []
+    value["visual"]["ocr_regions"] = []
+    value["visual"]["gaps"] = []
+    with pytest.raises(ValueError, match="derived|uncovered|complete|occurrence|timeline"):
+        EvidenceBundle.model_validate(value)
+
+
 def test_forged_complete_sparse_transcript_without_visual_fails_validation():
     value = payload()
     value["status"] = "complete"

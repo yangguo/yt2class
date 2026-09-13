@@ -7,6 +7,7 @@ time, so ordinary installs and CI do not download a model.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -99,7 +100,24 @@ class ASRResult(StrictModel):
     raw_artifact_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     audio_sha256: Digest | None = None
     parent_hash: Digest | None = None
+    command_digest: Digest | None = None
     error: str | None = Field(default=None, max_length=400)
+
+
+@dataclass(frozen=True)
+class AudioExtractResult:
+    """Audio extracted from verified parent media, with transform provenance."""
+
+    output_path: Path
+    audio_sha256: str
+    parent_hash: str
+    command_digest: str
+    time_offset_seconds: float = 0.0
+
+
+def _command_digest(command: list[str]) -> str:
+    canonical = json.dumps(command, ensure_ascii=False, separators=(",", ":"))
+    return sha256(canonical.encode("utf-8")).hexdigest()
 
 
 Runner = Callable[..., object]
@@ -144,24 +162,29 @@ def build_asr_command(request: ASRRequest) -> list[str]:
     )
 
 
-def extract_audio(
+def extract_audio_with_provenance(
     input_path: Path,
     output_path: Path,
     *,
     runner: Runner = subprocess.run,
     timeout_seconds: float = 300.0,
     cancel_event: Event | None = None,
-) -> Path:
-    """Extract an ASR-ready audio artifact using an atomic temporary output."""
+) -> AudioExtractResult:
+    """Extract ASR audio from parent media and record the transform binding."""
 
     input_path = Path(input_path)
     output_path = Path(output_path)
     if not input_path.is_file() or input_path.stat().st_size == 0:
         raise ASRError(f"ASR source media is missing or empty: {input_path}")
+    try:
+        parent_hash = content_sha256(input_path)
+    except (OSError, SourceInputError) as error:
+        raise ASRError(f"cannot hash ASR parent media: {input_path}") from error
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = output_path.with_name(f".{output_path.stem}.part{output_path.suffix}")
     temporary.unlink(missing_ok=True)
     command = build_audio_extract_command(input_path, temporary)
+    command_digest = _command_digest(command)
     try:
         if runner is subprocess.run:
             completed = run_process(
@@ -201,7 +224,37 @@ def extract_audio(
         temporary.unlink(missing_ok=True)
         raise ASRError("ffmpeg completed but did not produce ASR audio")
     temporary.replace(output_path)
-    return output_path
+    try:
+        audio_hash = content_sha256(output_path)
+    except (OSError, SourceInputError) as error:
+        output_path.unlink(missing_ok=True)
+        raise ASRError(f"cannot hash extracted ASR audio: {output_path}") from error
+    return AudioExtractResult(
+        output_path=output_path,
+        audio_sha256=audio_hash,
+        parent_hash=parent_hash,
+        command_digest=command_digest,
+        time_offset_seconds=0.0,
+    )
+
+
+def extract_audio(
+    input_path: Path,
+    output_path: Path,
+    *,
+    runner: Runner = subprocess.run,
+    timeout_seconds: float = 300.0,
+    cancel_event: Event | None = None,
+) -> Path:
+    """Extract an ASR-ready audio artifact using an atomic temporary output."""
+
+    return extract_audio_with_provenance(
+        input_path,
+        output_path,
+        runner=runner,
+        timeout_seconds=timeout_seconds,
+        cancel_event=cancel_event,
+    ).output_path
 
 
 def _as_float(value: object, *, label: str) -> float:
@@ -379,9 +432,11 @@ __all__ = [
     "ASRResult",
     "ASRSegment",
     "ASRTimeout",
+    "AudioExtractResult",
     "build_audio_extract_command",
     "build_asr_command",
     "extract_audio",
+    "extract_audio_with_provenance",
     "parse_asr_json",
     "run_asr",
 ]

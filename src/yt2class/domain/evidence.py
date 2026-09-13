@@ -146,57 +146,54 @@ class EvidenceBundle(StrictModel):
         unique_ids(self.artifacts, label="evidence artifact")
         return self
 
-    def _evidence_intervals(self) -> list[tuple[float, float]]:
-        intervals = [
-            (segment.start_seconds, segment.end_seconds)
-            for segment in self.transcript.segments
-        ]
-        intervals.extend((scene.start_seconds, scene.end_seconds) for scene in self.visual.scenes)
-        intervals.extend(
-            (point, min(self.duration_seconds, point + 1e-6))
-            for occurrence in self.visual.occurrences
-            for point in (
+    def _usable_visual_intervals(self) -> list[tuple[float, float]]:
+        assets = {asset.id: asset for asset in self.visual.assets}
+        evidenced_scenes: set[str] = set()
+        intervals: list[tuple[float, float]] = []
+        for occurrence in self.visual.occurrences:
+            asset = assets.get(occurrence.asset_id)
+            if asset is None or asset.role != "frame":
+                continue
+            evidenced_scenes.add(occurrence.scene_id)
+            point = (
                 occurrence.actual_source_seconds
                 if occurrence.actual_source_seconds is not None
                 else occurrence.timestamp_seconds
                 if occurrence.timestamp_seconds is not None
-                else occurrence.requested_seconds,
+                else occurrence.requested_seconds
             )
-            if point is not None and 0 <= point < self.duration_seconds
-        )
-        intervals.extend((gap.start_seconds, gap.end_seconds) for gap in self.transcript.gaps)
-        intervals.extend((gap.start_seconds, gap.end_seconds) for gap in self.visual.gaps)
-        intervals.extend((gap.start_seconds, gap.end_seconds) for gap in self.gaps)
+            if point is not None and 0 <= point < self.duration_seconds:
+                intervals.append((point, min(self.duration_seconds, point + 1e-6)))
+        for scene in self.visual.scenes:
+            if scene.id in evidenced_scenes:
+                intervals.append((scene.start_seconds, scene.end_seconds))
+        return intervals
+
+    def _evidence_intervals(self, *, include_gaps: bool) -> list[tuple[float, float]]:
+        intervals = [
+            (segment.start_seconds, segment.end_seconds)
+            for segment in self.transcript.segments
+        ]
+        intervals.extend(self._usable_visual_intervals())
+        if include_gaps:
+            intervals.extend((gap.start_seconds, gap.end_seconds) for gap in self.transcript.gaps)
+            intervals.extend((gap.start_seconds, gap.end_seconds) for gap in self.visual.gaps)
+            intervals.extend((gap.start_seconds, gap.end_seconds) for gap in self.gaps)
         return intervals
 
     def _check_derived_timeline(self) -> None:
-        leftover = uncovered_half_open(self.duration_seconds, self._evidence_intervals())
+        leftover = uncovered_half_open(
+            self.duration_seconds, self._evidence_intervals(include_gaps=True)
+        )
         if leftover:
             raise ValueError(
                 "EvidenceBundle timeline is not closed; uncovered ranges remain without "
                 "transcript, visual, or explicit gap coverage"
             )
         if self.status == "complete":
-            evidence_only = [
-                (segment.start_seconds, segment.end_seconds)
-                for segment in self.transcript.segments
-            ]
-            evidence_only.extend(
-                (scene.start_seconds, scene.end_seconds) for scene in self.visual.scenes
-            )
-            evidence_only.extend(
-                (point, min(self.duration_seconds, point + 1e-6))
-                for occurrence in self.visual.occurrences
-                for point in (
-                    occurrence.actual_source_seconds
-                    if occurrence.actual_source_seconds is not None
-                    else occurrence.timestamp_seconds
-                    if occurrence.timestamp_seconds is not None
-                    else occurrence.requested_seconds,
-                )
-                if point is not None and 0 <= point < self.duration_seconds
-            )
-            if uncovered_half_open(self.duration_seconds, evidence_only):
+            if uncovered_half_open(
+                self.duration_seconds, self._evidence_intervals(include_gaps=False)
+            ):
                 raise ValueError(
                     "complete EvidenceBundle coverage is not derived from "
                     "segment/scene/occurrence unions"

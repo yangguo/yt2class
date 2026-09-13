@@ -57,16 +57,39 @@ def _signal_group(process: subprocess.Popen[str], sig: signal.Signals) -> None:
         return
 
 
+def _signal_pgid(pgid: int | None, sig: signal.Signals) -> None:
+    if pgid is None:
+        return
+    if os.name == "posix":
+        try:
+            os.killpg(pgid, sig)
+            return
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+
 def _terminate(process: subprocess.Popen[str], *, grace_seconds: float) -> None:
+    pgid = process.pid
     _signal_group(process, signal.SIGTERM)
+    deadline = time.monotonic() + grace_seconds
+    while time.monotonic() < deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        if process.poll() is not None:
+            time.sleep(min(0.05, remaining))
+            continue
+        try:
+            process.wait(timeout=min(0.05, remaining))
+        except subprocess.TimeoutExpired:
+            continue
+    # Always SIGKILL the group after the grace window so descendants that
+    # ignored SIGTERM cannot survive a leader that already exited.
+    _signal_pgid(pgid, signal.SIGKILL)
     try:
         process.wait(timeout=grace_seconds)
     except subprocess.TimeoutExpired:
-        _signal_group(process, signal.SIGKILL)
-        try:
-            process.wait(timeout=grace_seconds)
-        except subprocess.TimeoutExpired:
-            pass
+        pass
     try:
         process.communicate(timeout=grace_seconds)
     except subprocess.TimeoutExpired:

@@ -109,6 +109,7 @@ class TranscriptDocument(StrictModel):
     gaps: list[TranscriptGap] = Field(default_factory=list)
     audio_input_hash: Digest | None = None
     audio_parent_hash: Digest | None = None
+    audio_command_digest: Digest | None = None
     time_offset_seconds: Seconds = 0.0
 
     @model_validator(mode="after")
@@ -119,6 +120,13 @@ class TranscriptDocument(StrictModel):
             raise ValueError("raw_artifact_hash is required when transcript has segments")
         if self.status == "complete" and (not self.segments or self.gaps):
             raise ValueError("complete transcript requires segments and no coverage gaps")
+        if self.status == "complete":
+            if self.duration_seconds is None:
+                raise ValueError("complete transcript requires explicit duration")
+            if self.speech_coverage.denominator != "timeline":
+                raise ValueError("complete transcript requires a timeline coverage denominator")
+            if self.speech_coverage.denominator_seconds is None:
+                raise ValueError("complete transcript requires timeline denominator seconds")
         if (
             self.status == "complete"
             and self.speech_coverage.denominator == "timeline"

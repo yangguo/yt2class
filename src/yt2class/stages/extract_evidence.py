@@ -10,7 +10,14 @@ import subprocess
 from threading import Event
 from typing import Callable
 
-from yt2class.adapters.asr import ASRCancelled, ASRError, ASRRequest, ASRResult, run_asr
+from yt2class.adapters.asr import (
+    ASRCancelled,
+    ASRError,
+    ASRRequest,
+    ASRResult,
+    extract_audio_with_provenance,
+    run_asr,
+)
 from pydantic import ValidationError
 
 from yt2class.adapters.ocr import OCRCancelled, OCRContractError, OCRStatus, ocr_density, run_ocr
@@ -62,8 +69,10 @@ def _transcript_from_asr(result: ASRResult, *, source_id: str, duration: float) 
         raise ASRError(
             f"ASR result source_id {result.source_id!r} does not match SourceManifest {source_id!r}"
         )
-    if result.audio_sha256 is None:
+    if result.audio_sha256 is None or result.parent_hash is None:
         raise ASRError("ASR result is missing audio input hash provenance")
+    if result.command_digest is None:
+        raise ASRError("ASR result is missing audio transform command digest")
     if result.segments and result.raw_artifact_hash is None:
         raise ASRError("ASR result with segments is missing its result hash")
     segments: list[TranscriptSegment] = []
@@ -157,6 +166,7 @@ def _transcript_from_asr(result: ASRResult, *, source_id: str, duration: float) 
         gaps=gaps,
         audio_input_hash=result.audio_sha256,
         audio_parent_hash=result.parent_hash,
+        audio_command_digest=result.command_digest,
         time_offset_seconds=result.offset_seconds,
     )
 
@@ -306,6 +316,7 @@ def _extract_evidence_unlocked(
     ocr_runner: Runner = subprocess.run,
     asr_request: ASRRequest | None = None,
     asr_runner: Runner = subprocess.run,
+    audio_runner: Runner = subprocess.run,
     cancel_event: Event | None = None,
 ) -> EvidenceBundle:
     """Build a deterministic evidence bundle without a page-count cutoff."""
@@ -349,17 +360,41 @@ def _extract_evidence_unlocked(
                     f"ASR request source_id {asr_request.source_id!r} does not match "
                     f"SourceManifest {source.source_id!r}"
                 )
-            asr_result = run_asr(asr_request, runner=asr_runner, cancel_event=cancel_event)
+            extracted = extract_audio_with_provenance(
+                Path(media_path),
+                _safe_output_path(run_root, "tmp/asr-audio.wav", workspace=workspace),
+                runner=audio_runner,
+                cancel_event=cancel_event,
+            )
+            if extracted.parent_hash != source.sha256:
+                raise ASRError("extracted audio parent hash does not match SourceManifest")
+            caller_audio = Path(asr_request.audio_path).expanduser()
+            if caller_audio.exists():
+                try:
+                    caller_resolved = caller_audio.resolve(strict=True)
+                except OSError as error:
+                    raise ASRError(f"cannot resolve ASR audio_path: {caller_audio}") from error
+                if caller_resolved != Path(media_path).resolve():
+                    try:
+                        caller_hash = content_sha256(caller_resolved)
+                    except OSError as error:
+                        raise ASRError(f"cannot hash ASR audio_path: {caller_resolved}") from error
+                    if caller_hash != extracted.audio_sha256:
+                        raise ASRError("ASR audio is not derived from verified source media")
+            bound_request = asr_request.model_copy(update={"audio_path": extracted.output_path})
+            asr_result = run_asr(bound_request, runner=asr_runner, cancel_event=cancel_event)
             if asr_result.status in {"failed", "cancelled"}:
                 raise ASRError(asr_result.error or f"ASR status is {asr_result.status}")
-            if asr_result.parent_hash is None:
-                try:
-                    parent_hash = content_sha256(Path(media_path))
-                except OSError:
-                    parent_hash = source.sha256
-                asr_result = asr_result.model_copy(update={"parent_hash": parent_hash})
-            if asr_result.parent_hash != source.sha256:
-                raise ASRError("ASR audio parent hash does not match SourceManifest")
+            if asr_result.audio_sha256 != extracted.audio_sha256:
+                raise ASRError("ASR audio hash does not match extracted source audio")
+            if asr_result.parent_hash not in {None, extracted.parent_hash}:
+                raise ASRError("ASR result parent hash does not match extracted audio provenance")
+            asr_result = asr_result.model_copy(
+                update={
+                    "parent_hash": extracted.parent_hash,
+                    "command_digest": extracted.command_digest,
+                }
+            )
             transcript = _transcript_from_asr(
                 asr_result,
                 source_id=source.source_id,
@@ -598,6 +633,7 @@ def extract_evidence(
     ocr_runner: Runner = subprocess.run,
     asr_request: ASRRequest | None = None,
     asr_runner: Runner = subprocess.run,
+    audio_runner: Runner = subprocess.run,
     cancel_event: Event | None = None,
 ) -> EvidenceBundle:
     """Extract evidence, taking the workspace single-writer lock when requested."""
@@ -621,6 +657,7 @@ def extract_evidence(
                 ocr_runner=ocr_runner,
                 asr_request=asr_request,
                 asr_runner=asr_runner,
+                audio_runner=audio_runner,
                 cancel_event=cancel_event,
             )
     return _extract_evidence_unlocked(
@@ -640,6 +677,7 @@ def extract_evidence(
         ocr_runner=ocr_runner,
         asr_request=asr_request,
         asr_runner=asr_runner,
+        audio_runner=audio_runner,
         cancel_event=cancel_event,
     )
 

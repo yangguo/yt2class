@@ -296,6 +296,36 @@ def test_complete_timeline_transcript_rejects_uncovered_duration():
         )
 
 
+def test_complete_transcript_requires_explicit_duration_and_timeline_denominator():
+    from yt2class.domain.transcript import SpeechCoverage, TranscriptDocument, TranscriptSegment
+
+    with pytest.raises(ValueError, match="duration|denominator"):
+        TranscriptDocument(
+            schema_version="1.0",
+            source_id="src-no-duration",
+            language="en",
+            raw_artifact_hash="a" * 64,
+            alignment="sentence",
+            speech_coverage=SpeechCoverage(
+                speech_seconds=1.0,
+                covered_seconds=1.0,
+                denominator="timeline",
+                coverage_ratio=1.0,
+            ),
+            segments=[
+                TranscriptSegment(
+                    id="seg-1",
+                    start_seconds=0.0,
+                    end_seconds=1.0,
+                    text_original="hello",
+                    language="en",
+                    origin="sidecar",
+                )
+            ],
+            status="complete",
+        )
+
+
 def test_forged_complete_coverage_is_derived_from_segment_unions():
     from yt2class.domain.transcript import SpeechCoverage, TranscriptDocument, TranscriptSegment
 

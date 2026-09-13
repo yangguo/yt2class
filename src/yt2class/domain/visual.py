@@ -156,23 +156,31 @@ class VisualCatalogue(StrictModel):
             return
         if self.gaps:
             raise ValueError("complete visual catalogue cannot contain coverage gaps")
-        scene_intervals = [(scene.start_seconds, scene.end_seconds) for scene in self.scenes]
-        occurrence_intervals = [
-            (point, point + 1e-6)
-            for occurrence in self.occurrences
-            for point in (
-                occurrence.actual_source_seconds
-                if occurrence.actual_source_seconds is not None
-                else occurrence.timestamp_seconds
-                if occurrence.timestamp_seconds is not None
-                else occurrence.requested_seconds,
+        assets = {asset.id: asset for asset in self.assets}
+        evidenced_scenes: set[str] = set()
+        for occurrence in self.occurrences:
+            asset = assets.get(occurrence.asset_id)
+            if asset is None or asset.role != "frame":
+                continue
+            evidenced_scenes.add(occurrence.scene_id)
+        if not evidenced_scenes:
+            raise ValueError(
+                "complete visual catalogue requires usable occurrences and assets, not scenes alone"
             )
-            if point is not None
+        missing = [scene.id for scene in self.scenes if scene.id not in evidenced_scenes]
+        if missing:
+            raise ValueError(
+                "complete visual catalogue has scenes without usable occurrences"
+            )
+        scene_intervals = [
+            (scene.start_seconds, scene.end_seconds)
+            for scene in self.scenes
+            if scene.id in evidenced_scenes
         ]
         if not scene_intervals:
             raise ValueError("complete visual catalogue requires scenes covering the timeline")
         span = max(end for _start, end in scene_intervals)
-        leftover = uncovered_half_open(span, scene_intervals + occurrence_intervals)
+        leftover = uncovered_half_open(span, scene_intervals)
         if leftover:
             raise ValueError(
                 "complete visual catalogue coverage is not derived from scene/occurrence unions"

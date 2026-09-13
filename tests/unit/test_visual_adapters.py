@@ -257,11 +257,26 @@ def test_visual_catalogue_rejects_ocr_bbox_outside_asset():
 def test_complete_visual_catalogue_rejects_uncovered_scene_union():
     import pytest
 
-    with pytest.raises(ValueError, match="derived|scenes|uncovered|complete"):
+    with pytest.raises(ValueError, match="derived|scenes|uncovered|complete|occurrence"):
         VisualCatalogue(
             schema_version="1.0",
             source_id="src-visual",
             scenes=[Scene(id="scene-1", start_seconds=0.4, end_seconds=1.0, detector="content")],
+            assets=[],
+            occurrences=[],
+            ocr_regions=[],
+            status="complete",
+        )
+
+
+def test_complete_visual_rejects_scenes_without_occurrences():
+    import pytest
+
+    with pytest.raises(ValueError, match="occurrence|asset"):
+        VisualCatalogue(
+            schema_version="1.0",
+            source_id="src-visual",
+            scenes=[Scene(id="scene-1", start_seconds=0.0, end_seconds=1.0, detector="content")],
             assets=[],
             occurrences=[],
             ocr_regions=[],

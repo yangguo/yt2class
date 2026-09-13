@@ -20,6 +20,7 @@ def test_asr_transcript_clips_words_to_clipped_segment_and_marks_quality():
         raw_artifact_hash="a" * 64,
         audio_sha256="b" * 64,
         parent_hash="c" * 64,
+        command_digest="d" * 64,
         segments=[
             ASRSegment(
                 id="asr-1",

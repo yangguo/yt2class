@@ -88,6 +88,43 @@ def test_cancel_terminates_the_entire_process_group(tmp_path: Path):
     assert _wait_until_dead(child_pid)
 
 
+def test_sigterm_ignoring_descendant_is_killed_after_grace(tmp_path: Path):
+    pid_path = tmp_path / "child.pid"
+    script = (
+        "import signal, subprocess, sys, time\n"
+        "from pathlib import Path\n"
+        "child = subprocess.Popen([\n"
+        "    sys.executable, '-c',\n"
+        "    'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)',\n"
+        "])\n"
+        f"Path({str(pid_path)!r}).write_text(str(child.pid), encoding='ascii')\n"
+        "time.sleep(30)\n"
+    )
+    cancelled = Event()
+
+    def trigger_cancel() -> None:
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not pid_path.exists():
+            time.sleep(0.05)
+        time.sleep(0.1)
+        cancelled.set()
+
+    trigger = Thread(target=trigger_cancel)
+    trigger.start()
+    try:
+        with pytest.raises(ProcessCancelled):
+            run_process(
+                [sys.executable, "-c", script],
+                timeout_seconds=10.0,
+                cancel_event=cancelled,
+                terminate_grace_seconds=0.2,
+            )
+    finally:
+        trigger.join(timeout=2.0)
+    child_pid = int(pid_path.read_text(encoding="ascii"))
+    assert _wait_until_dead(child_pid)
+
+
 def test_timeout_terminates_the_entire_process_group(tmp_path: Path):
     pid_path = tmp_path / "child.pid"
     with pytest.raises(ProcessTimedOut):

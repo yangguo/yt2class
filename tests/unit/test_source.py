@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import multiprocessing
 from pathlib import Path
+import time
 
 import pytest
 
@@ -133,3 +135,44 @@ def test_stale_write_lock_from_dead_pid_is_reclaimed(tmp_path: Path):
     with workspace.write_lock():
         assert workspace.lock_path.is_file()
     assert not workspace.lock_path.exists()
+
+
+def _stale_lock_contest(root: str, run_id: str, result_path: str, go_path: str) -> None:
+    from yt2class.orchestration.workspace import Workspace, WorkspaceBusy
+
+    workspace = Workspace.create(Path(root), run_id=run_id)
+    while not Path(go_path).exists():
+        time.sleep(0.01)
+    try:
+        with workspace.write_lock():
+            Path(result_path).write_text("held", encoding="ascii")
+            time.sleep(0.4)
+    except WorkspaceBusy:
+        Path(result_path).write_text("busy", encoding="ascii")
+
+
+def test_two_stale_lock_reclaimers_cannot_both_own_the_workspace(tmp_path: Path):
+    workspace = Workspace.create(tmp_path, run_id="stale-race")
+    workspace.lock_path.write_text("pid=999999\n", encoding="ascii")
+    go_path = tmp_path / "go"
+    first = tmp_path / "first.txt"
+    second = tmp_path / "second.txt"
+    ctx = multiprocessing.get_context("spawn")
+    processes = [
+        ctx.Process(
+            target=_stale_lock_contest,
+            args=(str(tmp_path), "stale-race", str(path), str(go_path)),
+        )
+        for path in (first, second)
+    ]
+    for process in processes:
+        process.start()
+    time.sleep(0.15)
+    go_path.write_text("go", encoding="ascii")
+    for process in processes:
+        process.join(timeout=5.0)
+        assert process.exitcode == 0
+    assert {first.read_text(encoding="ascii"), second.read_text(encoding="ascii")} == {
+        "held",
+        "busy",
+    }

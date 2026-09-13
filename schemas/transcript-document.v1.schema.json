@@ -340,6 +340,19 @@
       "default": null,
       "title": "Audio Parent Hash"
     },
+    "audio_command_digest": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Audio Command Digest"
+    },
     "time_offset_seconds": {
       "default": 0.0,
       "minimum": 0,
