@@ -79,17 +79,84 @@ def synthetic_outline_from_payload(payload: dict[str, Any] | None) -> dict[str, 
 
 def _kind_for_text(text: str) -> str:
     lowered = text.lower()
-    if any(marker in text or marker in lowered for marker in ("回顾", "复习", "recap", "刚才")):
+    if any(marker in text or marker in lowered for marker in ("回顾", "复习", "recap")):
         return "recap"
     if any(marker in text or marker in lowered for marker in ("例如", "比如", "example")):
         return "example"
-    if any(marker in text or marker in lowered for marker in ("步骤", "首先", "然后", "step", "1.", "2.")):
+    if any(marker in text or marker in lowered for marker in ("步骤", "首先", "step ", "step")):
         return "procedure"
-    if any(marker in text or marker in lowered for marker in ("对比", "不同", "versus", "vs")):
+    if any(marker in text or marker in lowered for marker in ("对比", "versus", "vs")):
         return "comparison"
-    if any(marker in text or marker in lowered for marker in ("注意", "不要", "警告", "warning")):
+    if any(marker in text or marker in lowered for marker in ("注意", "警告", "warning")):
         return "warning"
     return "concept"
+
+
+def _unit_from_excerpt(
+    *,
+    segment_id: str,
+    topic_id: str,
+    excerpt: dict[str, Any],
+    frames: list[dict[str, Any]],
+    allowed: set[str],
+    index: int,
+    core: tuple[float, float],
+) -> dict[str, Any] | None:
+    text = excerpt.get("text_original") or "课程内容"
+    kind = _kind_for_text(text)
+    start = max(float(excerpt.get("start_seconds", core[0])), core[0])
+    end = min(float(excerpt.get("end_seconds", core[1])), core[1])
+    if end <= start:
+        start, end = core
+    nearby = [
+        frame
+        for frame in frames
+        if start - 15 <= float(frame.get("timestamp_seconds", start)) < end + 15
+        and frame["id"] in allowed
+    ]
+    evidence = [excerpt["id"]] if excerpt.get("id") in allowed else []
+    evidence.extend(frame["id"] for frame in nearby if frame["id"] in allowed)
+    if kind == "procedure":
+        evidence.extend(frame["id"] for frame in frames if frame["id"] in allowed)
+    evidence = [item for item in dict.fromkeys(evidence) if item in allowed]
+    if not evidence:
+        return None
+    if text_has_negation(text) and not text_has_negation(text[:400]):
+        text = text[:400]
+    relations = []
+    if kind == "procedure" and len([item for item in evidence if item in {frame["id"] for frame in frames}]) >= 2:
+        relations = []
+    return {
+        "id": f"unit-{segment_id}-{index}",
+        "topic_id": topic_id,
+        "segment_ids": [segment_id],
+        "start_seconds": start,
+        "end_seconds": end,
+        "kind": kind,
+        "claims": [
+            {
+                "id": f"claim-{segment_id}-{index}",
+                "text": text[:400],
+                "evidence_ids": evidence[:8],
+                "status": "draft",
+                "qualifiers": [],
+                "modality": "both" if nearby else "audio",
+                "provenance": "source",
+            }
+        ],
+        "relations": relations,
+        "visual_candidates": [
+            {
+                "frame_id": frame["id"],
+                "relevance": 0.8,
+                "legibility": 0.7,
+                "selection_reason": "scheduled frame in window",
+            }
+            for frame in nearby
+        ][:8],
+        "uncertainty": [],
+        "evidence_requests": [],
+    }
 
 
 def synthetic_segment_from_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
@@ -103,82 +170,52 @@ def synthetic_segment_from_payload(payload: dict[str, Any] | None) -> dict[str, 
     core = payload.get("core_range") or [info["start"], info["end"]]
     start, end = float(core[0]), float(core[1])
     units: list[dict[str, Any]] = []
-    if not excerpts and not frames:
+    if excerpts:
+        for index, excerpt in enumerate(excerpts, start=1):
+            built = _unit_from_excerpt(
+                segment_id=segment_id,
+                topic_id=topic_id,
+                excerpt=excerpt,
+                frames=frames,
+                allowed=allowed,
+                index=index,
+                core=(start, end),
+            )
+            if built is not None:
+                units.append(built)
+        return {"units": units}
+    if not frames:
         return {"units": []}
-
-    texts = [row.get("text_original") or "" for row in excerpts]
-    joined = " ".join(texts) or "可见画面"
-    kind = _kind_for_text(joined)
-    evidence = [item for item in (info["evidence_ids"] or [row["id"] for row in excerpts] + [row["id"] for row in frames]) if item in allowed]
+    evidence = [frame["id"] for frame in frames if frame["id"] in allowed]
     if not evidence:
         return {"units": []}
-
-    claim_text = joined[:400]
-    if text_has_negation(joined) and not text_has_negation(claim_text):
-        claim_text = joined[:400]
-    if text_has_units(joined) and not text_has_units(claim_text):
-        claim_text = joined[:400]
-
-    relations: list[dict[str, str]] = []
-    if kind == "procedure" and len(frames) >= 2:
-        relations.append(
+    return {
+        "units": [
             {
-                "from_id": f"claim-{segment_id}-1",
-                "to_id": f"claim-{segment_id}-2" if len(excerpts) > 1 else f"unit-{segment_id}",
-                "kind": "step_before",
+                "id": f"unit-{segment_id}",
+                "topic_id": topic_id,
+                "segment_ids": [segment_id],
+                "start_seconds": start,
+                "end_seconds": end,
+                "kind": "concept",
+                "claims": [
+                    {
+                        "id": f"claim-{segment_id}-1",
+                        "text": "可见画面",
+                        "evidence_ids": evidence[:8],
+                        "status": "draft",
+                        "qualifiers": [],
+                        "modality": "visual",
+                        "provenance": "source",
+                    }
+                ],
+                "relations": [],
+                "visual_candidates": [],
+                "uncertainty": [],
+                "evidence_requests": [],
             }
-        )
-
-    claims = [
-        {
-            "id": f"claim-{segment_id}-1",
-            "text": claim_text or "课程内容",
-            "evidence_ids": evidence[:8],
-            "status": "draft",
-            "qualifiers": [],
-            "modality": "both" if excerpts and frames else ("audio" if excerpts else "visual"),
-            "provenance": "source",
-        }
-    ]
-    if kind == "procedure" and len(excerpts) > 1:
-        second_evidence = [excerpts[1]["id"]] if excerpts[1]["id"] in allowed else evidence[:1]
-        claims.append(
-            {
-                "id": f"claim-{segment_id}-2",
-                "text": excerpts[1].get("text_original") or "下一步",
-                "evidence_ids": second_evidence,
-                "status": "draft",
-                "qualifiers": [],
-                "modality": "audio",
-                "provenance": "source",
-            }
-        )
-
-    units.append(
-        {
-            "id": f"unit-{segment_id}",
-            "topic_id": topic_id,
-            "segment_ids": [segment_id],
-            "start_seconds": start,
-            "end_seconds": end,
-            "kind": kind,
-            "claims": claims,
-            "relations": relations if kind == "procedure" and len(frames) >= 2 and len(claims) > 1 else [],
-            "visual_candidates": [
-                {
-                    "frame_id": frame["id"],
-                    "relevance": 0.8,
-                    "legibility": 0.7,
-                    "selection_reason": "scheduled frame in window",
-                }
-                for frame in frames
-                if frame["id"] in allowed
-            ][:8],
-            "uncertainty": [],
-            "evidence_requests": [],
-        }
-    )
-    return {"units": units}
+        ]
+    }
 
 
 def course_responder(provider: FakeProvider, request: ModelRequest) -> dict[str, Any]:

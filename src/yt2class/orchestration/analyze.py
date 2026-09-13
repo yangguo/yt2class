@@ -53,10 +53,10 @@ class AnalysisResult:
     def m2_gate_ok(self) -> bool:
         if not self.coverage_complete:
             return False
-        for claim in self.knowledge.iter_claims():
-            if not claim.evidence_ids:
-                return False
-        return True
+        claims = self.knowledge.iter_claims()
+        if not claims:
+            return False
+        return all(claim.evidence_ids for claim in claims)
 
 
 def analyze_course(
@@ -71,6 +71,8 @@ def analyze_course(
     cancel_event: Event | None = None,
     page_budget: Any = None,
     output_dir: Path | None = None,
+    frame_extractor: Any = None,
+    clip_extractor: Any = None,
 ) -> AnalysisResult:
     """Run the M2 understanding loop. ``page_budget`` is accepted and ignored."""
 
@@ -116,6 +118,8 @@ def analyze_course(
             capabilities=caps,
             duration_seconds=duration_seconds,
             output_dir=output_dir,
+            frame_extractor=frame_extractor,
+            clip_extractor=clip_extractor,
             budget=budget,
             cancel_event=cancel_event,
         )
@@ -136,16 +140,15 @@ def analyze_course(
     gap_reasons = [
         window.failure_reason or window.status
         for window in segments.windows
-        if window.status in {"degraded", "failed"}
+        if window.status != "complete"
     ]
-    coverage = cores_cover_duration(segments.windows, duration_seconds) and all(
-        window.status != "scheduled" for window in segments.windows
-    )
-    # Scheduled leftover would mean analysis was truncated; treat as a gap.
+    tiled = cores_cover_duration(segments.windows, duration_seconds)
+    coverage = tiled and all(window.status == "complete" for window in segments.windows)
+    if not tiled:
+        gap_reasons.append("core windows do not tile [0, duration)")
     unfinished = [window.id for window in segments.windows if window.status == "scheduled"]
     if unfinished:
         gap_reasons.append(f"unanalyzed windows: {unfinished}")
-        coverage = False
     return AnalysisResult(
         course_map=course_map,
         segments=segments,
@@ -165,6 +168,8 @@ def analyze_evidence_bundle(
     page_budget: Any = None,
     output_dir: Path | None = None,
     cancel_event: Event | None = None,
+    frame_extractor: Any = None,
+    clip_extractor: Any = None,
 ) -> AnalysisResult:
     return analyze_course(
         source_id=bundle.source_id,
@@ -176,6 +181,8 @@ def analyze_evidence_bundle(
         page_budget=page_budget,
         output_dir=output_dir,
         cancel_event=cancel_event,
+        frame_extractor=frame_extractor,
+        clip_extractor=clip_extractor,
     )
 
 

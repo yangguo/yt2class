@@ -202,3 +202,40 @@ def test_reducer_drops_empty_blocks_and_keeps_neighbors():
     assert [topic.id for topic in course_map.topics] == ["topic-start", "topic-end"]
     assert any("dropped block-0002" in guess for guess in course_map.unverified_guesses)
     assert course_map.relations[0].kind == "follows"
+
+
+def test_non_speculative_topic_must_cite_block_local_evidence():
+    transcript = make_transcript(
+        [("cap-early", 0.0, 10.0, "开头。"), ("cap-late", 40.0, 50.0, "结尾。")],
+        duration=60.0,
+    )
+    visual = make_visual([("frame-late", 45.0, "scene-001")], duration=60.0)
+    provider = FakeProvider(
+        frames_caps(),
+        structured={
+            "topics": [
+                {
+                    "id": "topic-stolen",
+                    "title": "引用后段证据",
+                    "goal": "应被拒绝",
+                    "start_seconds": 0.0,
+                    "end_seconds": 10.0,
+                    "evidence_ids": ["cap-late"],
+                    "speculative": False,
+                },
+                {
+                    "id": "topic-empty",
+                    "title": "无证据主题",
+                    "goal": "应被拒绝",
+                    "start_seconds": 0.0,
+                    "end_seconds": 10.0,
+                    "evidence_ids": [],
+                    "speculative": False,
+                },
+            ]
+        },
+    )
+    course_map = outline_course(
+        transcript, visual, provider, source_id="src-demo", duration_seconds=60.0, max_block_chars=20
+    )
+    assert all(topic.id not in {"topic-stolen", "topic-empty"} for topic in course_map.topics)

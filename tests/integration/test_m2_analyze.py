@@ -25,7 +25,9 @@ def test_fake_provider_vertical_path_meets_m2_gate():
     assert cores_cover_duration(result.segments.windows, 300.0)
     assert result.m2_gate_ok()
     kinds = {unit.kind for unit in result.knowledge.units}
-    assert {"concept", "example", "procedure", "recap"} & kinds
+    assert "concept" in kinds
+    assert "example" in kinds
+    assert "procedure" in kinds
     assert result.knowledge.iter_claims()
     assert all(claim.evidence_ids for claim in result.knowledge.iter_claims())
     assert all(window.status != "scheduled" for window in result.segments.windows)
@@ -96,3 +98,63 @@ def test_analyze_cli_fake_provider(tmp_path):
         prog_name="yt2class",
     )
     assert rejected.exit_code == 2
+
+
+def test_failed_window_is_not_coverage_complete():
+    from yt2class.adapters.providers.base import FakeProvider
+    from yt2class.adapters.providers.synthetic import course_responder
+    from tests.helpers.m2 import frames_caps
+
+    def fail_segments(provider, request):
+        if request.role == "outline":
+            return course_responder(provider, request)
+        return None
+
+    transcript, visual = lecture_fixture()
+    result = analyze_course(
+        source_id="src-demo",
+        duration_seconds=300.0,
+        transcript=transcript,
+        visual=visual,
+        provider=FakeProvider(frames_caps(), responder=fail_segments),
+        capabilities=frames_caps(),
+    )
+    assert result.coverage_complete is False
+    assert result.m2_gate_ok() is False
+    assert any(window.status == "failed" for window in result.segments.windows)
+
+
+def test_empty_knowledge_fails_m2_gate():
+    from yt2class.domain.course_map import CourseMap
+    from yt2class.domain.knowledge import KnowledgeDocument
+    from yt2class.domain.segment import AnalysisWindow, SegmentManifest
+    from yt2class.orchestration.analyze import AnalysisResult
+    from tests.helpers.m2 import lecture_fixture
+
+    transcript, visual = lecture_fixture()
+    manifest = SegmentManifest(
+        schema_version="1.0",
+        source_id="src-demo",
+        duration_seconds=300.0,
+        windows=[
+            AnalysisWindow(
+                id="seg-0001",
+                core_start_seconds=0.0,
+                core_end_seconds=300.0,
+                context_start_seconds=0.0,
+                context_end_seconds=300.0,
+                evidence_ids=["cap-001"],
+                status="complete",
+            )
+        ],
+    )
+    result = AnalysisResult(
+        course_map=CourseMap(schema_version="1.0", source_id="src-demo", topics=[]),
+        segments=manifest,
+        knowledge=KnowledgeDocument(schema_version="1.0", source_id="src-demo", units=[]),
+        visual=visual,
+        outcomes=[],
+        coverage_complete=True,
+        gap_reasons=[],
+    )
+    assert result.m2_gate_ok() is False

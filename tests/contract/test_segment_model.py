@@ -201,3 +201,141 @@ def test_http_ok_contract_failure_repairs_once_then_fails_ledger():
     assert failed.repaired is True
     assert failed.error
     assert len(failing.requests) == 2
+
+
+def test_out_of_window_known_ids_are_rejected():
+    transcript = make_transcript(
+        [("cap-001", 10.0, 20.0, "当前窗口。"), ("cap-late", 80.0, 90.0, "后段。")],
+        duration=120.0,
+    )
+    visual = make_visual(
+        [("frame-001", 12.5, "scene-001"), ("frame-late", 85.0, "scene-001")],
+        duration=120.0,
+    )
+    window = AnalysisWindow(
+        id="seg-0001",
+        core_start_seconds=0.0,
+        core_end_seconds=60.0,
+        context_start_seconds=0.0,
+        context_end_seconds=60.0,
+        evidence_ids=["cap-001", "frame-001"],
+        status="running",
+    )
+    payload = build_segment_payload(
+        window,
+        transcript=transcript,
+        visual=visual,
+        course_map=sample_course_map(duration=120.0),
+    )
+    assert "cap-late" not in payload["allowed_evidence_ids"]
+    assert "frame-late" not in payload["allowed_evidence_ids"]
+    with pytest.raises(SegmentContractError, match="unknown evidence"):
+        validate_knowledge_units(
+            {"units": [_valid_unit(claims=[{
+                "id": "claim-1",
+                "text": "引用后段",
+                "evidence_ids": ["cap-late"],
+                "status": "draft",
+                "qualifiers": [],
+                "modality": "audio",
+                "provenance": "source",
+            }])]},
+            payload,
+        )
+
+
+def test_single_cited_frame_temporal_fails_even_if_two_frames_supplied():
+    transcript = make_transcript([("cap-001", 10.0, 20.0, "然后打开，之后关闭。")], duration=60.0)
+    visual = make_visual(
+        [("frame-001", 12.5, "scene-001"), ("frame-002", 40.0, "scene-001")],
+        duration=60.0,
+    )
+    payload = build_segment_payload(
+        _window(),
+        transcript=transcript,
+        visual=visual,
+        course_map=sample_course_map(),
+    )
+    assert payload["allowed_frame_ids"] == ["frame-001", "frame-002"]
+    with pytest.raises(SegmentContractError, match="temporal sequence"):
+        validate_knowledge_units(
+            {"units": [_valid_unit(
+                kind="concept",
+                claims=[{
+                    "id": "claim-1",
+                    "text": "然后打开，之后关闭。",
+                    "evidence_ids": ["frame-001"],
+                    "status": "draft",
+                    "qualifiers": [],
+                    "modality": "visual",
+                    "provenance": "source",
+                }],
+            )]},
+            payload,
+        )
+
+
+def test_missing_structured_output_repairs_then_fails_window():
+    transcript = make_transcript([("cap-001", 10.0, 20.0, "内容。")], duration=60.0)
+    visual = make_visual([("frame-001", 12.5, "scene-001")], duration=60.0)
+    provider = FakeProvider(frames_caps(), sequential=[None, None])
+    failed = analyze_window(
+        _window(),
+        transcript=transcript,
+        visual=visual,
+        course_map=sample_course_map(),
+        provider=provider,
+    )
+    assert failed.window.status == "failed"
+    assert failed.repaired is True
+    assert failed.units == []
+    assert len(provider.requests) == 2
+
+
+def test_mid_analysis_cancel_persists_failed_ledger():
+    from threading import Event
+
+    from yt2class.orchestration.scheduler import schedule_windows
+    from yt2class.stages.analyze_segments import analyze_segments
+
+    transcript = make_transcript(
+        [("cap-001", 0.0, 120.0, "第一段。"), ("cap-002", 120.0, 240.0, "第二段。")],
+        duration=240.0,
+    )
+    visual = make_visual(
+        [("frame-001", 30.0, "scene-001"), ("frame-002", 150.0, "scene-001")],
+        duration=240.0,
+    )
+    manifest = schedule_windows(
+        source_id="src-demo",
+        duration_seconds=240.0,
+        transcript=transcript,
+        visual=visual,
+        capabilities=frames_caps(),
+    )
+    cancel = Event()
+
+    class OnceThenCancel(FakeProvider):
+        def _complete(self, request, *, cancel_event=None):
+            result = super()._complete(request, cancel_event=cancel_event)
+            cancel.set()
+            return result
+
+    provider = OnceThenCancel(
+        frames_caps(),
+        structured={"units": [_valid_unit()]},
+    )
+    updated, _units, _outcomes = analyze_segments(
+        manifest,
+        transcript=transcript,
+        visual=visual,
+        course_map=sample_course_map(duration=240.0),
+        provider=provider,
+        cancel_event=cancel,
+    )
+    statuses = {window.id: window.status for window in updated.windows}
+    assert any(status == "complete" for status in statuses.values())
+    assert any(
+        window.status == "failed" and window.failure_reason == "cancelled"
+        for window in updated.windows
+    )

@@ -6,7 +6,12 @@ import pytest
 
 from yt2class.adapters.providers.base import RequestCancelled
 from yt2class.domain.segment import cores_cover_duration, cores_overlap
-from yt2class.orchestration.scheduler import SchedulerConfig, SchedulerError, schedule_windows
+from yt2class.orchestration.scheduler import (
+    SchedulerConfig,
+    SchedulerError,
+    schedule_windows,
+    sentence_boundaries,
+)
 from tests.helpers.m2 import empty_visual, frames_caps, make_transcript, make_visual
 
 
@@ -21,6 +26,19 @@ def _schedule(duration: float, transcript=None, visual=None, caps=None, **kwargs
         capabilities=caps or frames_caps(),
         **kwargs,
     )
+
+
+def test_sentence_boundaries_require_terminal_punctuation():
+    transcript = make_transcript(
+        [
+            ("cap-001", 0.0, 10.0, "这是一句完整的话。"),
+            ("cap-002", 10.0, 20.0, "这句没有句末标点"),
+            ("cap-003", 20.0, 30.0, "Done!"),
+            ("cap-004", 30.0, 40.0, "wait,"),
+        ],
+        duration=40.0,
+    )
+    assert sentence_boundaries(transcript) == [10.0, 30.0]
 
 
 def test_zero_duration_is_rejected():
@@ -110,6 +128,79 @@ def test_cancel_stops_scheduling():
     cancel.set()
     with pytest.raises(RequestCancelled, match="cancelled"):
         _schedule(120.0, cancel_event=cancel)
+
+
+def test_low_output_reserve_is_scheduled_not_overflowed():
+    from yt2class.adapters.providers.base import FakeProvider
+    from yt2class.stages.analyze_segments import analyze_segments
+
+    transcript = make_transcript([("cap-001", 0.0, 40.0, "短课。")], duration=40.0)
+    visual = make_visual([("frame-001", 10.0, "scene-001")], duration=40.0)
+    caps = frames_caps(max_output_tokens=256)
+    manifest = _schedule(40.0, transcript=transcript, visual=visual, caps=caps)
+    assert manifest.windows
+    assert all(window.estimated_output_tokens == 256 for window in manifest.windows)
+    assert all(window.status == "scheduled" for window in manifest.windows)
+    provider = FakeProvider(
+        caps,
+        structured={
+            "units": [
+                {
+                    "id": "unit-1",
+                    "topic_id": "topic-1",
+                    "segment_ids": [manifest.windows[0].id],
+                    "start_seconds": 0.0,
+                    "end_seconds": 20.0,
+                    "kind": "concept",
+                    "claims": [
+                        {
+                            "id": "claim-1",
+                            "text": "短课。",
+                            "evidence_ids": ["cap-001"],
+                            "status": "draft",
+                            "qualifiers": [],
+                            "modality": "audio",
+                            "provenance": "source",
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+    from tests.helpers.m2 import sample_course_map
+
+    updated, units, _outcomes = analyze_segments(
+        manifest,
+        transcript=transcript,
+        visual=visual,
+        course_map=sample_course_map(duration=40.0),
+        provider=provider,
+    )
+    assert units
+    assert all(window.status != "failed" or "context" not in (window.failure_reason or "") for window in updated.windows)
+    assert provider.requests[0].estimated_output_tokens == 256
+
+
+def test_oversized_transcript_only_window_splits_or_gaps():
+    transcript = make_transcript(
+        [("cap-huge", 0.0, 60.0, "讲解" * 8000)],
+        duration=60.0,
+    )
+    manifest = _schedule(
+        60.0,
+        transcript=transcript,
+        visual=empty_visual(duration=60.0),
+        caps=frames_caps(max_input_tokens=200),
+    )
+    assert cores_cover_duration(manifest.windows, 60.0)
+    assert len(manifest.windows) > 1 or any(
+        window.status == "failed" and "unschedulable" in (window.failure_reason or "")
+        for window in manifest.windows
+    )
+    assert any(
+        "unschedulable" in (window.failure_reason or "") or len(manifest.windows) > 1
+        for window in manifest.windows
+    )
 
 
 def test_core_union_property_across_durations():

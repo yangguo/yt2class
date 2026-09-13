@@ -13,12 +13,8 @@ from yt2class.domain.knowledge import KnowledgeEvidenceRequest, KnowledgeUnit, U
 from yt2class.domain.segment import AnalysisWindow
 from yt2class.domain.source import SourceManifest
 from yt2class.domain.transcript import TranscriptDocument
-from yt2class.domain.visual import (
-    FrameOccurrence,
-    FrameQuality,
-    VisualAsset,
-    VisualCatalogue,
-)
+from yt2class.domain.visual import FrameOccurrence, VisualAsset, VisualCatalogue
+from yt2class.orchestration.scheduler import rebuild_window_batches
 from yt2class.stages.analyze_segments import SegmentAnalysisOutcome, analyze_window
 
 RefinementKind = Literal["unreadable_text", "missing_step", "audio_visual_conflict"]
@@ -29,6 +25,7 @@ RejectReason = Literal[
     "budget_exhausted",
     "round_limit",
     "clip_duration",
+    "extraction_failed",
 ]
 
 MAX_ROUNDS = 2
@@ -60,17 +57,40 @@ class RefinementDecision:
     note: str
 
 
+@dataclass(frozen=True)
+class ExtractedFrame:
+    occurrence: FrameOccurrence
+    asset: VisualAsset
+
+
+@dataclass(frozen=True)
+class ExtractedClip:
+    asset: VisualAsset
+    start_seconds: float
+    end_seconds: float
+
+    def as_payload(self) -> dict[str, float | str]:
+        return {
+            "id": self.asset.id,
+            "start_seconds": self.start_seconds,
+            "end_seconds": self.end_seconds,
+            "sha256": self.asset.sha256,
+            "path": self.asset.path,
+        }
+
+
 @dataclass
 class RefinementPull:
     frames: list[FrameOccurrence] = field(default_factory=list)
     assets: list[VisualAsset] = field(default_factory=list)
+    clips: list[ExtractedClip] = field(default_factory=list)
     clip_seconds: float = 0.0
     unresolved: bool = False
     note: str = ""
 
 
-FrameExtractor = Callable[[float, Path], FrameOccurrence | None]
-ClipExtractor = Callable[[float, float, Path], float]
+FrameExtractor = Callable[[float, Path], ExtractedFrame | FrameOccurrence | None]
+ClipExtractor = Callable[[float, float, Path], ExtractedClip | None]
 
 
 def classify_request(request: KnowledgeEvidenceRequest) -> RefinementKind:
@@ -97,7 +117,6 @@ def accept_refinement_request(
         return RefinementDecision(False, "out_of_range", request, "request exceeds source duration")
     if request.end_seconds <= request.start_seconds:
         return RefinementDecision(False, "out_of_range", request, "empty request range")
-    # Must overlap the source and stay inside the window's context, not wander.
     if request.end_seconds <= window.context_start_seconds or request.start_seconds >= window.context_end_seconds:
         return RefinementDecision(False, "out_of_range", request, "request is outside the analysis window")
 
@@ -124,36 +143,6 @@ def accept_refinement_request(
     return RefinementDecision(True, "accepted", request, "in range, modality allowed, in budget")
 
 
-def _placeholder_occurrence(timestamp: float, index: int) -> tuple[FrameOccurrence, VisualAsset]:
-    digest = ("b" * 63) + format(index % 16, "x")
-    asset = VisualAsset(
-        id=f"asset-refine-{index:04d}",
-        role="frame",
-        path=f"frames/refine_{index:04d}.jpg",
-        sha256=digest,
-        mime_type="image/jpeg",
-        width=1920,
-        height=1080,
-    )
-    quality = FrameQuality(
-        width=1920,
-        height=1080,
-        brightness=0.5,
-        sharpness=0.8,
-        ocr_density=0.3,
-    )
-    occurrence = FrameOccurrence(
-        id=f"frame-refine-{index:04d}",
-        scene_id="scene-001",
-        asset_id=asset.id,
-        requested_seconds=timestamp,
-        timestamp_seconds=timestamp,
-        actual_source_seconds=timestamp,
-        quality=quality,
-    )
-    return occurrence, asset
-
-
 def nearby_sample_times(start: float, end: float, *, existing: list[float], limit: int) -> list[float]:
     mid = (start + end) / 2.0
     left = start + (end - start) * 0.25
@@ -171,6 +160,14 @@ def nearby_sample_times(start: float, end: float, *, existing: list[float], limi
     return times
 
 
+def _as_extracted_frame(extracted: ExtractedFrame | FrameOccurrence | None) -> ExtractedFrame | None:
+    if extracted is None:
+        return None
+    if isinstance(extracted, ExtractedFrame):
+        return extracted
+    return None
+
+
 def pull_refinement_evidence(
     request: KnowledgeEvidenceRequest,
     *,
@@ -181,16 +178,32 @@ def pull_refinement_evidence(
     output_dir: Path | None = None,
     frame_extractor: FrameExtractor | None = None,
     clip_extractor: ClipExtractor | None = None,
-    next_index: int = 1,
 ) -> RefinementPull:
-    kind = classify_request(request)
+    del duration_seconds
     pulled = RefinementPull()
+    dest = output_dir or Path(".")
     if request.desired_modality == "clip":
-        length = request.end_seconds - request.start_seconds
-        if clip_extractor is not None and output_dir is not None:
-            clip_extractor(request.start_seconds, request.end_seconds, output_dir / "clips")
-        pulled.clip_seconds = length
-        budget.remaining_clip_seconds = max(0.0, budget.remaining_clip_seconds - length)
+        if clip_extractor is None:
+            pulled.unresolved = True
+            pulled.note = "clip extractor required; refusing to invent media"
+            budget.consume_round(segment_id)
+            return pulled
+        extracted = clip_extractor(request.start_seconds, request.end_seconds, dest / "clips")
+        if extracted is None:
+            pulled.unresolved = True
+            pulled.note = "clip extraction failed"
+            budget.consume_round(segment_id)
+            return pulled
+        pulled.clips.append(extracted)
+        pulled.assets.append(extracted.asset)
+        pulled.clip_seconds = extracted.end_seconds - extracted.start_seconds
+        budget.remaining_clip_seconds = max(0.0, budget.remaining_clip_seconds - pulled.clip_seconds)
+        budget.consume_round(segment_id)
+        return pulled
+
+    if frame_extractor is None:
+        pulled.unresolved = True
+        pulled.note = "frame extractor required; refusing to invent frames"
         budget.consume_round(segment_id)
         return pulled
 
@@ -211,22 +224,17 @@ def pull_refinement_evidence(
         budget.consume_round(segment_id)
         return pulled
 
-    scene_id = visual.scenes[0].id if visual.scenes else "scene-001"
-    for offset, stamp in enumerate(times):
-        if frame_extractor is not None and output_dir is not None:
-            extracted = frame_extractor(stamp, output_dir / "frames")
-            if extracted is not None:
-                pulled.frames.append(extracted)
-                continue
-        occurrence, asset = _placeholder_occurrence(stamp, next_index + offset)
-        if visual.scenes:
-            occurrence = occurrence.model_copy(update={"scene_id": scene_id})
-        if kind == "unreadable_text":
-            occurrence = occurrence.model_copy(
-                update={"quality": occurrence.quality.model_copy(update={"sharpness": 0.95})}
-            )
-        pulled.frames.append(occurrence)
-        pulled.assets.append(asset)
+    for stamp in times:
+        extracted = _as_extracted_frame(frame_extractor(stamp, dest / "frames"))
+        if extracted is None:
+            continue
+        pulled.frames.append(extracted.occurrence)
+        pulled.assets.append(extracted.asset)
+    if not pulled.frames:
+        pulled.unresolved = True
+        pulled.note = "frame extraction failed"
+        budget.consume_round(segment_id)
+        return pulled
     budget.remaining_frames = max(0, budget.remaining_frames - len(pulled.frames))
     budget.consume_round(segment_id)
     return pulled
@@ -314,7 +322,7 @@ def refine_window(
 ) -> tuple[SegmentAnalysisOutcome, VisualCatalogue, RefinementBudget]:
     """Pull nearby HD frames or 5-30s clips, then re-analyze only this window."""
 
-    del source, media_path  # reserved for adapter-backed extractors
+    del source, media_path
     budget = budget or RefinementBudget()
     current_visual = visual
     current = outcome
@@ -322,7 +330,7 @@ def refine_window(
     if not requests:
         return current, current_visual, budget
 
-    next_index = 1
+    extra_clips: list[ExtractedClip] = []
     while requests:
         segment_id = current.window.id
         accepted_any = False
@@ -348,10 +356,12 @@ def refine_window(
                 output_dir=output_dir,
                 frame_extractor=frame_extractor,
                 clip_extractor=clip_extractor,
-                next_index=next_index,
             )
-            next_index += max(1, len(pulled.frames))
+            if pulled.unresolved:
+                unresolved_note = pulled.note
+                continue
             current_visual = merge_visual_catalogue(current_visual, pulled)
+            extra_clips.extend(pulled.clips)
             accepted_any = True
         if not accepted_any:
             current = SegmentAnalysisOutcome(
@@ -364,14 +374,21 @@ def refine_window(
                 error=unresolved_note,
             )
             break
-        current = analyze_window(
+        refreshed = rebuild_window_batches(
             current.window.model_copy(update={"status": "running"}),
+            transcript=transcript,
+            visual=current_visual,
+            capabilities=capabilities,
+        )
+        current = analyze_window(
+            refreshed,
             transcript=transcript,
             visual=current_visual,
             course_map=course_map,
             provider=provider,
             cancel_event=cancel_event,
             request_suffix=f":round-{budget.rounds_for(segment_id)}",
+            extra_clips=extra_clips,
         )
         requests = _requests_from_units(current.units)
     return current, current_visual, budget

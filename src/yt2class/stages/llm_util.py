@@ -117,6 +117,11 @@ def evidence_in_range(
     return ids
 
 
+def estimate_serialized_tokens(payload: dict[str, Any], *, image_count: int = 0) -> int:
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    return estimate_tokens(encoded, image_count=image_count)
+
+
 def transcript_in_range(
     transcript: TranscriptDocument,
     start: float,

@@ -156,3 +156,45 @@ def test_speculative_topics_cannot_become_source_claims():
     document = reduce_knowledge([guessed], source_id="src-demo", course_map=course_map)
     assert document.units[0].claims[0].status == "insufficient"
     assert "speculative-topic" in document.units[0].claims[0].qualifiers
+
+
+def test_contradictory_claims_sharing_a_frame_both_survive():
+    yes = unit(
+        "unit-yes",
+        start=0.0,
+        end=20.0,
+        claims=[claim("claim-yes", "这是自动词", ["frame-001"])],
+    )
+    no = unit(
+        "unit-no",
+        start=5.0,
+        end=25.0,
+        claims=[claim("claim-no", "这不是自动词", ["frame-001"])],
+    )
+    document = reduce_knowledge([yes, no], source_id="src-demo")
+    texts = [claim.text for item in document.units for claim in item.claims]
+    assert "这是自动词" in texts
+    assert "这不是自动词" in texts
+    assert len(document.units) == 2
+
+
+def test_unrelated_steps_sharing_a_frame_are_not_collapsed():
+    open_valve = unit(
+        "unit-open",
+        start=0.0,
+        end=15.0,
+        kind="procedure",
+        claims=[claim("claim-open", "步骤1 打开阀门", ["frame-shared"])],
+    )
+    write_note = unit(
+        "unit-note",
+        start=5.0,
+        end=20.0,
+        kind="procedure",
+        claims=[claim("claim-note", "步骤2 在笔记本上抄公式", ["frame-shared"])],
+    )
+    document = reduce_knowledge([open_valve, write_note], source_id="src-demo")
+    assert len(document.units) == 2
+    texts = [claim.text for item in document.units for claim in item.claims]
+    assert "步骤1 打开阀门" in texts
+    assert "步骤2 在笔记本上抄公式" in texts

@@ -68,6 +68,16 @@ def claims_contradict(left: KnowledgeClaim, right: KnowledgeClaim) -> bool:
     return polarity(left.text) != polarity(right.text)
 
 
+def claims_equivalent(left: KnowledgeClaim, right: KnowledgeClaim) -> bool:
+    """Evidence overlap can support dedupe only after concepts already match."""
+
+    if claims_contradict(left, right):
+        return False
+    if sense_key(left) != sense_key(right):
+        return False
+    return concept_key(left) == concept_key(right)
+
+
 def should_merge_units(left: KnowledgeUnit, right: KnowledgeUnit) -> bool:
     if left.kind == "recap" or right.kind == "recap":
         return False
@@ -75,22 +85,9 @@ def should_merge_units(left: KnowledgeUnit, right: KnowledgeUnit) -> bool:
         return False
     if not time_overlap(left, right):
         return False
-    pairs = [
-        (a, b)
-        for a in left.claims
-        for b in right.claims
-        if sense_key(a) == sense_key(b) or evidence_overlap(a, b)
-    ]
-    if not pairs:
+    if any(claims_contradict(a, b) for a in left.claims for b in right.claims):
         return False
-    if any(claims_contradict(a, b) for a, b in pairs):
-        return False
-    if any(sense_key(a) != sense_key(b) and normalize_concept(a.text) == normalize_concept(b.text) for a, b in pairs):
-        return False
-    return any(
-        concept_key(a) == concept_key(b) or evidence_overlap(a, b)
-        for a, b in pairs
-    )
+    return any(claims_equivalent(a, b) for a in left.claims for b in right.claims)
 
 
 def _merge_claim_pair(left: KnowledgeClaim, right: KnowledgeClaim) -> KnowledgeClaim:
@@ -112,9 +109,7 @@ def merge_unit_pair(left: KnowledgeUnit, right: KnowledgeUnit) -> KnowledgeUnit:
             (
                 other
                 for other in right.claims
-                if other.id not in used_right
-                and (concept_key(claim) == concept_key(other) or evidence_overlap(claim, other))
-                and not claims_contradict(claim, other)
+                if other.id not in used_right and claims_equivalent(claim, other)
             ),
             None,
         )

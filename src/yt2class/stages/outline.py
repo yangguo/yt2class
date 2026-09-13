@@ -17,7 +17,6 @@ from yt2class.domain.course_map import (
 from yt2class.domain.transcript import TranscriptDocument
 from yt2class.domain.visual import VisualCatalogue
 from yt2class.stages.llm_util import (
-    allowed_evidence_ids,
     evidence_in_range,
     frames_in_range,
     load_prompt,
@@ -110,6 +109,8 @@ def _validate_topic_payload(
     missing = [item for item in topic.evidence_ids if item not in allowed]
     if missing:
         return f"out-of-range refs on topic {topic.id}: {missing}"
+    if not topic.speculative and not topic.evidence_ids:
+        return f"non-speculative topic {topic.id} missing block-local evidence"
     return topic
 
 
@@ -251,7 +252,6 @@ def outline_course(
     blocks = partition_transcript(
         transcript, duration_seconds=duration_seconds, max_block_chars=max_block_chars
     )
-    allowed = allowed_evidence_ids(transcript, visual)
     prompt = load_prompt("outline.md")
     results: list[tuple[OutlineBlock, list[Topic], list[str]]] = []
 
@@ -265,7 +265,7 @@ def outline_course(
             "block": block.model_dump(mode="json"),
             "transcript": transcript_in_range(transcript, block.start_seconds, block.end_seconds),
             "visual_overview": frames_in_range(visual, block.start_seconds, block.end_seconds),
-            "allowed_evidence_ids": sorted(allowed),
+            "allowed_evidence_ids": sorted(block_allowed),
             "constraints": {"external_knowledge": False, "page_budget": None},
         }
         request = model_request(request_id=f"outline:{block.id}", role="outline", payload=payload)
@@ -274,10 +274,10 @@ def outline_course(
         topics, reasons = validate_outline_topics(
             result.structured,
             block=block,
-            allowed=allowed,
+            allowed=block_allowed,
             duration_seconds=duration_seconds,
         )
-        if not allowed and topics:
+        if not block_allowed and topics:
             for topic in topics:
                 topic.speculative = True
         updated = block.model_copy(
