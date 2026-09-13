@@ -12,6 +12,10 @@ from yt2class.stages.extract_evidence import (
     extract_evidence,
     extract_evidence_locked,
 )
+from yt2class.stages.outline import outline_course, partition_transcript, reduce_outline
+from yt2class.stages.analyze_segments import analyze_segments, analyze_window
+from yt2class.stages.evidence_refinement import refine_window
+from yt2class.stages.reduce_knowledge import reduce_knowledge
 
 __all__ = [
     "IngestError",
@@ -22,4 +26,11 @@ __all__ = [
     "extract_evidence",
     "extract_evidence_locked",
     "EvidenceCancelled",
+    "outline_course",
+    "partition_transcript",
+    "reduce_outline",
+    "analyze_segments",
+    "analyze_window",
+    "refine_window",
+    "reduce_knowledge",
 ]

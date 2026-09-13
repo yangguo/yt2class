@@ -38,6 +38,42 @@ class TopicRelation(StrictModel):
     kind: TopicRelationKind
 
 
+class OutlineBlock(StrictModel):
+    """One transcript partition sent to the outline model. Not a source claim."""
+
+    id: Identifier
+    start_seconds: Seconds
+    end_seconds: Seconds
+    evidence_ids: list[Identifier] = Field(default_factory=list, max_length=200)
+    char_count: int = Field(default=0, ge=0)
+    dropped: bool = False
+    drop_reason: str | None = Field(default=None, max_length=240)
+
+    @model_validator(mode="after")
+    def check_range(self) -> Self:
+        validate_half_open(self.start_seconds, self.end_seconds, label="outline block")
+        return self
+
+
+def speculative_topic_ids(course_map: CourseMap) -> set[str]:
+    return {topic.id for topic in course_map.topics if topic.speculative}
+
+
+def forbid_speculative_source_claims(course_map: CourseMap, claims: list[object]) -> None:
+    """Speculative CourseMap fields must not be treated as sourced facts."""
+
+    forbidden = speculative_topic_ids(course_map)
+    for claim in claims:
+        topic_id = getattr(claim, "topic_id", None)
+        provenance = getattr(claim, "provenance", "source")
+        status = getattr(claim, "status", "draft")
+        if topic_id in forbidden and provenance == "source" and status in {"supported", "draft"}:
+            raise ValueError(
+                f"claim {getattr(claim, 'id', '?')} cannot treat speculative topic "
+                f"{topic_id!r} as a source claim"
+            )
+
+
 class CourseMap(StrictModel):
     schema_version: Literal["1.0"]
     source_id: Identifier

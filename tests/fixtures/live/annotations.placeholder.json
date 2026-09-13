@@ -1,0 +1,31 @@
+{
+  "schema_version": "1.0",
+  "sample_id": "REPLACE-WITH-LICENSED-SAMPLE-ID",
+  "duration_seconds": 480.0,
+  "media_path": "NOT_COMMITTED",
+  "caption_path": "NOT_COMMITTED",
+  "notes": "Fill locally. Do not commit licensed media or raw model gold answers.",
+  "topics": [
+    {
+      "title": "placeholder-intro",
+      "start_seconds": 0.0,
+      "end_seconds": 60.0,
+      "must_surface": true
+    }
+  ],
+  "examples": [
+    {
+      "label": "placeholder-example",
+      "start_seconds": 120.0,
+      "end_seconds": 180.0
+    }
+  ],
+  "procedures": [
+    {
+      "label": "placeholder-steps",
+      "start_seconds": 240.0,
+      "end_seconds": 360.0,
+      "steps": ["step-1", "step-2"]
+    }
+  ]
+}

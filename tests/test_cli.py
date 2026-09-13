@@ -10,10 +10,14 @@ def test_help_exposes_build_subcommand():
     assert result.exit_code == 0
     assert "COMMAND" in result.stdout
     assert "build" in result.stdout.lower()
+    assert "analyze" in result.stdout.lower()
 
     build_help = runner.invoke(cli.app, ["build", "--help"], prog_name="yt2class")
     assert build_help.exit_code == 0
     assert "Usage: yt2class build" in build_help.stdout
+    analyze_help = runner.invoke(cli.app, ["analyze", "--help"], prog_name="yt2class")
+    assert analyze_help.exit_code == 0
+    assert "FakeProvider" in analyze_help.stdout or "fake" in analyze_help.stdout.lower()
 
 
 def test_build_command_passes_batch_options_to_pipeline(tmp_path, monkeypatch):

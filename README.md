@@ -125,6 +125,29 @@ runner 和合成媒体 fixture，不把 fake JSON 当成真实模型执行。
 ID/hash；字幕或帧单侧失败会保留另一侧并生成可解释 gap。该 stage 不根据最终 PPT 页数
 截断候选证据。
 
+## M2 全视频理解闭环
+
+M2 在 M1 EvidenceBundle 之上增加 CourseMap outline、分段调度、分段多模态分析、
+有界补证据和知识归约。分析覆盖完整核心时间轴，**不会**按最终 PPT 页数截断。
+
+普通测试和下面的 CLI 只使用 `FakeProvider` 与合成 fixture，用来证明合同和
+编排闭环。这**不是**真实模型理解，也不把 fake JSON 当成金标准。
+
+```bash
+uv run yt2class analyze \
+  --evidence output/runs/<lesson-id>/evidence/evidence-bundle.json \
+  --output output/runs/<lesson-id>/analysis \
+  --provider fake
+```
+
+`--provider` 目前只实现并测试了 `fake`。真实课程 + 真实视觉模型的纵向样本是
+opt-in 活测，见 [tests/live/README.md](tests/live/README.md)；不要提交课程媒体、
+密钥或原始模型答卷。
+
+```bash
+uv run pytest tests/unit tests/contract tests/integration -q
+```
+
 
 ## 完整目标设计
 
@@ -153,9 +176,8 @@ uv run pytest tests/contract -q
 uv run pytest -q
 ```
 
-目前 `build` 仍是原型：仅接受 YouTube 链接，没有本地视频 CLI、ASR、
-整课 CourseMap、分段 KnowledgeUnit、事实核验或 PptxGenJS 后端。v2 契约与校验
-已落地但尚未接入 build；它不会自动升级成目标 3.0。
+目前 `build` 仍是原型：仅接受 YouTube 链接，没有把 M1/M2 接到正式 PPT 导出。
+v2 契约与校验已落地但尚未接入 build；它不会自动升级成目标 3.0。
 不要把 v2 示例传给当前 `--selection-file`，该选项仍使用上方的 LessonPlan 格式。
 
 开发者可独立校验 v2：
