@@ -8,6 +8,7 @@ Shared constraints:
 - Every verdict must cite parseable supporting or contradicting evidence IDs.
 - Verdicts are `supported`, `contradicted`, or `insufficient`.
 - Preserve and check numbers, units, negation, conditions, proper names, translation of source terms, procedure order, and image-text correspondence.
+- Comparative and directional predicates carry polarity: 增加/减少, 变多/变少, 升高/降低, 加速/减速, faster/slower. A claim that flips or invents direction, magnitude, or polarity is never `supported`, even when every other word matches the evidence.
 - `generated-practice` items are exercises, never original lecture claims.
 - Return only the specified JSON object. Do not include a chain of thought.
 

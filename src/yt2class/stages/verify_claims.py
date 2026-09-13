@@ -24,6 +24,7 @@ from yt2class.domain.verification import (
     QualityMode,
     Verdict,
     VerificationReport,
+    strict_closure_errors,
 )
 from yt2class.domain.visual import VisualCatalogue
 from yt2class.stages.llm_util import (
@@ -63,14 +64,6 @@ CRITICAL_KINDS = {
     "grounding",
 }
 ANTONYM_PAIRS = (
-    ("增加", "减少"),
-    ("增大", "减小"),
-    ("增多", "减少"),
-    ("上升", "下降"),
-    ("升高", "降低"),
-    ("提高", "降低"),
-    ("加快", "减慢"),
-    ("加速", "减速"),
     ("打开", "关闭"),
     ("开启", "关闭"),
     ("开通", "关闭"),
@@ -79,19 +72,82 @@ ANTONYM_PAIRS = (
     ("进入", "离开"),
     ("前进", "后退"),
     ("正向", "反向"),
-    ("大于", "小于"),
-    ("高于", "低于"),
-    ("更多", "更少"),
-    ("increase", "decrease"),
-    ("increased", "decreased"),
     ("open", "closed"),
     ("open", "close"),
     ("opened", "closed"),
-    ("higher", "lower"),
-    ("more", "less"),
     ("start", "stop"),
     ("on", "off"),
 )
+# Comparative/scalar predicates are normalized into an up/down polarity instead of
+# being matched against a finite antonym list: a signed morpheme carries the
+# direction, so unlisted compounds (变多/变少, 变快/变慢, 偏高/偏低, 加速/减速, …)
+# normalize too. A neutral morpheme leaves the direction to its partner.
+SCALAR_UP_PREFIX = "增升提加上涨扩"
+SCALAR_DOWN_PREFIX = "减降下跌缩落"
+SCALAR_NEUTRAL_PREFIX = "变更越偏最"
+SCALAR_UP_ROOT = "多大高快强长深厚宽远重热满早亮升涨增加"
+SCALAR_DOWN_ROOT = "少小低慢弱短浅薄窄近轻冷空晚暗降跌减"
+SCALAR_NEUTRAL_ROOT = "速温压幅量额率距"
+SCALAR_DIRECTION = {
+    **{char: "up" for char in f"{SCALAR_UP_PREFIX}{SCALAR_UP_ROOT}"},
+    **{char: "down" for char in f"{SCALAR_DOWN_PREFIX}{SCALAR_DOWN_ROOT}"},
+}
+SCALAR_RE = re.compile(
+    rf"(?P<prefix>变得|越来越|[{SCALAR_UP_PREFIX}{SCALAR_DOWN_PREFIX}{SCALAR_NEUTRAL_PREFIX}])"
+    rf"(?P<root>[{SCALAR_UP_ROOT}{SCALAR_DOWN_ROOT}{SCALAR_NEUTRAL_ROOT}])"
+    rf"|(?P<compared>[{SCALAR_UP_ROOT}{SCALAR_DOWN_ROOT}])(?=于)"
+)
+SCALAR_WORDS = {
+    "up": (
+        "increase",
+        "increases",
+        "increased",
+        "increasing",
+        "rise",
+        "rises",
+        "rising",
+        "grow",
+        "grows",
+        "growing",
+        "higher",
+        "larger",
+        "greater",
+        "longer",
+        "faster",
+        "stronger",
+        "more",
+    ),
+    "down": (
+        "decrease",
+        "decreases",
+        "decreased",
+        "decreasing",
+        "reduce",
+        "reduces",
+        "reduced",
+        "fall",
+        "falls",
+        "falling",
+        "drop",
+        "drops",
+        "shrink",
+        "shrinks",
+        "lower",
+        "smaller",
+        "shorter",
+        "slower",
+        "weaker",
+        "less",
+        "fewer",
+    ),
+}
+SCALAR_WORD_RE = re.compile(
+    r"\b(" + "|".join(sorted({word for words in SCALAR_WORDS.values() for word in words})) + r")\b",
+    re.I,
+)
+SCALAR_WORD_DIRECTION = {
+    word: direction for direction, words in SCALAR_WORDS.items() for word in words
+}
 QUALITY_PREFIXES = ("[DRAFT]", "[EVIDENCE-ONLY]")
 
 
@@ -125,15 +181,8 @@ class VerifyOutcome:
     def m3_gate_ok(self) -> bool:
         if self.report.quality_mode != "strict":
             return False
-        if self.report.pending_review or self.report.structural_errors:
-            return False
-        if not self.report.verdicts:
-            return False
         claim_ids = {claim.id for claim in self.knowledge.iter_claims()}
-        verdict_ids = {item.claim_id for item in self.report.verdicts}
-        if not claim_ids or claim_ids != verdict_ids:
-            return False
-        return all(item.verdict == "supported" for item in self.report.verdicts)
+        return not strict_closure_errors(self.report, claim_ids=claim_ids)
 
 
 def evidence_index(
@@ -233,6 +282,71 @@ def _has_term(text: str, term: str) -> bool:
     return term in text
 
 
+def _scalar_direction(match: re.Match[str]) -> str | None:
+    """Direction of one comparative predicate: the signed morpheme wins."""
+
+    if compared := match.group("compared"):
+        return SCALAR_DIRECTION.get(compared)
+    prefix, root = match.group("prefix"), match.group("root")
+    return SCALAR_DIRECTION.get(prefix[0]) or SCALAR_DIRECTION.get(root)
+
+
+def scalar_terms(text: str) -> list[tuple[str, str]]:
+    """Comparative/scalar predicates in ``text`` paired with their up/down polarity."""
+
+    found: list[tuple[str, str]] = []
+    for match in SCALAR_RE.finditer(text):
+        direction = _scalar_direction(match)
+        if direction is not None:
+            found.append((match.group(0), direction))
+    for match in SCALAR_WORD_RE.finditer(text):
+        found.append((match.group(0), SCALAR_WORD_DIRECTION[match.group(0).lower()]))
+    return found
+
+
+def _strip_scalars(text: str) -> str:
+    return SCALAR_WORD_RE.sub(" ", SCALAR_RE.sub(" ", text))
+
+
+def predicate_skeleton(text: str) -> set[str]:
+    """Subject/object tokens left once polarity and scalar predicates are removed."""
+
+    return content_tokens(_strip_scalars(text))
+
+
+def _same_skeleton(left: set[str], right: set[str]) -> bool:
+    if not left or not right:
+        return not left and not right
+    shared = left & right
+    return len(shared) >= max(1, min(len(left), len(right)) // 2)
+
+
+def direction_conflicts(left: str, right: str) -> list[str]:
+    """One-sided opposite polarity on the same subject/object skeleton."""
+
+    left_dirs = {direction for _, direction in scalar_terms(left)}
+    right_dirs = {direction for _, direction in scalar_terms(right)}
+    if len(left_dirs) != 1 or len(right_dirs) != 1 or left_dirs == right_dirs:
+        return []
+    if not _same_skeleton(predicate_skeleton(left), predicate_skeleton(right)):
+        return []
+    return [f"direction:{next(iter(left_dirs))}/{next(iter(right_dirs))}"]
+
+
+def unaffirmed_predicates(text: str, evidence_text: str) -> list[str]:
+    """Scalar predicates in ``text`` with no same-direction match in the evidence."""
+
+    evidence_dirs = {direction for _, direction in scalar_terms(evidence_text)}
+    missing: list[str] = []
+    for term, direction in scalar_terms(text):
+        if term in evidence_text:
+            continue
+        if direction in evidence_dirs:
+            continue
+        missing.append(term)
+    return list(dict.fromkeys(missing))
+
+
 def predicate_conflicts(left: str, right: str) -> list[str]:
     """Opposite predicates, polarity, or quantities. Bag-of-tokens overlap is not enough."""
 
@@ -246,6 +360,7 @@ def predicate_conflicts(left: str, right: str) -> list[str]:
             found.append(f"{first}/{second}")
         elif (left_second and not left_first) and right_first:
             found.append(f"{second}/{first}")
+    found.extend(direction_conflicts(left, right))
     left_numbers = NUMBER_RE.findall(left)
     right_numbers = set(NUMBER_RE.findall(right))
     if left_numbers and any(item not in right_numbers for item in left_numbers):
@@ -267,11 +382,15 @@ def copy_is_affirmed(text: str, evidence_text: str, *, practice: bool = False) -
         return True
     if predicate_conflicts(stripped, evidence_text):
         return False
+    if unaffirmed_predicates(stripped, evidence_text):
+        return False
     tokens = content_tokens(stripped)
     if not tokens:
         return True
     covered = tokens & content_tokens(evidence_text)
-    return len(covered) >= needed_overlap(tokens, practice=practice)
+    if practice:
+        return len(covered) >= needed_overlap(tokens, practice=True)
+    return covered == tokens
 
 
 def notes_without_quality(notes: str) -> str:
@@ -352,12 +471,21 @@ def check_grounding(claim: KnowledgeClaim, index: dict[str, str]) -> CheckResult
             contradicting_ids=list(dict.fromkeys(contradicting or [item for item, _ in excerpts])),
         )
     covered = tokens & union
-    required = needed_overlap(tokens, practice=claim.provenance == "generated-practice")
-    if not supporting or len(covered) < required:
+    practice = claim.provenance == "generated-practice"
+    # Fail closed: a source claim is only affirmed when the evidence carries all of
+    # its content, so an unverified predicate/quantity swap can never read supported.
+    if practice:
+        affirmed = len(covered) >= needed_overlap(tokens, practice=True)
+        unaffirmed: list[str] = []
+    else:
+        unaffirmed = sorted(tokens - covered) + unaffirmed_predicates(claim.text, joined)
+        affirmed = not unaffirmed
+    if not supporting or not affirmed:
+        detail = f" (unaffirmed {unaffirmed[:8]})" if unaffirmed else ""
         return CheckResult(
             kind="grounding",
             passed=False,
-            note="cited evidence does not affirm the claim",
+            note=f"cited evidence does not affirm the claim{detail}"[:240],
             verdict="insufficient",
         )
     return CheckResult(
@@ -726,7 +854,8 @@ def page_copy_grounded(
     if not content_tokens(evidence_text):
         return False
     texts = [page.title, *page.body_points, notes_without_quality(page.notes)]
-    return all(copy_is_affirmed(text, evidence_text) for text in texts)
+    practice = _is_practice(knowledge, list(page.claim_ids))
+    return all(copy_is_affirmed(text, evidence_text, practice=practice) for text in texts)
 
 
 def _is_practice(knowledge: KnowledgeDocument, claim_ids: list[str]) -> bool:
@@ -981,8 +1110,11 @@ def verify_claims(
         and _is_critical(claim, check_by_claim.get(claim.id, []))
     ]
     emit_mode: QualityMode = requested_mode
+    all_claim_ids = {claim.id for claim in current_knowledge.iter_claims()}
     if requested_mode == "strict" and (
-        unresolved_critical or any(item.verdict != "supported" for item in verdicts.values())
+        unresolved_critical
+        or any(item.verdict != "supported" for item in verdicts.values())
+        or set(verdicts) != all_claim_ids
     ):
         emit_mode = "draft"
 

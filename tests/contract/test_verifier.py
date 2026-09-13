@@ -580,6 +580,93 @@ def test_increase_versus_decrease_is_never_supported():
         )
 
 
+def _polarity_outcome(claim_text: str, evidence_text: str, *, quality_mode="draft"):
+    unit = concept_unit(
+        "unit-p",
+        "claim-p",
+        claim_text,
+        ["cap-p"],
+        start=0.0,
+        end=10.0,
+        modality="audio",
+    )
+    doc = knowledge(unit)
+    topics = course_map([("topic-1", "极性", 0.0, 10.0)])
+    transcript = make_transcript([("cap-p", 0.0, 10.0, evidence_text)], duration=10.0)
+    visual = make_visual([], duration=10.0)
+    plan = _plan_for(doc, topics, transcript, visual, target_pages=4, max_pages=6)
+    return verify_claims(
+        doc,
+        plan=plan,
+        transcript=transcript,
+        visual=visual,
+        provider=FakeProvider(frames_caps()),
+        quality_mode=quality_mode,
+    ), (doc, topics, transcript, visual, plan)
+
+
+@pytest.mark.parametrize(
+    ("claim_text", "evidence_text"),
+    [
+        ("阀门打开后水流变多", "阀门打开后水流变少"),
+        ("阀门打开后水流变少", "阀门打开后水流变多"),
+        ("温度升高", "温度降低"),
+        ("温度降低", "温度升高"),
+        ("阀门打开后水流增加", "阀门打开后水流减少"),
+        ("转速变快", "转速变慢"),
+        ("读数偏高", "读数偏低"),
+        ("水位上升", "水位下降"),
+        ("流量增大", "流量减小"),
+        ("流速加快", "流速减慢"),
+        ("电机加速", "电机减速"),
+        ("锅炉升温", "锅炉降温"),
+        ("水压提高", "水压降低"),
+        ("电压高于五伏", "电压低于五伏"),
+        ("需要更多的水", "需要更少的水"),
+        ("the flow increases", "the flow decreases"),
+    ],
+)
+def test_opposite_scalar_predicates_are_contradicted(claim_text, evidence_text):
+    """Comparative predicates normalize to polarity, so unlisted opposites still fail."""
+
+    outcome, fixtures = _polarity_outcome(claim_text, evidence_text)
+    verdict = next(item for item in outcome.report.verdicts if item.claim_id == "claim-p")
+    assert verdict.verdict == "contradicted"
+    assert not any(
+        page.quality_label == "verified" and "claim-p" in page.claim_ids
+        for page in outcome.plan.pages
+    )
+    doc, _topics, transcript, visual, plan = fixtures
+    with pytest.raises(StrictVerificationError):
+        verify_claims(
+            doc,
+            plan=plan,
+            transcript=transcript,
+            visual=visual,
+            provider=FakeProvider(frames_caps()),
+            quality_mode="strict",
+        )
+
+
+def test_unlisted_predicate_swap_is_never_supported():
+    """No antonym entry covers 湍急/平缓; missing predicate support must fail closed."""
+
+    outcome, _fixtures = _polarity_outcome("阀门打开后水流湍急", "阀门打开后水流平缓")
+    verdict = next(item for item in outcome.report.verdicts if item.claim_id == "claim-p")
+    assert verdict.verdict != "supported"
+    assert verdict.verdict == "insufficient"
+    assert not verdict.supporting_ids
+
+
+def test_matching_scalar_predicates_stay_supported():
+    outcome, _fixtures = _polarity_outcome(
+        "阀门打开后水流变多", "阀门打开后水流变多", quality_mode="strict"
+    )
+    verdict = next(item for item in outcome.report.verdicts if item.claim_id == "claim-p")
+    assert verdict.verdict == "supported"
+    assert outcome.report.quality_mode == "strict"
+
+
 def test_empty_strict_report_fails_m3_gate_and_requires_claim_closure():
     with pytest.raises(ValidationError, match="closed non-empty claim set"):
         VerificationReport(
