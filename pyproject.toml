@@ -31,4 +31,5 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 markers = [
   "live: real network/YouTube/summarize runs; not part of ordinary contract tests",
+  "artifact_tool: prototype PPTX tests that need the Codex Artifact Tool helper",
 ]

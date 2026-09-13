@@ -1,11 +1,13 @@
 import json
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
 from yt2class import pipeline, scenes
 
 
+@pytest.mark.artifact_tool
 def test_pipeline_with_reviewed_selection_writes_manifest_and_deck(tmp_path: Path, monkeypatch):
     assert hasattr(pipeline, "build_lesson")
 

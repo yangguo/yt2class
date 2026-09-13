@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
 from yt2class import renderer
@@ -37,6 +38,7 @@ def test_setup_script_discovers_runtime_helper_without_machine_path(tmp_path, mo
     assert renderer._setup_script() == helper
 
 
+@pytest.mark.artifact_tool
 def test_renderer_creates_pptx_that_references_original_frame(tmp_path: Path):
     assert hasattr(renderer, "render_deck")
     spec = make_small_deck_spec(tmp_path)
@@ -47,6 +49,7 @@ def test_renderer_creates_pptx_that_references_original_frame(tmp_path: Path):
     assert output.stat().st_size > 10_000
 
 
+@pytest.mark.artifact_tool
 def test_renderer_clears_stale_preview_slides(tmp_path: Path):
     spec = make_small_deck_spec(tmp_path)
     preview_dir = tmp_path / "previews"
