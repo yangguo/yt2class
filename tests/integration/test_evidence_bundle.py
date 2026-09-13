@@ -14,6 +14,7 @@ from yt2class.adapters.process import ProcessCancelled
 from yt2class.adapters.scenes import FrameSample, extract_frame_with_timestamp
 from yt2class.domain.evidence import EvidenceBundle
 from yt2class.domain.source import SourceManifest, content_sha256
+from yt2class.domain.visual import VisualCatalogue
 from yt2class.orchestration.workspace import Workspace, WorkspacePathError
 from yt2class.stages.extract_evidence import EvidenceCancelled, extract_evidence
 
@@ -268,6 +269,55 @@ def test_extract_evidence_binds_optional_ocr_to_each_occurrence(tmp_path: Path):
     assert len({region.id for region in bundle.visual.ocr_regions}) == len(bundle.visual.ocr_regions)
     assert all(occurrence.quality.ocr_density > 0 for occurrence in bundle.visual.occurrences)
     assert not any(g.modality == "ocr" for g in bundle.gaps)
+
+
+def test_out_of_bounds_ocr_box_becomes_gap_and_reload_stays_valid(tmp_path: Path):
+    media, manifest = make_media(tmp_path)
+    subtitle = write_subtitles(tmp_path)
+    run_root = tmp_path / "run-ocr-oob"
+
+    def ocr_runner(command, **kwargs):
+        return type(
+            "Completed",
+            (),
+            {
+                "returncode": 0,
+                "stdout": json.dumps(
+                    {
+                        "engine": "fake-ocr",
+                        "regions": [
+                            {
+                                "text": "越界",
+                                "bbox": {"x": 80, "y": 1, "width": 40, "height": 8},
+                                "confidence": 0.9,
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                "stderr": "",
+            },
+        )()
+
+    bundle = extract_evidence(
+        manifest,
+        media,
+        run_root,
+        sidecar=subtitle,
+        detector=lambda path, **kwargs: [(0.0, manifest.duration_seconds)],
+        ocr_engine="fake",
+        ocr_runner=ocr_runner,
+    )
+    assert bundle.visual.ocr_regions == []
+    assert any(gap.modality == "ocr" for gap in bundle.gaps)
+    assert bundle.visual.status != "complete"
+    reloaded = VisualCatalogue.model_validate_json(
+        (run_root / "evidence/visual-catalogue.json").read_text(encoding="utf-8")
+    )
+    assert reloaded.ocr_regions == []
+    EvidenceBundle.model_validate_json(
+        (run_root / "evidence/evidence-bundle.json").read_text(encoding="utf-8")
+    )
 
 
 def test_extract_evidence_without_subtitles_reports_transcript_gap(tmp_path: Path):

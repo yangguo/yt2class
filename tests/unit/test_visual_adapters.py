@@ -252,3 +252,18 @@ def test_visual_catalogue_rejects_ocr_bbox_outside_asset():
 
     with pytest.raises(ValueError, match="bbox"):
         _minimal_visual(bbox={"x": 90, "y": 45, "width": 20, "height": 10})
+
+
+def test_complete_visual_catalogue_rejects_uncovered_scene_union():
+    import pytest
+
+    with pytest.raises(ValueError, match="derived|scenes|uncovered|complete"):
+        VisualCatalogue(
+            schema_version="1.0",
+            source_id="src-visual",
+            scenes=[Scene(id="scene-1", start_seconds=0.4, end_seconds=1.0, detector="content")],
+            assets=[],
+            occurrences=[],
+            ocr_regions=[],
+            status="complete",
+        )

@@ -146,6 +146,41 @@ def test_evidence_bundle_cannot_claim_complete_with_component_gaps():
         EvidenceBundle.model_validate(value)
 
 
+def test_forged_complete_sparse_transcript_without_visual_fails_validation():
+    value = payload()
+    value["status"] = "complete"
+    value["gaps"] = []
+    value["transcript"]["status"] = "complete"
+    value["transcript"]["gaps"] = []
+    value["transcript"]["segments"] = [
+        {
+            "id": "seg-sparse",
+            "start_seconds": 1.0,
+            "end_seconds": 2.0,
+            "text_original": "sparse",
+            "language": "en",
+            "origin": "sidecar",
+        }
+    ]
+    value["transcript"]["raw_artifact_hash"] = "c" * 64
+    value["transcript"]["speech_coverage"] = {
+        "speech_seconds": 60.0,
+        "covered_seconds": 60.0,
+        "denominator": "timeline",
+        "coverage_ratio": 1.0,
+        "denominator_seconds": 60.0,
+    }
+    value["transcript"]["duration_seconds"] = 60.0
+    value["visual"]["status"] = "complete"
+    value["visual"]["scenes"] = []
+    value["visual"]["assets"] = []
+    value["visual"]["occurrences"] = []
+    value["visual"]["ocr_regions"] = []
+    value["visual"]["gaps"] = []
+    with pytest.raises(ValueError, match="derived|uncovered|complete|timeline"):
+        EvidenceBundle.model_validate(value)
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [

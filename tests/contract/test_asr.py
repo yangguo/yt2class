@@ -7,6 +7,7 @@ from threading import Event
 
 import pytest
 
+from yt2class.domain.source import content_sha256
 from yt2class.adapters.asr import (
     ASRCancelled,
     ASRContractError,
@@ -96,6 +97,7 @@ def test_asr_runner_offsets_segments_and_words_and_records_configuration(tmp_pat
 
     result = run_asr(request, runner=runner)
     assert result.status == "complete"
+    assert result.audio_sha256 == content_sha256(request.audio_path)
     assert result.engine == "whisperx"
     assert result.model == "tiny"
     assert result.device == "cpu"

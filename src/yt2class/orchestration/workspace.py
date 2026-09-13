@@ -24,6 +24,31 @@ class WorkspacePathError(WorkspaceError):
 _RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
+def _pid_is_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _lock_owner_pid(path: Path) -> int | None:
+    try:
+        text = path.read_text(encoding="ascii").strip()
+    except OSError:
+        return None
+    if not text.startswith("pid="):
+        return None
+    try:
+        return int(text.split("=", 1)[1].split()[0])
+    except ValueError:
+        return None
+
+
 @dataclass
 class _WriteLock:
     """Exclusive lock represented by an atomically-created marker file."""
@@ -39,7 +64,21 @@ class _WriteLock:
                 0o600,
             )
         except FileExistsError as error:
-            raise WorkspaceBusy(f"workspace is already locked: {self.path}") from error
+            owner = _lock_owner_pid(self.path)
+            if owner is None or _pid_is_running(owner):
+                raise WorkspaceBusy(f"workspace is already locked: {self.path}") from error
+            try:
+                self.path.unlink()
+            except OSError as unlink_error:
+                raise WorkspaceBusy(f"workspace is already locked: {self.path}") from unlink_error
+            try:
+                self._fd = os.open(
+                    self.path,
+                    os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                    0o600,
+                )
+            except FileExistsError as retry_error:
+                raise WorkspaceBusy(f"workspace is already locked: {self.path}") from retry_error
         except OSError as error:
             raise WorkspaceError(f"cannot create workspace lock: {self.path}") from error
         try:

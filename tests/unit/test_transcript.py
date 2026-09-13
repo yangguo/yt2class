@@ -191,7 +191,7 @@ hello
 
 
 def test_transcript_without_raw_artifact_hash_is_valid_only_without_segments():
-    from yt2class.domain.transcript import SpeechCoverage, TranscriptDocument, TranscriptSegment
+    from yt2class.domain.transcript import SpeechCoverage, TranscriptDocument, TranscriptGap, TranscriptSegment
 
     empty = TranscriptDocument(
         schema_version="1.0",
@@ -208,6 +208,9 @@ def test_transcript_without_raw_artifact_hash_is_valid_only_without_segments():
         ),
         duration_seconds=2.0,
         status="degraded",
+        gaps=[
+            TranscriptGap(id="gap-0001", start_seconds=0.0, end_seconds=2.0, reason="empty")
+        ],
     )
     assert empty.raw_artifact_hash is None
 
@@ -264,7 +267,7 @@ late cue
 def test_complete_timeline_transcript_rejects_uncovered_duration():
     from yt2class.domain.transcript import SpeechCoverage, TranscriptDocument, TranscriptSegment
 
-    with pytest.raises(ValueError, match="uncovered duration"):
+    with pytest.raises(ValueError, match="uncovered duration|complete"):
         TranscriptDocument(
             schema_version="1.0",
             source_id="src-incomplete",
@@ -284,6 +287,38 @@ def test_complete_timeline_transcript_rejects_uncovered_duration():
                     start_seconds=0.0,
                     end_seconds=1.0,
                     text_original="hello",
+                    language="en",
+                    origin="sidecar",
+                )
+            ],
+            duration_seconds=2.0,
+            status="complete",
+        )
+
+
+def test_forged_complete_coverage_is_derived_from_segment_unions():
+    from yt2class.domain.transcript import SpeechCoverage, TranscriptDocument, TranscriptSegment
+
+    with pytest.raises(ValueError, match="derived|uncovered|complete"):
+        TranscriptDocument(
+            schema_version="1.0",
+            source_id="src-forged",
+            language="en",
+            raw_artifact_hash="a" * 64,
+            alignment="sentence",
+            speech_coverage=SpeechCoverage(
+                speech_seconds=2.0,
+                covered_seconds=2.0,
+                denominator="timeline",
+                denominator_seconds=2.0,
+                coverage_ratio=1.0,
+            ),
+            segments=[
+                TranscriptSegment(
+                    id="seg-1",
+                    start_seconds=0.5,
+                    end_seconds=1.0,
+                    text_original="sparse",
                     language="en",
                     origin="sidecar",
                 )

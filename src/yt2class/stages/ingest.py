@@ -154,32 +154,54 @@ def _write_manifest_atomic(workspace: Workspace, manifest: SourceManifest) -> Pa
     return destination
 
 
-def resolve_manifest_media(manifest: SourceManifest, workspace: Workspace) -> Path:
+def resolve_manifest_media(
+    manifest: SourceManifest,
+    workspace: Workspace | None = None,
+    *,
+    media_path: Path | None = None,
+    run_root: Path | None = None,
+) -> Path:
     """Resolve and verify the immutable media path represented by a manifest."""
 
-    if manifest.kind == "local" and manifest.local_mode == "reference":
+    if media_path is not None:
+        try:
+            resolved = Path(media_path).expanduser().resolve(strict=True)
+        except OSError as error:
+            raise IngestError(f"media path does not exist: {media_path}") from error
+    elif manifest.kind == "local" and manifest.local_mode == "reference":
         if manifest.reference_path is None:
             raise IngestError("reference manifest has no reference_path")
         try:
-            media_path = Path(manifest.reference_path).expanduser().resolve(strict=True)
+            resolved = Path(manifest.reference_path).expanduser().resolve(strict=True)
         except OSError as error:
             raise IngestError(f"reference media does not exist: {manifest.reference_path}") from error
-    else:
+    elif workspace is not None:
         try:
-            media_path = workspace.safe_path(manifest.media_path).resolve(strict=True)
+            resolved = workspace.safe_path(manifest.media_path).resolve(strict=True)
         except (OSError, WorkspacePathError) as error:
             raise IngestError(f"manifest media path is not available: {manifest.media_path}") from error
-        if not media_path.is_relative_to(workspace.root):
+        if not resolved.is_relative_to(workspace.root):
             raise WorkspacePathError(f"manifest media escapes workspace: {manifest.media_path}")
-    if not media_path.is_file() or media_path.stat().st_size == 0:
-        raise IngestError(f"manifest media is empty or not a file: {media_path}")
+    elif run_root is not None:
+        root = Path(run_root).expanduser()
+        try:
+            root = root.resolve(strict=True)
+            resolved = (root / manifest.media_path).resolve(strict=True)
+        except OSError as error:
+            raise IngestError(f"manifest media path is not available: {manifest.media_path}") from error
+        if not resolved.is_relative_to(root):
+            raise WorkspacePathError(f"manifest media escapes run root: {manifest.media_path}")
+    else:
+        raise IngestError("cannot resolve manifest media without workspace, run_root, or media_path")
+    if not resolved.is_file() or resolved.stat().st_size == 0:
+        raise IngestError(f"manifest media is empty or not a file: {resolved}")
     try:
-        actual_hash = content_sha256(media_path)
+        actual_hash = content_sha256(resolved)
     except SourceInputError as error:
-        raise IngestError(f"cannot hash manifest media: {media_path}") from error
+        raise IngestError(f"cannot hash manifest media: {resolved}") from error
     if actual_hash != manifest.sha256:
-        raise IngestError(f"manifest media hash does not match: {media_path}")
-    return media_path
+        raise IngestError(f"manifest media hash does not match: {resolved}")
+    return resolved
 
 
 def _ingest_source_locked(

@@ -14,6 +14,7 @@ from yt2class.domain.common import (
     StrictModel,
     UnitInterval,
     unique_ids,
+    uncovered_half_open,
     validate_half_open,
 )
 
@@ -147,4 +148,32 @@ class VisualCatalogue(StrictModel):
                 raise ValueError(f"ocr region {region.id} bbox exceeds asset width")
             if region.bbox.y + region.bbox.height > asset.height:
                 raise ValueError(f"ocr region {region.id} bbox exceeds asset height")
+        self._check_derived_coverage()
         return self
+
+    def _check_derived_coverage(self) -> None:
+        if self.status != "complete":
+            return
+        if self.gaps:
+            raise ValueError("complete visual catalogue cannot contain coverage gaps")
+        scene_intervals = [(scene.start_seconds, scene.end_seconds) for scene in self.scenes]
+        occurrence_intervals = [
+            (point, point + 1e-6)
+            for occurrence in self.occurrences
+            for point in (
+                occurrence.actual_source_seconds
+                if occurrence.actual_source_seconds is not None
+                else occurrence.timestamp_seconds
+                if occurrence.timestamp_seconds is not None
+                else occurrence.requested_seconds,
+            )
+            if point is not None
+        ]
+        if not scene_intervals:
+            raise ValueError("complete visual catalogue requires scenes covering the timeline")
+        span = max(end for _start, end in scene_intervals)
+        leftover = uncovered_half_open(span, scene_intervals + occurrence_intervals)
+        if leftover:
+            raise ValueError(
+                "complete visual catalogue coverage is not derived from scene/occurrence unions"
+            )

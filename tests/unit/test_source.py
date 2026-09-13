@@ -125,3 +125,11 @@ def test_workspace_has_single_run_write_lock(tmp_path: Path):
         with pytest.raises(WorkspaceBusy):
             with workspace.write_lock():
                 pass
+
+
+def test_stale_write_lock_from_dead_pid_is_reclaimed(tmp_path: Path):
+    workspace = Workspace.create(tmp_path, run_id="stale-lock")
+    workspace.lock_path.write_text("pid=999999\n", encoding="ascii")
+    with workspace.write_lock():
+        assert workspace.lock_path.is_file()
+    assert not workspace.lock_path.exists()

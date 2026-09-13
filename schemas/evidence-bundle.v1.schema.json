@@ -706,6 +706,38 @@
           },
           "title": "Gaps",
           "type": "array"
+        },
+        "audio_input_hash": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Audio Input Hash"
+        },
+        "audio_parent_hash": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Audio Parent Hash"
+        },
+        "time_offset_seconds": {
+          "default": 0.0,
+          "minimum": 0,
+          "title": "Time Offset Seconds",
+          "type": "number"
         }
       },
       "required": [

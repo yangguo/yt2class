@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import os
 from pathlib import Path
+import signal
 import subprocess
 import time
 from threading import Event
@@ -34,18 +36,33 @@ class ProcessResult:
     stderr: str
 
 
-def _terminate(process: subprocess.Popen[str], *, grace_seconds: float) -> None:
+def _signal_group(process: subprocess.Popen[str], sig: signal.Signals) -> None:
+    """Signal the child and every process it started in its session/group."""
+
+    pid = process.pid
+    if pid is None:
+        return
+    if os.name == "posix":
+        try:
+            os.killpg(pid, sig)
+            return
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
     try:
-        process.terminate()
+        if sig == signal.SIGKILL:
+            process.kill()
+        else:
+            process.terminate()
     except ProcessLookupError:
         return
+
+
+def _terminate(process: subprocess.Popen[str], *, grace_seconds: float) -> None:
+    _signal_group(process, signal.SIGTERM)
     try:
         process.wait(timeout=grace_seconds)
     except subprocess.TimeoutExpired:
-        try:
-            process.kill()
-        except ProcessLookupError:
-            pass
+        _signal_group(process, signal.SIGKILL)
         try:
             process.wait(timeout=grace_seconds)
         except subprocess.TimeoutExpired:
@@ -87,6 +104,7 @@ def run_process(
             stderr=subprocess.PIPE,
             text=True,
             shell=False,
+            start_new_session=True,
         )
     except FileNotFoundError as error:
         raise ProcessUnavailable(f"executable is unavailable: {argv[0]}") from error

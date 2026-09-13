@@ -11,7 +11,9 @@ from threading import Event
 from typing import Callable
 
 from yt2class.adapters.asr import ASRCancelled, ASRError, ASRRequest, ASRResult, run_asr
-from yt2class.adapters.ocr import OCRCancelled, OCRStatus, ocr_density, run_ocr
+from pydantic import ValidationError
+
+from yt2class.adapters.ocr import OCRCancelled, OCRContractError, OCRStatus, ocr_density, run_ocr
 from yt2class.adapters.scenes import SceneCancelled, SceneError, SceneProfile, extract_visual_catalogue
 from yt2class.adapters.subtitles import (
     SubtitleError,
@@ -19,10 +21,11 @@ from yt2class.adapters.subtitles import (
     choose_subtitle_track,
 )
 from yt2class.domain.evidence import EvidenceArtifact, EvidenceBundle, EvidenceGap
-from yt2class.domain.source import SourceManifest
+from yt2class.domain.source import SourceManifest, content_sha256
 from yt2class.domain.transcript import SpeechCoverage, TranscriptDocument, TranscriptGap, TranscriptSegment
-from yt2class.domain.visual import OcrRegion, VisualCatalogue, VisualGap
+from yt2class.domain.visual import FrameOccurrence, OcrRegion, VisualCatalogue, VisualGap
 from yt2class.orchestration.workspace import WorkspacePathError
+from yt2class.stages.ingest import IngestError, resolve_manifest_media
 
 
 Runner = Callable[..., object]
@@ -55,6 +58,12 @@ def _empty_transcript(source_id: str, duration: float, reason: str) -> Transcrip
 
 
 def _transcript_from_asr(result: ASRResult, *, source_id: str, duration: float) -> TranscriptDocument:
+    if result.source_id != source_id:
+        raise ASRError(
+            f"ASR result source_id {result.source_id!r} does not match SourceManifest {source_id!r}"
+        )
+    if result.audio_sha256 is None:
+        raise ASRError("ASR result is missing audio input hash provenance")
     if result.segments and result.raw_artifact_hash is None:
         raise ASRError("ASR result with segments is missing its result hash")
     segments: list[TranscriptSegment] = []
@@ -146,6 +155,9 @@ def _transcript_from_asr(result: ASRResult, *, source_id: str, duration: float) 
         duration_seconds=duration,
         status="complete" if result.status == "complete" and segments and not gaps else "degraded",
         gaps=gaps,
+        audio_input_hash=result.audio_sha256,
+        audio_parent_hash=result.parent_hash,
+        time_offset_seconds=result.offset_seconds,
     )
 
 
@@ -179,6 +191,36 @@ def _empty_visual(source_id: str, duration: float, reason: str) -> VisualCatalog
     )
 
 
+def _prepare_run_root(
+    run_root: Path | None,
+    *,
+    output_dir: Path | None,
+    workspace: object | None,
+) -> Path:
+    """Create and confine the run root before any evidence write or fallback."""
+
+    if workspace is not None:
+        workspace_root = Path(getattr(workspace, "root")).expanduser().resolve(strict=True)
+        supplied = run_root or output_dir
+        if supplied is not None:
+            candidate = Path(supplied).expanduser()
+            resolved = candidate.resolve(strict=candidate.exists())
+            if resolved != workspace_root:
+                raise WorkspacePathError("run_root/output_dir does not match workspace root")
+        workspace.safe_path("frames", create_parent=True)  # type: ignore[attr-defined]
+        workspace.safe_path("evidence", create_parent=True)  # type: ignore[attr-defined]
+        return workspace_root
+    root = run_root or output_dir
+    if root is None:
+        raise ValueError("extract_evidence requires run_root/output_dir/workspace")
+    root = Path(root).expanduser()
+    root.mkdir(parents=True, exist_ok=True)
+    resolved = root.resolve(strict=True)
+    (resolved / "frames").mkdir(parents=True, exist_ok=True)
+    (resolved / "evidence").mkdir(parents=True, exist_ok=True)
+    return resolved
+
+
 def _safe_output_path(run_root: Path, relative: str, *, workspace: object | None) -> Path:
     """Resolve an evidence output and reject symlink/traversal escapes before writing."""
 
@@ -205,6 +247,45 @@ def _relative_output_path(path: Path, run_root: Path) -> str:
         return resolved.relative_to(root).as_posix()
     except ValueError as error:
         raise WorkspacePathError(f"evidence artifact escapes run root: {path}") from error
+
+
+def _rebuild_visual_with_ocr(
+    visual: VisualCatalogue,
+    ocr_regions: list[OcrRegion],
+    occurrence_updates: dict[str, FrameOccurrence],
+) -> VisualCatalogue:
+    payload = visual.model_dump(mode="json")
+    payload["ocr_regions"] = [region.model_dump(mode="json") for region in ocr_regions]
+    if occurrence_updates:
+        payload["occurrences"] = [
+            occurrence_updates.get(occurrence.id, occurrence).model_dump(mode="json")
+            for occurrence in visual.occurrences
+        ]
+    return VisualCatalogue.model_validate(payload)
+
+
+def _ocr_gap(
+    occurrence: FrameOccurrence,
+    duration: float,
+    reason: str,
+    *,
+    status: str = "failed",
+) -> EvidenceGap:
+    timestamp = (
+        occurrence.actual_source_seconds
+        if occurrence.actual_source_seconds is not None
+        else occurrence.timestamp_seconds
+    )
+    if timestamp is None:
+        timestamp = occurrence.requested_seconds
+    return EvidenceGap(
+        id=f"ocr-{occurrence.id}",
+        modality="ocr",
+        start_seconds=timestamp,
+        end_seconds=min(duration, timestamp + 0.001),
+        reason=reason,
+        status=status,  # type: ignore[arg-type]
+    )
 
 
 def _extract_evidence_unlocked(
@@ -234,46 +315,51 @@ def _extract_evidence_unlocked(
     source = source or source_manifest
     if source is None:
         raise ValueError("extract_evidence requires a SourceManifest")
-    if workspace is not None:
-        workspace_root = Path(getattr(workspace, "root")).expanduser().resolve(strict=True)
-        supplied_root = run_root or output_dir
-        if supplied_root is not None and Path(supplied_root).expanduser().resolve(strict=True) != workspace_root:
-            raise WorkspacePathError("run_root/output_dir does not match workspace root")
-        run_root = workspace_root
-    elif run_root is None:
-        run_root = output_dir
-    if run_root is None:
-        raise ValueError("extract_evidence requires run_root/output_dir/workspace")
-    if media_path is None:
-        if source.reference_path:
-            media_path = Path(source.reference_path)
-        elif workspace is not None:
-            media_path = workspace.safe_path(source.media_path)  # type: ignore[attr-defined]
-        else:
-            media_path = Path(run_root) / source.media_path
-    run_root = Path(run_root)
-    if workspace is not None:
-        # Validate both output trees before any external process can publish a
-        # frame or evidence document through a symlink.
-        workspace.safe_path("frames", create_parent=True)  # type: ignore[attr-defined]
-        workspace.safe_path("evidence", create_parent=True)  # type: ignore[attr-defined]
+    run_root = _prepare_run_root(run_root, output_dir=output_dir, workspace=workspace)
+    try:
+        media_path = resolve_manifest_media(
+            source,
+            workspace,  # type: ignore[arg-type]
+            media_path=media_path,
+            run_root=run_root,
+        )
+    except IngestError as error:
+        raise ValueError(str(error)) from error
     duration = source.duration_seconds
     selected = choose_subtitle_track(sidecar=sidecar, manual=manual, auto=auto)
-    transcript: TranscriptDocument
+    subtitle_transcript: TranscriptDocument | None = None
     if selected is not None:
         try:
-            transcript = build_transcript_document(
+            subtitle_transcript = build_transcript_document(
                 selected,
                 source_id=source.source_id,
                 duration_seconds=duration,
             )
         except SubtitleError as error:
-            transcript = _empty_transcript(source.source_id, duration, f"subtitle failure: {error}")
+            subtitle_transcript = _empty_transcript(
+                source.source_id, duration, f"subtitle failure: {error}"
+            )
+    transcript: TranscriptDocument
+    if subtitle_transcript is not None and subtitle_transcript.segments:
+        transcript = subtitle_transcript
     elif asr_request is not None:
         try:
+            if asr_request.source_id != source.source_id:
+                raise ASRError(
+                    f"ASR request source_id {asr_request.source_id!r} does not match "
+                    f"SourceManifest {source.source_id!r}"
+                )
             asr_result = run_asr(asr_request, runner=asr_runner, cancel_event=cancel_event)
             if asr_result.status in {"failed", "cancelled"}:
                 raise ASRError(asr_result.error or f"ASR status is {asr_result.status}")
+            if asr_result.parent_hash is None:
+                try:
+                    parent_hash = content_sha256(Path(media_path))
+                except OSError:
+                    parent_hash = source.sha256
+                asr_result = asr_result.model_copy(update={"parent_hash": parent_hash})
+            if asr_result.parent_hash != source.sha256:
+                raise ASRError("ASR audio parent hash does not match SourceManifest")
             transcript = _transcript_from_asr(
                 asr_result,
                 source_id=source.source_id,
@@ -284,7 +370,9 @@ def _extract_evidence_unlocked(
         except ASRError as error:
             transcript = _empty_transcript(source.source_id, duration, f"ASR failure: {error}")
     else:
-        transcript = _empty_transcript(source.source_id, duration, "no subtitle or ASR evidence")
+        transcript = subtitle_transcript or _empty_transcript(
+            source.source_id, duration, "no subtitle or ASR evidence"
+        )
 
     try:
         visual = extract_visual_catalogue(
@@ -357,6 +445,10 @@ def _extract_evidence_unlocked(
                 )
             except OCRCancelled as error:
                 raise EvidenceCancelled(f"OCR cancellation: {error}") from error
+            except OCRContractError as error:
+                visual_degraded_by_ocr = True
+                bundle_gaps.append(_ocr_gap(occurrence, duration, str(error)))
+                continue
             if result.status == OCRStatus.COMPLETE:
                 ocr_regions.extend(
                     OcrRegion(
@@ -387,35 +479,46 @@ def _extract_evidence_unlocked(
                 )
             else:
                 visual_degraded_by_ocr = True
-                timestamp = (
-                    occurrence.actual_source_seconds
-                    if occurrence.actual_source_seconds is not None
-                    else occurrence.timestamp_seconds
-                )
-                if timestamp is None:
-                    timestamp = occurrence.requested_seconds
                 bundle_gaps.append(
-                    EvidenceGap(
-                        id=f"ocr-{occurrence.id}",
-                        modality="ocr",
-                        start_seconds=timestamp,
-                        end_seconds=min(duration, timestamp + 0.001),
-                        reason=result.error or "OCR unavailable",
+                    _ocr_gap(
+                        occurrence,
+                        duration,
+                        result.error or "OCR unavailable",
                         status="unavailable" if result.status == OCRStatus.UNAVAILABLE else "failed",
                     )
                 )
-    if occurrence_updates:
-        visual = visual.model_copy(
-            update={
-                "ocr_regions": ocr_regions,
-                "occurrences": [
-                    occurrence_updates.get(occurrence.id, occurrence)
-                    for occurrence in visual.occurrences
-                ],
-            }
-        )
-    else:
-        visual = visual.model_copy(update={"ocr_regions": ocr_regions})
+    accepted_regions: list[OcrRegion] = []
+    accepted_updates: dict[str, FrameOccurrence] = {}
+    try:
+        visual = _rebuild_visual_with_ocr(visual, ocr_regions, occurrence_updates)
+        accepted_regions = ocr_regions
+        accepted_updates = occurrence_updates
+    except ValidationError:
+        visual_degraded_by_ocr = True
+        by_occurrence: dict[str, list[OcrRegion]] = {}
+        for region in ocr_regions:
+            by_occurrence.setdefault(region.parent_occurrence_id, []).append(region)
+        for occurrence in visual.occurrences:
+            candidate_regions = accepted_regions + by_occurrence.get(occurrence.id, [])
+            candidate_updates = dict(accepted_updates)
+            if occurrence.id in occurrence_updates:
+                candidate_updates[occurrence.id] = occurrence_updates[occurrence.id]
+            if candidate_regions == accepted_regions and candidate_updates == accepted_updates:
+                continue
+            try:
+                _rebuild_visual_with_ocr(visual, candidate_regions, candidate_updates)
+            except ValidationError as error:
+                bundle_gaps.append(
+                    _ocr_gap(
+                        occurrence,
+                        duration,
+                        f"OCR catalogue validation failed: {error}",
+                    )
+                )
+                continue
+            accepted_regions = candidate_regions
+            accepted_updates = candidate_updates
+        visual = _rebuild_visual_with_ocr(visual, accepted_regions, accepted_updates)
     if visual_degraded_by_ocr and visual.status == "complete":
         visual = visual.model_copy(update={"status": "degraded"})
 

@@ -23,7 +23,8 @@ from yt2class.adapters.process import (
     ProcessUnavailable,
     run_process,
 )
-from yt2class.domain.common import Identifier, Seconds, StrictModel
+from yt2class.domain.common import Digest, Identifier, Seconds, StrictModel
+from yt2class.domain.source import SourceInputError, content_sha256
 from yt2class.domain.transcript import TranscriptWord
 from yt2class.workers.whisperx_worker import build_whisperx_command
 
@@ -96,6 +97,8 @@ class ASRResult(StrictModel):
     status: ASRStatus
     segments: list[ASRSegment] = Field(default_factory=list)
     raw_artifact_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    audio_sha256: Digest | None = None
+    parent_hash: Digest | None = None
     error: str | None = Field(default=None, max_length=400)
 
 
@@ -360,7 +363,12 @@ def run_asr(
         payload = json.loads(stdout)
     except json.JSONDecodeError as error:
         raise ASRContractError("ASR worker returned invalid JSON") from error
-    return parse_asr_json(payload, request)
+    result = parse_asr_json(payload, request)
+    try:
+        audio_hash = content_sha256(request.audio_path)
+    except (OSError, SourceInputError) as error:
+        raise ASRError(f"cannot hash ASR audio: {request.audio_path}") from error
+    return result.model_copy(update={"audio_sha256": audio_hash})
 
 
 __all__ = [
