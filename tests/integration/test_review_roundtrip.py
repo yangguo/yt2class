@@ -14,7 +14,7 @@ from yt2class.stages.review import (
     stub_binder,
     stub_renderer,
 )
-from yt2class.stages.verify_claims import verify_claims
+from yt2class.stages.verify_claims import page_copy_grounded, verify_claims
 from tests.helpers.m2 import DIGEST_A, frames_caps, make_transcript, make_visual
 from tests.helpers.m3 import concept_unit, course_map, knowledge, lecture_knowledge
 
@@ -257,6 +257,78 @@ def test_false_edit_copy_cannot_remain_verified():
     assert changed.quality_label != "verified"
     assert changed.quality_label == "draft"
     assert "[DRAFT]" in changed.notes
+
+
+def test_contradictory_edit_copy_cannot_stay_verified():
+    unit = concept_unit(
+        "unit-flow",
+        "claim-flow",
+        "阀门打开后水流增加",
+        ["cap-flow"],
+        start=0.0,
+        end=10.0,
+        modality="audio",
+    )
+    doc = knowledge(unit)
+    topics = course_map([("topic-1", "水流", 0.0, 10.0)])
+    transcript = make_transcript([("cap-flow", 0.0, 10.0, "阀门打开后水流增加")], duration=10.0)
+    visual = make_visual([], duration=10.0)
+    provider = FakeProvider(frames_caps())
+    plan = edit_deck(
+        doc,
+        course_map=topics,
+        transcript=transcript,
+        visual=visual,
+        provider=provider,
+        target_pages=4,
+        max_pages=6,
+    )
+    outcome = verify_claims(
+        doc,
+        plan=plan,
+        transcript=transcript,
+        visual=visual,
+        provider=FakeProvider(frames_caps()),
+        quality_mode="strict",
+    )
+    assert any(page.quality_label == "verified" and "claim-flow" in page.claim_ids for page in outcome.plan.pages)
+    bundle = build_review_bundle(
+        knowledge=outcome.knowledge,
+        plan=outcome.plan,
+        report=outcome.report,
+        transcript=transcript,
+        visual=visual,
+        course_map=topics,
+    )
+    target = next(page for page in bundle.plan.pages if "claim-flow" in page.claim_ids)
+    updated = apply_review_edits(
+        bundle,
+        ReviewEdits(
+            revision=bundle.revision,
+            baseline_hashes=bundle.baseline_hashes,
+            ops=[
+                {
+                    "op": "edit_copy",
+                    "page_id": target.id,
+                    "title": "阀门打开后水流减少",
+                    "notes": "阀门打开后水流减少",
+                    "body_points": ["阀门打开后水流减少"],
+                }
+            ],
+        ),
+        knowledge=outcome.knowledge,
+        transcript=transcript,
+        visual=visual,
+        provider=FakeProvider(frames_caps()),
+        quality_mode="strict",
+    )
+    changed = next(page for page in updated.plan.pages if page.id == target.id)
+    assert changed.title == "阀门打开后水流减少"
+    assert changed.quality_label != "verified"
+    assert changed.quality_label == "draft"
+    assert page_copy_grounded(
+        changed, knowledge=updated.knowledge, transcript=transcript, visual=visual
+    ) is False
 
 
 def test_rejected_or_unrelated_pick_asset_is_rejected():
@@ -773,6 +845,201 @@ def test_plan_verify_review_cli_fake_provider(tmp_path):
         prog_name="yt2class",
     )
     assert rejected.exit_code == 2
+
+
+def test_two_cli_review_rounds_preserve_revision_and_block_second_repair(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from yt2class.adapters.providers.base import FakeProvider
+    from yt2class.cli import app
+    from yt2class.domain.knowledge import KnowledgeDocument
+    from yt2class.domain.review import ReviewBundle
+    from yt2class.domain.verification import VerificationReport
+
+    repairs: list[str] = []
+    original = FakeProvider.complete
+
+    def wrapped(self, request, *, cancel_event=None):
+        if request.role == "verifier" and "repair" in request.request_id:
+            repairs.append(request.request_id)
+        return original(self, request, cancel_event=cancel_event)
+
+    monkeypatch.setattr(FakeProvider, "complete", wrapped)
+
+    unit = concept_unit(
+        "unit-r",
+        "claim-r",
+        "加热 15 分钟。",
+        ["cap-r"],
+        start=0.0,
+        end=10.0,
+        modality="audio",
+    )
+    doc = knowledge(unit)
+    topics = course_map([("topic-1", "修复", 0.0, 10.0)])
+    transcript = make_transcript([("cap-r", 0.0, 10.0, "加热 3 分钟。")], duration=10.0)
+    visual = make_visual([], duration=10.0)
+    knowledge_path = tmp_path / "knowledge.json"
+    transcript_path = tmp_path / "transcript.json"
+    visual_path = tmp_path / "visual.json"
+    course_path = tmp_path / "course-map.json"
+    knowledge_path.write_text(doc.model_dump_json(), encoding="utf-8")
+    transcript_path.write_text(transcript.model_dump_json(), encoding="utf-8")
+    visual_path.write_text(visual.model_dump_json(), encoding="utf-8")
+    course_path.write_text(topics.model_dump_json(), encoding="utf-8")
+    output = tmp_path / "editorial"
+    runner = CliRunner()
+    planned = runner.invoke(
+        app,
+        [
+            "plan",
+            "--knowledge",
+            str(knowledge_path),
+            "--transcript",
+            str(transcript_path),
+            "--visual",
+            str(visual_path),
+            "--course-map",
+            str(course_path),
+            "--output",
+            str(output),
+            "--provider",
+            "fake",
+        ],
+        prog_name="yt2class",
+    )
+    assert planned.exit_code == 0, planned.stdout + planned.stderr
+    verified = runner.invoke(
+        app,
+        [
+            "verify",
+            "--knowledge",
+            str(knowledge_path),
+            "--plan",
+            str(output / "editorial-plan.json"),
+            "--transcript",
+            str(transcript_path),
+            "--visual",
+            str(visual_path),
+            "--output",
+            str(output),
+            "--mode",
+            "draft",
+            "--provider",
+            "fake",
+        ],
+        prog_name="yt2class",
+    )
+    assert verified.exit_code == 0, verified.stdout + verified.stderr
+    assert (output / "knowledge.json").exists()
+    first_report = VerificationReport.model_validate_json(
+        (output / "verification-report.json").read_text(encoding="utf-8")
+    )
+    assert "claim-r" in first_report.repaired_claim_ids
+    assert repairs == ["verifier:repair:claim-r"]
+    reviewed = runner.invoke(
+        app,
+        [
+            "review",
+            "--knowledge",
+            str(knowledge_path),
+            "--plan",
+            str(output / "editorial-plan.json"),
+            "--report",
+            str(output / "verification-report.json"),
+            "--transcript",
+            str(transcript_path),
+            "--visual",
+            str(visual_path),
+            "--output",
+            str(output),
+            "--provider",
+            "fake",
+        ],
+        prog_name="yt2class",
+    )
+    assert reviewed.exit_code == 0, reviewed.stdout + reviewed.stderr
+    bundle = ReviewBundle.model_validate_json((output / "review.json").read_text(encoding="utf-8"))
+    assert bundle.revision == 1
+    target = next(page for page in bundle.plan.pages if page.claim_ids)
+    edits_one = tmp_path / "edits-1.json"
+    edits_one.write_text(
+        ReviewEdits(
+            revision=bundle.revision,
+            baseline_hashes=bundle.baseline_hashes,
+            ops=[{"op": "edit_copy", "page_id": target.id, "title": target.title}],
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+    first_apply = runner.invoke(
+        app,
+        [
+            "review",
+            "--knowledge",
+            str(knowledge_path),
+            "--plan",
+            str(output / "editorial-plan.json"),
+            "--report",
+            str(output / "verification-report.json"),
+            "--transcript",
+            str(transcript_path),
+            "--visual",
+            str(visual_path),
+            "--output",
+            str(output),
+            "--apply",
+            str(edits_one),
+            "--provider",
+            "fake",
+        ],
+        prog_name="yt2class",
+    )
+    assert first_apply.exit_code == 0, first_apply.stdout + first_apply.stderr
+    after_first = ReviewBundle.model_validate_json((output / "review.json").read_text(encoding="utf-8"))
+    assert after_first.revision == 2
+    target = next(page for page in after_first.plan.pages if page.id == target.id)
+    edits_two = tmp_path / "edits-2.json"
+    edits_two.write_text(
+        ReviewEdits(
+            revision=after_first.revision,
+            baseline_hashes=after_first.baseline_hashes,
+            ops=[{"op": "lock", "page_id": target.id}],
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+    second_apply = runner.invoke(
+        app,
+        [
+            "review",
+            "--knowledge",
+            str(knowledge_path),
+            "--plan",
+            str(output / "editorial-plan.json"),
+            "--report",
+            str(output / "verification-report.json"),
+            "--transcript",
+            str(transcript_path),
+            "--visual",
+            str(visual_path),
+            "--output",
+            str(output),
+            "--apply",
+            str(edits_two),
+            "--provider",
+            "fake",
+        ],
+        prog_name="yt2class",
+    )
+    assert second_apply.exit_code == 0, second_apply.stdout + second_apply.stderr
+    after_second = ReviewBundle.model_validate_json((output / "review.json").read_text(encoding="utf-8"))
+    assert after_second.revision == 3
+    assert repairs == ["verifier:repair:claim-r"]
+    second_report = VerificationReport.model_validate_json(
+        (output / "verification-report.json").read_text(encoding="utf-8")
+    )
+    assert second_report.repaired_claim_ids == first_report.repaired_claim_ids
+    persisted = KnowledgeDocument.model_validate_json((output / "knowledge.json").read_text(encoding="utf-8"))
+    assert any(claim.id == "claim-r" for claim in persisted.iter_claims())
 
 
 def test_fake_provider_demonstrates_m3_gate(tmp_path):

@@ -539,6 +539,91 @@ def test_evidence_only_cannot_emit_verified_or_supported_labels():
     assert not any(page.quality_label == "verified" for page in outcome.plan.pages)
 
 
+def test_increase_versus_decrease_is_never_supported():
+    unit = concept_unit(
+        "unit-flow",
+        "claim-flow",
+        "阀门打开后水流增加",
+        ["cap-flow"],
+        start=0.0,
+        end=10.0,
+        modality="audio",
+    )
+    doc = knowledge(unit)
+    topics = course_map([("topic-1", "水流", 0.0, 10.0)])
+    transcript = make_transcript([("cap-flow", 0.0, 10.0, "阀门打开后水流减少")], duration=10.0)
+    visual = make_visual([], duration=10.0)
+    plan = _plan_for(doc, topics, transcript, visual, target_pages=4, max_pages=6)
+    outcome = verify_claims(
+        doc,
+        plan=plan,
+        transcript=transcript,
+        visual=visual,
+        provider=FakeProvider(frames_caps()),
+        quality_mode="draft",
+    )
+    verdict = next(item for item in outcome.report.verdicts if item.claim_id == "claim-flow")
+    assert verdict.verdict != "supported"
+    assert verdict.verdict == "contradicted"
+    assert not any(
+        page.quality_label == "verified" and "claim-flow" in page.claim_ids
+        for page in outcome.plan.pages
+    )
+    with pytest.raises(StrictVerificationError):
+        verify_claims(
+            doc,
+            plan=plan,
+            transcript=transcript,
+            visual=visual,
+            provider=FakeProvider(frames_caps()),
+            quality_mode="strict",
+        )
+
+
+def test_empty_strict_report_fails_m3_gate_and_requires_claim_closure():
+    with pytest.raises(ValidationError, match="closed non-empty claim set"):
+        VerificationReport(
+            schema_version="1.0",
+            source_id="src-demo",
+            quality_mode="strict",
+            verdicts=[],
+        )
+    doc, topics, transcript, visual = lecture_knowledge()
+    plan = _plan_for(doc, topics, transcript, visual)
+    empty = VerificationReport.model_construct(
+        schema_version="1.0",
+        source_id="src-demo",
+        quality_mode="strict",
+        verdicts=[],
+        structural_errors=[],
+        pending_review=[],
+        coverage_gaps=[],
+        repaired_claim_ids=[],
+        removed_from_formal=[],
+        human_samples=[],
+        human_sampling_required=True,
+    )
+    assert (
+        VerifyOutcome(report=empty, knowledge=doc, plan=plan).m3_gate_ok() is False
+    )
+    partial = VerificationReport(
+        schema_version="1.0",
+        source_id="src-demo",
+        quality_mode="strict",
+        verdicts=[
+            {
+                "claim_id": "claim-def",
+                "verdict": "supported",
+                "supporting_ids": ["cap-001"],
+                "reason": "one claim only",
+            }
+        ],
+    )
+    assert (
+        VerifyOutcome(report=partial, knowledge=doc, plan=plan).m3_gate_ok() is False
+    )
+
+
 def test_unrelated_valid_evidence_is_never_supported():
     unit = concept_unit(
         "unit-false",

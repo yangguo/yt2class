@@ -8,7 +8,13 @@ from threading import Event
 from typing import Any, Iterable
 
 from yt2class.adapters.providers.base import Provider
-from yt2class.domain.editorial import EditorialPlan, Omission, PageIntent, relabel_page
+from yt2class.domain.editorial import (
+    QUALITY_NOTE_MARKERS,
+    EditorialPlan,
+    Omission,
+    PageIntent,
+    relabel_page,
+)
 from yt2class.domain.knowledge import KnowledgeClaim, KnowledgeDocument, KnowledgeUnit
 from yt2class.domain.transcript import TranscriptDocument
 from yt2class.domain.verification import (
@@ -54,7 +60,39 @@ CRITICAL_KINDS = {
     "image_text",
     "contradiction",
     "unknown_ref",
+    "grounding",
 }
+ANTONYM_PAIRS = (
+    ("增加", "减少"),
+    ("增大", "减小"),
+    ("增多", "减少"),
+    ("上升", "下降"),
+    ("升高", "降低"),
+    ("提高", "降低"),
+    ("加快", "减慢"),
+    ("加速", "减速"),
+    ("打开", "关闭"),
+    ("开启", "关闭"),
+    ("开通", "关闭"),
+    ("开始", "停止"),
+    ("允许", "禁止"),
+    ("进入", "离开"),
+    ("前进", "后退"),
+    ("正向", "反向"),
+    ("大于", "小于"),
+    ("高于", "低于"),
+    ("更多", "更少"),
+    ("increase", "decrease"),
+    ("increased", "decreased"),
+    ("open", "closed"),
+    ("open", "close"),
+    ("opened", "closed"),
+    ("higher", "lower"),
+    ("more", "less"),
+    ("start", "stop"),
+    ("on", "off"),
+)
+QUALITY_PREFIXES = ("[DRAFT]", "[EVIDENCE-ONLY]")
 
 
 class StrictVerificationError(ValueError):
@@ -88,6 +126,12 @@ class VerifyOutcome:
         if self.report.quality_mode != "strict":
             return False
         if self.report.pending_review or self.report.structural_errors:
+            return False
+        if not self.report.verdicts:
+            return False
+        claim_ids = {claim.id for claim in self.knowledge.iter_claims()}
+        verdict_ids = {item.claim_id for item in self.report.verdicts}
+        if not claim_ids or claim_ids != verdict_ids:
             return False
         return all(item.verdict == "supported" for item in self.report.verdicts)
 
@@ -183,6 +227,80 @@ def needed_overlap(tokens: set[str], *, practice: bool = False) -> int:
     return max(2, (len(tokens) + 2) // 3)
 
 
+def _has_term(text: str, term: str) -> bool:
+    if term.isascii():
+        return re.search(rf"\b{re.escape(term)}\b", text, flags=re.I) is not None
+    return term in text
+
+
+def predicate_conflicts(left: str, right: str) -> list[str]:
+    """Opposite predicates, polarity, or quantities. Bag-of-tokens overlap is not enough."""
+
+    if not left.strip() or not right.strip():
+        return []
+    found: list[str] = []
+    for first, second in ANTONYM_PAIRS:
+        left_first, left_second = _has_term(left, first), _has_term(left, second)
+        right_first, right_second = _has_term(right, first), _has_term(right, second)
+        if (left_first and not left_second) and right_second:
+            found.append(f"{first}/{second}")
+        elif (left_second and not left_first) and right_first:
+            found.append(f"{second}/{first}")
+    left_numbers = NUMBER_RE.findall(left)
+    right_numbers = set(NUMBER_RE.findall(right))
+    if left_numbers and any(item not in right_numbers for item in left_numbers):
+        found.append("number")
+    if polarity(left) != polarity(right) and content_tokens(left) & content_tokens(right):
+        found.append("negation")
+    return list(dict.fromkeys(found))
+
+
+def copy_is_affirmed(text: str, evidence_text: str, *, practice: bool = False) -> bool:
+    """True when copy is evidence-grounded and does not contradict the evidence."""
+
+    stripped = text.strip()
+    if not stripped:
+        return True
+    if predicate_conflicts(stripped, evidence_text):
+        return False
+    tokens = content_tokens(stripped)
+    if not tokens:
+        return True
+    covered = tokens & content_tokens(evidence_text)
+    return len(covered) >= needed_overlap(tokens, practice=practice)
+
+
+def notes_without_quality(notes: str) -> str:
+    cleaned = notes
+    for marker in QUALITY_NOTE_MARKERS.values():
+        if cleaned.startswith(marker):
+            cleaned = cleaned[len(marker) :].strip()
+            break
+    else:
+        for prefix in QUALITY_PREFIXES:
+            if cleaned.startswith(prefix):
+                cleaned = cleaned[len(prefix) :].strip()
+                break
+    return cleaned
+
+
+def page_evidence_text(
+    page: PageIntent,
+    *,
+    knowledge: KnowledgeDocument,
+    transcript: TranscriptDocument,
+    visual: VisualCatalogue,
+) -> str:
+    index = evidence_index(transcript, visual)
+    evidence_ids: list[str] = []
+    claim_ids = set(page.claim_ids)
+    for unit in knowledge.units:
+        for claim in unit.claims:
+            if claim.id in claim_ids:
+                evidence_ids.extend(claim.evidence_ids)
+    return _join(dict.fromkeys(evidence_ids), index)
+
+
 def check_unknown_refs(claim: KnowledgeClaim, allowed: set[str]) -> CheckResult:
     missing = [item for item in claim.evidence_ids if item not in allowed]
     if missing:
@@ -206,14 +324,29 @@ def check_grounding(claim: KnowledgeClaim, index: dict[str, str]) -> CheckResult
         )
     supporting: list[str] = []
     union: set[str] = set()
+    excerpts: list[tuple[str, str]] = []
+    contradicting: list[str] = []
     for evidence_id in claim.evidence_ids:
         excerpt = (index.get(evidence_id) or "").strip()
         if not excerpt:
             continue
+        excerpts.append((evidence_id, excerpt))
         excerpt_tokens = content_tokens(excerpt)
         union |= excerpt_tokens
+        if predicate_conflicts(claim.text, excerpt):
+            contradicting.append(evidence_id)
+            continue
         if tokens & excerpt_tokens:
             supporting.append(evidence_id)
+    joined = " ".join(text for _, text in excerpts)
+    if contradicting or predicate_conflicts(claim.text, joined):
+        return CheckResult(
+            kind="grounding",
+            passed=False,
+            note="cited evidence contradicts the claim predicate",
+            verdict="contradicted",
+            contradicting_ids=list(dict.fromkeys(contradicting or [item for item, _ in excerpts])),
+        )
     covered = tokens & union
     required = needed_overlap(tokens, practice=claim.provenance == "generated-practice")
     if not supporting or len(covered) < required:
@@ -529,6 +662,8 @@ def formalize_plan(
     knowledge: KnowledgeDocument,
     quality_mode: QualityMode,
     removed: list[str],
+    transcript: TranscriptDocument | None = None,
+    visual: VisualCatalogue | None = None,
 ) -> EditorialPlan:
     supported = {item.claim_id for item in verdicts if item.verdict == "supported"}
     pages: list[PageIntent] = []
@@ -559,10 +694,17 @@ def formalize_plan(
         pages.append(relabel_page(updated, label))
     if not pages:
         pages = [relabel_page(plan.pages[0], "draft" if quality_mode != "evidence-only" else "evidence-only")]
+    if quality_mode != "evidence-only" and transcript is not None and visual is not None:
+        checked: list[PageIntent] = []
+        for page in pages:
+            if page.type in {"content", "quiz"} and not page_copy_grounded(
+                page, knowledge=knowledge, transcript=transcript, visual=visual
+            ):
+                checked.append(relabel_page(page, "draft"))
+            else:
+                checked.append(page)
+        pages = checked
     return plan.model_copy(update={"pages": pages, "omissions": extra_omissions})
-
-
-QUALITY_PREFIXES = ("[DRAFT]", "[EVIDENCE-ONLY]")
 
 
 def page_copy_grounded(
@@ -574,30 +716,13 @@ def page_copy_grounded(
 ) -> bool:
     """True when page title/notes/body_points are affirmed by the page's evidence."""
 
-    index = evidence_index(transcript, visual)
-    evidence_ids: list[str] = []
-    claim_ids = set(page.claim_ids)
-    for unit in knowledge.units:
-        for claim in unit.claims:
-            if claim.id in claim_ids:
-                evidence_ids.extend(claim.evidence_ids)
-    evidence_text = _join(dict.fromkeys(evidence_ids), index)
-    ev_tokens = content_tokens(evidence_text)
-    if not ev_tokens:
+    evidence_text = page_evidence_text(
+        page, knowledge=knowledge, transcript=transcript, visual=visual
+    )
+    if not content_tokens(evidence_text):
         return False
-    texts: list[str] = [page.title, *page.body_points]
-    notes = page.notes
-    for prefix in QUALITY_PREFIXES:
-        if notes.startswith(prefix):
-            notes = notes[len(prefix) :].strip()
-    texts.append(notes)
-    for text in texts:
-        tokens = content_tokens(text)
-        if not tokens:
-            continue
-        if len(tokens & ev_tokens) < needed_overlap(tokens):
-            return False
-    return True
+    texts = [page.title, *page.body_points, notes_without_quality(page.notes)]
+    return all(copy_is_affirmed(text, evidence_text) for text in texts)
 
 
 def _is_practice(knowledge: KnowledgeDocument, claim_ids: list[str]) -> bool:
@@ -878,6 +1003,8 @@ def verify_claims(
         knowledge=current_knowledge,
         quality_mode=formal_mode,
         removed=report.removed_from_formal,
+        transcript=transcript,
+        visual=visual,
     )
     outcome = VerifyOutcome(
         report=report,

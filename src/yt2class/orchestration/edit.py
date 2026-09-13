@@ -54,6 +54,7 @@ def verify_plan(
     visual: VisualCatalogue,
     provider: Provider | None = None,
     quality_mode: QualityMode = "draft",
+    existing: VerificationReport | None = None,
 ) -> VerifyOutcome:
     active = provider or fake_course_provider(default_capabilities())
     return verify_claims(
@@ -63,6 +64,7 @@ def verify_plan(
         visual=visual,
         provider=active,
         quality_mode=quality_mode,
+        existing=existing,
     )
 
 
@@ -72,10 +74,14 @@ def write_editorial_artifacts(
     *,
     report: VerificationReport | None = None,
     bundle: ReviewBundle | None = None,
+    knowledge: KnowledgeDocument | None = None,
 ) -> dict[str, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     paths = {"plan": output_dir / "editorial-plan.json"}
     paths["plan"].write_text(plan.model_dump_json(indent=2), encoding="utf-8")
+    if knowledge is not None:
+        paths["knowledge"] = output_dir / "knowledge.json"
+        paths["knowledge"].write_text(knowledge.model_dump_json(indent=2), encoding="utf-8")
     if report is not None:
         paths["report"] = output_dir / "verification-report.json"
         paths["report"].write_text(report.model_dump_json(indent=2), encoding="utf-8")
@@ -87,6 +93,45 @@ def write_editorial_artifacts(
     return paths
 
 
+def load_persisted_knowledge(output_dir: Path, fallback: KnowledgeDocument) -> KnowledgeDocument:
+    path = output_dir / "knowledge.json"
+    if not path.exists():
+        return fallback
+    try:
+        persisted = KnowledgeDocument.model_validate_json(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return fallback
+    if persisted.source_id != fallback.source_id:
+        return fallback
+    return persisted
+
+
+def load_persisted_report(output_dir: Path, source_id: str) -> VerificationReport | None:
+    path = output_dir / "verification-report.json"
+    if not path.exists():
+        return None
+    try:
+        report = VerificationReport.model_validate_json(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if report.source_id != source_id:
+        return None
+    return report
+
+
+def load_persisted_revision(output_dir: Path, source_id: str) -> int:
+    path = output_dir / "review.json"
+    if not path.exists():
+        return 1
+    try:
+        previous = ReviewBundle.model_validate_json(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 1
+    if previous.source_id != source_id:
+        return 1
+    return previous.revision
+
+
 def build_review(
     *,
     knowledge: KnowledgeDocument,
@@ -96,6 +141,7 @@ def build_review(
     visual: VisualCatalogue,
     course_map: CourseMap | None = None,
     source_url: str | None = None,
+    revision: int = 1,
 ) -> ReviewBundle:
     return build_review_bundle(
         knowledge=knowledge,
@@ -105,6 +151,7 @@ def build_review(
         visual=visual,
         course_map=course_map,
         source_url=source_url,
+        revision=revision,
     )
 
 
@@ -112,6 +159,9 @@ __all__ = [
     "StrictVerificationError",
     "VerifyOutcome",
     "build_review",
+    "load_persisted_knowledge",
+    "load_persisted_report",
+    "load_persisted_revision",
     "plan_deck",
     "verify_plan",
     "write_editorial_artifacts",

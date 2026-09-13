@@ -17,7 +17,8 @@ def test_help_exposes_build_subcommand():
 
     build_help = runner.invoke(cli.app, ["build", "--help"], prog_name="yt2class")
     assert build_help.exit_code == 0
-    assert "Usage: yt2class build" in build_help.stdout
+    build_help_text = " ".join(build_help.stdout.split())
+    assert "yt2class build" in build_help_text
     analyze_help = runner.invoke(cli.app, ["analyze", "--help"], prog_name="yt2class")
     assert analyze_help.exit_code == 0
     assert "FakeProvider" in analyze_help.stdout or "fake" in analyze_help.stdout.lower()

@@ -81,15 +81,16 @@ def page_allowed_frames(
     relevant = {frame_id for frame_id in page.frame_ids if frame_id in accepted}
     claim_ids = set(page.claim_ids)
     for unit in knowledge.units:
-        if not any(claim.id in claim_ids for claim in unit.claims):
-            continue
         for claim in unit.claims:
-            relevant.update(item for item in claim.evidence_ids if item in accepted)
-        relevant.update(
-            candidate.frame_id
-            for candidate in unit.visual_candidates
-            if candidate.frame_id in accepted
-        )
+            if claim.id not in claim_ids:
+                continue
+            cited = {item for item in claim.evidence_ids if item in accepted}
+            relevant.update(cited)
+            relevant.update(
+                candidate.frame_id
+                for candidate in unit.visual_candidates
+                if candidate.frame_id in accepted and candidate.frame_id in cited
+            )
     return relevant
 
 

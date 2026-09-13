@@ -75,6 +75,8 @@ class VerificationReport(StrictModel):
         ):
             raise ValueError("evidence-only verification cannot contain supported claims")
         if self.quality_mode == "strict":
+            if not self.verdicts:
+                raise ValueError("strict verification requires a closed non-empty claim set")
             unresolved = [
                 item.claim_id
                 for item in self.verdicts

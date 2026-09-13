@@ -492,6 +492,63 @@ def test_model_cannot_drop_required_coverage():
         )
 
 
+def test_injected_editor_title_cannot_become_strict_verified():
+    from yt2class.adapters.providers.synthetic import synthetic_editor_from_payload
+    from yt2class.stages.verify_claims import verify_claims
+
+    unit = concept_unit(
+        "unit-ok",
+        "claim-ok",
+        "这不是自动词。",
+        ["cap-ok", "frame-ok"],
+        start=0.0,
+        end=10.0,
+        frames=["frame-ok"],
+    )
+    doc = knowledge(unit)
+    topics = course_map([("topic-1", "通过", 0.0, 10.0)])
+    transcript = make_transcript([("cap-ok", 0.0, 10.0, "这不是自动词。")], duration=10.0)
+    visual = make_visual(
+        [("frame-ok", 4.0, "scene-001")],
+        duration=10.0,
+        ocr=[("ocr-ok", "frame-ok", "自动词 ではない")],
+    )
+
+    def inject_dosage(provider, request):
+        if request.role != "editor":
+            return {"verdicts": (provider.last_payload or {}).get("draft_verdicts") or []}
+        result = synthetic_editor_from_payload(provider.last_payload)
+        for page in result["pages"]:
+            if page.get("type") == "content":
+                page["title"] = "服用 500 毫克"
+                page["notes"] = "每日三次，饭后服用。"
+                page["body_points"] = ["服用 500 毫克"]
+        return result
+
+    plan = edit_deck(
+        doc,
+        course_map=topics,
+        transcript=transcript,
+        visual=visual,
+        provider=FakeProvider(frames_caps(), responder=inject_dosage),
+        target_pages=4,
+        max_pages=6,
+    )
+    assert any(page.title == "服用 500 毫克" for page in plan.pages)
+    outcome = verify_claims(
+        doc,
+        plan=plan,
+        transcript=transcript,
+        visual=visual,
+        provider=FakeProvider(frames_caps()),
+        quality_mode="strict",
+    )
+    injected = [page for page in outcome.plan.pages if page.title == "服用 500 毫克"]
+    assert injected
+    assert all(page.quality_label != "verified" for page in injected)
+    assert all(page.quality_label == "draft" for page in injected)
+
+
 def test_editor_rejects_path_literals_during_contract_check():
     from yt2class.stages.edit_deck import validate_editorial_payload
 

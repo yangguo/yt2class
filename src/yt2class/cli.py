@@ -18,6 +18,9 @@ from yt2class.orchestration.analyze import analyze_evidence_bundle, write_analys
 from yt2class.orchestration.edit import (
     StrictVerificationError,
     build_review,
+    load_persisted_knowledge,
+    load_persisted_report,
+    load_persisted_revision,
     plan_deck,
     verify_plan,
     write_editorial_artifacts,
@@ -205,18 +208,28 @@ def verify(
         planned = EditorialPlan.model_validate_json(plan_path.read_text(encoding="utf-8"))
         speech = TranscriptDocument.model_validate_json(transcript.read_text(encoding="utf-8"))
         frames = VisualCatalogue.model_validate_json(visual.read_text(encoding="utf-8"))
+        doc = load_persisted_knowledge(output, doc)
+        existing = load_persisted_report(output, doc.source_id)
         outcome = verify_plan(
             doc,
             plan=planned,
             transcript=speech,
             visual=frames,
             quality_mode=quality_mode,
+            existing=existing,
         )
-        paths = write_editorial_artifacts(outcome.plan, output, report=outcome.report)
+        paths = write_editorial_artifacts(
+            outcome.plan, output, report=outcome.report, knowledge=outcome.knowledge
+        )
     except StrictVerificationError as error:
         typer.echo(f"Verify refused strict output: {error}", err=True)
         if error.outcome is not None:
-            write_editorial_artifacts(error.outcome.plan, output, report=error.outcome.report)
+            write_editorial_artifacts(
+                error.outcome.plan,
+                output,
+                report=error.outcome.report,
+                knowledge=error.outcome.knowledge,
+            )
         raise typer.Exit(code=2) from error
     except (OSError, ValueError) as error:
         typer.echo(f"Verify failed: {error}", err=True)
@@ -254,6 +267,10 @@ def review(
             if course_map is not None
             else None
         )
+        doc = load_persisted_knowledge(output, doc)
+        persisted_report = load_persisted_report(output, doc.source_id)
+        if persisted_report is not None:
+            report = persisted_report
         bundle = build_review(
             knowledge=doc,
             plan=planned,
@@ -262,6 +279,7 @@ def review(
             visual=frames,
             course_map=topics,
             source_url=source_url,
+            revision=load_persisted_revision(output, doc.source_id),
         )
         if apply is not None:
             from yt2class.adapters.providers.synthetic import fake_course_provider
@@ -283,7 +301,10 @@ def review(
             bundle = applied.bundle
             planned = applied.plan
             report = applied.report
-        paths = write_editorial_artifacts(planned, output, report=report, bundle=bundle)
+            doc = applied.knowledge
+        paths = write_editorial_artifacts(
+            planned, output, report=report, bundle=bundle, knowledge=doc
+        )
     except (OSError, ValueError) as error:
         typer.echo(f"Review failed: {error}", err=True)
         raise typer.Exit(code=1) from error
