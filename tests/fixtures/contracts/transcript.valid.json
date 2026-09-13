@@ -4,25 +4,32 @@
   "language": "zh-CN",
   "raw_artifact_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
   "alignment": "sentence",
-  "speech_coverage": {
-    "speech_seconds": 20.0,
-    "covered_seconds": 20.0,
-    "denominator": "timeline",
-    "coverage_ratio": 1.0
-  },
-  "segments": [
-    {
-      "id": "cap-001",
-      "start_seconds": 10.0,
-      "end_seconds": 20.0,
-      "text_original": "此画面为课程原始截图。",
-      "language": "zh-CN",
-      "origin": "sidecar",
-      "raw_ref": null,
-      "speaker_id": null,
-      "words": null,
-      "alignment_status": "aligned",
-      "quality_flags": []
-    }
-  ]
-}
+    "speech_coverage": {
+      "speech_seconds": 10.0,
+      "covered_seconds": 10.0,
+      "denominator": "timeline",
+      "coverage_ratio": 0.16666666666666666,
+      "denominator_seconds": 60.0
+    },
+    "segments": [
+      {
+        "id": "cap-001",
+        "start_seconds": 10.0,
+        "end_seconds": 20.0,
+        "text_original": "此画面为课程原始截图。",
+        "language": "zh-CN",
+        "origin": "sidecar",
+        "raw_ref": null,
+        "speaker_id": null,
+        "words": null,
+        "alignment_status": "aligned",
+        "quality_flags": []
+      }
+    ],
+    "duration_seconds": 60.0,
+    "status": "degraded",
+    "gaps": [
+      {"id": "gap-0001", "start_seconds": 0.0, "end_seconds": 10.0, "reason": "uncovered"},
+      {"id": "gap-0002", "start_seconds": 20.0, "end_seconds": 60.0, "reason": "uncovered"}
+    ]
+  }

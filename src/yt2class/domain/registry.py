@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from pydantic import BaseModel
 
 from yt2class.domain.course_map import CourseMap
+from yt2class.domain.evidence import EvidenceBundle
 from yt2class.domain.editorial import EditorialPlan
 from yt2class.domain.knowledge import KnowledgeDocument
 from yt2class.domain.render_report import RenderReport
@@ -20,6 +21,7 @@ from yt2class.domain.visual import VisualCatalogue
 
 SCHEMA_MODELS: Mapping[str, type[BaseModel]] = {
     "source-manifest.v1.schema.json": SourceManifest,
+    "evidence-bundle.v1.schema.json": EvidenceBundle,
     "transcript-document.v1.schema.json": TranscriptDocument,
     "visual-catalogue.v1.schema.json": VisualCatalogue,
     "segment-manifest.v1.schema.json": SegmentManifest,
@@ -36,6 +38,10 @@ SCHEMA_DESCRIPTIONS: Mapping[str, str] = {
     "source-manifest.v1.schema.json": (
         "SourceManifest 1.0 structural schema. Joins, half-open intervals, and "
         "filesystem binding are enforced in Python."
+    ),
+    "evidence-bundle.v1.schema.json": (
+        "EvidenceBundle 1.0 structural schema. Transcript/visual joins and explicit "
+        "coverage gaps are enforced in Python."
     ),
     "transcript-document.v1.schema.json": (
         "TranscriptDocument 1.0 structural schema. Unique segment IDs and half-open "

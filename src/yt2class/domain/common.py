@@ -53,6 +53,58 @@ def unique_ids(items: Iterable[Any], *, attr: str = "id", label: str) -> dict[st
     return found
 
 
+def merge_half_open(intervals: Iterable[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Merge overlapping or touching half-open intervals."""
+
+    cleaned = sorted(
+        (float(start), float(end)) for start, end in intervals if start < end
+    )
+    if not cleaned:
+        return []
+    merged = [list(cleaned[0])]
+    for start, end in cleaned[1:]:
+        if start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return [(start, end) for start, end in merged]
+
+
+def uncovered_half_open(
+    duration: float,
+    intervals: Iterable[tuple[float, float]],
+) -> list[tuple[float, float]]:
+    """Return half-open holes remaining in ``[0, duration)`` after unioning intervals."""
+
+    if duration <= 0:
+        return []
+    clipped: list[tuple[float, float]] = []
+    for start, end in intervals:
+        start = max(0.0, float(start))
+        end = min(float(duration), float(end))
+        if start < end:
+            clipped.append((start, end))
+    leftover: list[tuple[float, float]] = []
+    cursor = 0.0
+    for start, end in merge_half_open(clipped):
+        if cursor < start:
+            leftover.append((cursor, start))
+        cursor = max(cursor, end)
+    if cursor < duration:
+        leftover.append((cursor, float(duration)))
+    return leftover
+
+
+def covered_seconds(
+    duration: float,
+    intervals: Iterable[tuple[float, float]],
+) -> float:
+    """Seconds of ``[0, duration)`` covered by the union of ``intervals``."""
+
+    leftover = uncovered_half_open(duration, intervals)
+    return max(0.0, float(duration) - sum(end - start for start, end in leftover))
+
+
 def published_schema(model: type[BaseModel], *, description: str) -> dict[str, Any]:
     """Draft 2020-12 schema derived from a Pydantic model, plus published metadata."""
 
