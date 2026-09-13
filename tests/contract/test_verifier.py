@@ -10,9 +10,11 @@ from yt2class.stages.edit_deck import edit_deck
 from yt2class.stages.verify_claims import (
     StrictVerificationError,
     VerifyOutcome,
+    affirmed_directions,
     copy_is_affirmed,
     scalar_directions,
     scalar_terms,
+    unsettled_directions,
     verify_claims,
 )
 from tests.helpers.m2 import frames_caps, make_transcript, make_visual
@@ -685,25 +687,77 @@ def test_measure_interrogatives_carry_no_polarity(text):
     "text",
     [
         "水流变多还是变少尚未确定",
-        "水流变多？其实是下降了",
-        "水流变多或者变少",
         "水流会变多吗",
+        "水流变多吧",
+        "水流变多不",
+        "水流变多不多",
         "水流可能变多",
         "水流是否变多不清楚",
-        "the flow increases or decreases",
     ],
 )
-def test_unsettled_scalar_predicates_assert_nothing(text):
+def test_softened_or_epistemic_predicates_assert_nothing(text):
     assert scalar_terms(text)
     assert scalar_directions(text) == set()
 
 
-def test_settled_predicate_survives_a_nearby_question_and_a_second_subject():
+@pytest.mark.parametrize(
+    ("claim_text", "evidence_text"),
+    [
+        # Whichever connective or punctuation joins the two polarities.
+        ("水流变多", "水流变多却下降了"),
+        ("水流变多", "水流变多然后下降了"),
+        ("水流变多", "水流变多后来下降了"),
+        ("水流变多", "水流变多结果下降了"),
+        ("水流变多", "水流变多，随后下降了"),
+        ("水流变多", "水流变多？其实是下降了"),
+        ("水流变多", "水流变多或者变少"),
+        ("水流变多", "水流变多或少"),
+        ("水流变多", "水流变多不变少"),
+        ("the flow increases", "the flow increases then decreases"),
+        ("the flow increases", "the flow increases however it decreases"),
+        # A repeated subject re-attaches the opposite polarity to the claim.
+        ("温度升高", "温度升高然后温度降低"),
+    ],
+)
+def test_both_polarities_over_the_claim_settle_nothing(claim_text, evidence_text):
+    """No connective table decides this: the claim's own proposition carries both."""
+
+    assert unsettled_directions(claim_text, evidence_text) == {"up", "down"}
+    assert affirmed_directions(claim_text, evidence_text) == set()
+    assert copy_is_affirmed(claim_text, evidence_text) is False
+
+
+@pytest.mark.parametrize(
+    "joiner",
+    ["却", "随后", "紧接着", "反倒", "殊不知", "XYZZY", "，", "；", "……", " "],
+)
+def test_unsettling_does_not_depend_on_naming_the_connective(joiner):
+    """Nothing in the code enumerates these; dominance decides, not the joiner."""
+
+    claim = "阀门打开后水流变多"
+    evidence = f"阀门打开后水流变多{joiner}下降了"
+    assert unsettled_directions(claim, evidence) == {"up", "down"}
+    assert copy_is_affirmed(claim, evidence) is False
+
+
+def test_a_faithful_quote_of_both_directions_stays_verifiable():
+    """A claim reporting both directions picks no side, so it smuggles nothing."""
+
+    for text in ["阀门打开后水流变多却下降了", "阀门打开后水流变多不变少"]:
+        assert unsettled_directions(text, text) == set()
+        assert affirmed_directions(text, text) == {"up", "down"}
+        assert copy_is_affirmed(text, text) is True
+
+
+def test_a_second_subject_keeps_its_own_polarity():
+    # 压力降低 has a subject of its own, so it does not unsettle a 温度升高 claim.
+    assert unsettled_directions("温度升高", "加热使温度升高并且压力降低") == set()
+    assert affirmed_directions("温度升高", "加热使温度升高并且压力降低") == {"up", "down"}
+    assert affirmed_directions("压力降低", "加热使温度升高并且压力降低") == {"up", "down"}
     # The questioned occurrence is dropped, the asserted one still counts.
     assert scalar_directions("水流变多吗？是的，确实变多了") == {"up"}
-    # Opposite directions about different subjects are both genuine assertions.
-    assert scalar_directions("加热使温度升高并且压力降低") == {"up", "down"}
     assert scalar_directions("如果温度升高就停止") == {"up"}
+    assert affirmed_directions("水流变多", "水流变多") == {"up"}
 
 
 @pytest.mark.parametrize(
@@ -714,6 +768,19 @@ def test_settled_predicate_survives_a_nearby_question_and_a_second_subject():
         "阀门打开后水流变多？其实是下降了",
         "阀门打开后水流可能变多",
         "阀门打开后水流会变多吗",
+        # Connectives and punctuation the code never enumerates.
+        "阀门打开后水流变多却下降了",
+        "阀门打开后水流变多然后下降了",
+        "阀门打开后水流变多后来下降了",
+        "阀门打开后水流变多结果下降了",
+        "阀门打开后水流变多，随后下降了",
+        "阀门打开后水流变多；不过下降了",
+        # Incomplete alternative and A-not-A.
+        "阀门打开后水流变多或少",
+        "阀门打开后水流变多不变少",
+        # Soft assertion particles.
+        "阀门打开后水流变多吧",
+        "阀门打开后水流变多不",
     ],
 )
 def test_unsettled_evidence_never_supports_a_one_sided_claim(evidence_text):
@@ -733,6 +800,30 @@ def test_unsettled_evidence_never_supports_a_one_sided_claim(evidence_text):
             provider=FakeProvider(frames_caps()),
             quality_mode="strict",
         )
+
+
+@pytest.mark.parametrize(
+    ("claim_text", "evidence_text"),
+    [
+        ("the flow increases", "the flow increases then decreases"),
+        ("the flow increases", "the flow increases however it decreases"),
+    ],
+)
+def test_unsettled_english_evidence_never_supports_a_one_sided_claim(claim_text, evidence_text):
+    outcome, _fixtures = _polarity_outcome(claim_text, evidence_text)
+    verdict = next(item for item in outcome.report.verdicts if item.claim_id == "claim-p")
+    assert verdict.verdict != "supported"
+    assert not verdict.supporting_ids
+
+
+def test_a_second_subject_still_reaches_strict_verified():
+    outcome, _fixtures = _polarity_outcome(
+        "温度升高", "加热使温度升高并且压力降低", quality_mode="strict"
+    )
+    verdict = next(item for item in outcome.report.verdicts if item.claim_id == "claim-p")
+    assert verdict.verdict == "supported"
+    assert outcome.report.quality_mode == "strict"
+    assert outcome.m3_gate_ok() is True
 
 
 def test_measure_evidence_does_not_forge_a_contradiction():

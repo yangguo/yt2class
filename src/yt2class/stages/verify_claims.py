@@ -149,42 +149,13 @@ SCALAR_WORD_DIRECTION = {
     word: direction for direction, words in SCALAR_WORDS.items() for word in words
 }
 HOW_MUCH_RE = re.compile(r"\bhow\s+$", re.I)
-# Connectives join two predicates without introducing a new subject, so
-# "变多还是变少" and "变多？其实是下降了" both talk about one proposition while
-# "温度升高并且压力降低" does not.
-CONNECTIVE_MARKERS = (
-    "还是",
-    "或者",
-    "或是",
-    "亦或",
-    "抑或",
-    "或",
-    "而是",
-    "其实",
-    "实际上",
-    "事实上",
-    "准确地说",
-    "反而",
-    "并且",
-    "而且",
-    "以及",
-    "但是",
-    "不过",
-    "然而",
-    "actually",
-    "in fact",
-    "instead",
-    "rather",
-    "and",
-    "or",
-    "but",
-)
-# A predicate inside a questioned, alternative, or undecided clause is not asserted.
-HEDGE_MARKERS = (
-    "吗",
-    "呢",
-    "还是",
-    "或者",
+# Sentence-final modal particles and a truncated A-not-A turn a predicate into a
+# question rather than an assertion. Closed function-word class, unlike connectives.
+SOFT_PARTICLES = ("吗", "呢", "吧", "啊", "呀", "嘛", "么", "？", "?")
+TRUNCATED_QUESTION_NEGATORS = ("不", "没", "未")
+PARTICLE_SKIP = "了的是着过呢啊 \t"
+# Epistemic modals leave an outcome open even with no opposite polarity in sight.
+EPISTEMIC_MARKERS = (
     "是否",
     "会不会",
     "是不是",
@@ -389,19 +360,6 @@ def scalar_terms(text: str) -> list[ScalarTerm]:
     return sorted(found, key=lambda item: item.start)
 
 
-def _strip_connectives(text: str) -> str:
-    stripped = text
-    for marker in CONNECTIVE_MARKERS:
-        stripped = re.sub(re.escape(marker), " ", stripped, flags=re.I)
-    return stripped
-
-
-def _same_proposition(between: str) -> bool:
-    """True when only connectives separate two predicates, so they share a subject."""
-
-    return not content_tokens(_strip_connectives(between))
-
-
 def _clause_around(text: str, term: ScalarTerm) -> str:
     start, end = 0, len(text)
     for match in CLAUSE_SPLIT_RE.finditer(text):
@@ -413,28 +371,37 @@ def _clause_around(text: str, term: ScalarTerm) -> str:
     return text[start:end]
 
 
-def _is_hedged(text: str, term: ScalarTerm) -> bool:
+def _is_epistemic(text: str, term: ScalarTerm) -> bool:
     clause = _clause_around(text, term).lower()
-    return any(marker.lower() in clause for marker in HEDGE_MARKERS)
+    return any(marker.lower() in clause for marker in EPISTEMIC_MARKERS)
+
+
+def _is_softened(text: str, term: ScalarTerm) -> bool:
+    """变多吧 / 变多不 / 变多不多 offer the direction without asserting it."""
+
+    tail = text[term.end :].lstrip(PARTICLE_SKIP)
+    if tail[:1] in SOFT_PARTICLES:
+        return True
+    if tail[:1] not in TRUNCATED_QUESTION_NEGATORS:
+        return False
+    after = tail[1:2]
+    return not after or after == term.text[-1:] or CLAUSE_SPLIT_RE.match(after) is not None
 
 
 def settled_scalar_terms(text: str) -> list[ScalarTerm]:
-    """Scalar predicates ``text`` actually asserts.
+    """Scalar predicates ``text`` asserts on its own terms.
 
-    A predicate is dropped when the text offers the opposite direction for the same
-    proposition ("变多还是变少", "变多？其实是下降了") or when its clause is a
-    question or leaves the outcome open, so unsettled evidence affirms nothing.
+    Drops predicates softened by a sentence-final particle or a truncated A-not-A
+    question, and predicates whose clause is explicitly epistemic. Whether the
+    evidence settles a direction *for a given claim* is decided separately by
+    :func:`affirmed_directions`, which needs the claim's own skeleton.
     """
 
-    terms = scalar_terms(text)
-    unsettled: set[int] = set()
-    for index, (first, second) in enumerate(zip(terms, terms[1:])):
-        if first.direction == second.direction:
-            continue
-        if _same_proposition(text[first.end : second.start]):
-            unsettled.update({index, index + 1})
-    unsettled.update(index for index, term in enumerate(terms) if _is_hedged(text, term))
-    return [term for index, term in enumerate(terms) if index not in unsettled]
+    return [
+        term
+        for term in scalar_terms(text)
+        if not _is_softened(text, term) and not _is_epistemic(text, term)
+    ]
 
 
 def scalar_directions(text: str) -> set[str]:
@@ -461,11 +428,78 @@ def _same_skeleton(left: set[str], right: set[str]) -> bool:
     return len(shared) >= max(1, min(len(left), len(right)) // 2)
 
 
+def _subject_slot(text: str, term: ScalarTerm, terms: list[ScalarTerm]) -> set[str]:
+    """Content tokens between the previous predicate and this one: its subject slot."""
+
+    previous = max((item.end for item in terms if item.end <= term.start), default=0)
+    return content_tokens(text[previous : term.start])
+
+
+def _claim_dominates(claim_skeleton: set[str], evidence_skeleton: set[str]) -> bool:
+    """True when the claim accounts for most of the evidence's subject material.
+
+    A predicate appended to the claim's own wording has no subject of its own to
+    attach to, so it speaks about the claim. This replaces asking which connective
+    joins them: 变多却下降了, 变多然后下降了 and 变多结果下降了 are all dominated,
+    while 加热使温度升高并且压力降低 says far more than a 温度升高 claim does.
+    """
+
+    if not evidence_skeleton:
+        return True
+    return len(claim_skeleton & evidence_skeleton) * 2 >= len(evidence_skeleton)
+
+
+def _adjacent_root_directions(text: str, term: ScalarTerm, terms: list[ScalarTerm]) -> set[str]:
+    """Lone roots beside a predicate: 变多或少 offers 少 without spelling out 变少."""
+
+    covered = {index for item in terms for index in range(item.start, item.end)}
+    window = range(max(0, term.start - 3), min(len(text), term.end + 3))
+    return {
+        direction
+        for index in window
+        if index not in covered and (direction := SCALAR_DIRECTION.get(text[index]))
+    }
+
+
+def unsettled_directions(claim_text: str, evidence_text: str) -> set[str]:
+    """Polarities the evidence leaves open for the claim's own proposition.
+
+    Both an up and a down polarity over the claim's proposition means the evidence
+    never settles either one, whatever connective or punctuation sits between them.
+    A predicate counts as speaking about the claim when the claim dominates the
+    evidence's subject material, or when its own subject slot overlaps the claim's
+    skeleton — so a genuinely different subject keeps its own polarity.
+    """
+
+    terms = scalar_terms(evidence_text)
+    if not terms:
+        return set()
+    claim_directions = {term.direction for term in scalar_terms(claim_text)}
+    if {"up", "down"} <= claim_directions:
+        # The claim reports both directions itself, so it picks no side to smuggle.
+        return set()
+    claim_skeleton = predicate_skeleton(claim_text)
+    dominates = _claim_dominates(claim_skeleton, predicate_skeleton(evidence_text))
+    about_claim: set[str] = set()
+    for term in terms:
+        if not dominates and not (_subject_slot(evidence_text, term, terms) & claim_skeleton):
+            continue
+        about_claim.add(term.direction)
+        about_claim |= _adjacent_root_directions(evidence_text, term, terms)
+    return about_claim if {"up", "down"} <= about_claim else set()
+
+
+def affirmed_directions(claim_text: str, evidence_text: str) -> set[str]:
+    """Polarities the evidence actually settles for ``claim_text``."""
+
+    return scalar_directions(evidence_text) - unsettled_directions(claim_text, evidence_text)
+
+
 def direction_conflicts(left: str, right: str) -> list[str]:
     """One-sided opposite polarity on the same subject/object skeleton."""
 
     left_dirs = scalar_directions(left)
-    right_dirs = scalar_directions(right)
+    right_dirs = affirmed_directions(left, right)
     if len(left_dirs) != 1 or len(right_dirs) != 1 or left_dirs == right_dirs:
         return []
     if not _same_skeleton(predicate_skeleton(left), predicate_skeleton(right)):
@@ -477,10 +511,11 @@ def unaffirmed_predicates(text: str, evidence_text: str) -> list[str]:
     """Scalar predicates in ``text`` the evidence does not settle in the same direction.
 
     Substring presence is not affirmation: 变多 occurs inside 变多少, and evidence that
-    only raises the direction as a question or an alternative never affirms it.
+    only raises the direction as a question, an alternative, or a correction never
+    affirms it.
     """
 
-    affirmed = scalar_directions(evidence_text)
+    affirmed = affirmed_directions(text, evidence_text)
     return list(
         dict.fromkeys(
             term.text for term in scalar_terms(text) if term.direction not in affirmed

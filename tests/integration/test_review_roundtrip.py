@@ -488,6 +488,89 @@ def test_measure_form_edit_copy_cannot_stay_verified():
     ) is False
 
 
+@pytest.mark.parametrize(
+    "measured",
+    [
+        "阀门打开后水流变多却下降了",
+        "阀门打开后水流变多然后下降了",
+        "阀门打开后水流变多不变少",
+    ],
+)
+def test_unsettled_evidence_edit_copy_cannot_stay_verified(measured):
+    """One-sided copy cannot ride evidence that carries both polarities."""
+
+    unit = concept_unit(
+        "unit-flow",
+        "claim-flow",
+        measured,
+        ["cap-flow"],
+        start=0.0,
+        end=10.0,
+        modality="audio",
+    )
+    doc = knowledge(unit)
+    topics = course_map([("topic-1", "水流", 0.0, 10.0)])
+    transcript = make_transcript([("cap-flow", 0.0, 10.0, measured)], duration=10.0)
+    visual = make_visual([], duration=10.0)
+    plan = edit_deck(
+        doc,
+        course_map=topics,
+        transcript=transcript,
+        visual=visual,
+        provider=FakeProvider(frames_caps()),
+        target_pages=4,
+        max_pages=6,
+    )
+    outcome = verify_claims(
+        doc,
+        plan=plan,
+        transcript=transcript,
+        visual=visual,
+        provider=FakeProvider(frames_caps()),
+        quality_mode="strict",
+    )
+    assert any(
+        page.quality_label == "verified" and "claim-flow" in page.claim_ids
+        for page in outcome.plan.pages
+    )
+    bundle = build_review_bundle(
+        knowledge=outcome.knowledge,
+        plan=outcome.plan,
+        report=outcome.report,
+        transcript=transcript,
+        visual=visual,
+        course_map=topics,
+    )
+    target = next(page for page in bundle.plan.pages if "claim-flow" in page.claim_ids)
+    updated = apply_review_edits(
+        bundle,
+        ReviewEdits(
+            revision=bundle.revision,
+            baseline_hashes=bundle.baseline_hashes,
+            ops=[
+                {
+                    "op": "edit_copy",
+                    "page_id": target.id,
+                    "title": "阀门打开后水流变多",
+                    "notes": "阀门打开后水流变多",
+                    "body_points": ["阀门打开后水流变多"],
+                }
+            ],
+        ),
+        knowledge=outcome.knowledge,
+        transcript=transcript,
+        visual=visual,
+        provider=FakeProvider(frames_caps()),
+        quality_mode="strict",
+    )
+    changed = next(page for page in updated.plan.pages if page.id == target.id)
+    assert changed.title == "阀门打开后水流变多"
+    assert changed.quality_label == "draft"
+    assert page_copy_grounded(
+        changed, knowledge=updated.knowledge, transcript=transcript, visual=visual
+    ) is False
+
+
 def _forged_strict_report(claim_ids, *, source_id="src-demo"):
     return VerificationReport(
         schema_version="1.0",
