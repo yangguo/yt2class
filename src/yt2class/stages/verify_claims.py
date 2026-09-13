@@ -428,25 +428,51 @@ def _same_skeleton(left: set[str], right: set[str]) -> bool:
     return len(shared) >= max(1, min(len(left), len(right)) // 2)
 
 
-def _subject_slot(text: str, term: ScalarTerm, terms: list[ScalarTerm]) -> set[str]:
-    """Content tokens between the previous predicate and this one: its subject slot."""
+# Entity aliases, not connective markers. Unknown continuations conservatively
+# inherit the previous subject; this is not a general-purpose coreference parser.
+SCALAR_ENTITIES = (
+    ("水流", "流量", "flow"),
+    ("水位", "液位", "water level", "liquid level"),
+    ("压力", "压强", "pressure"),
+    ("温度", "temperature"),
+    ("价格", "物价", "price", "prices"),
+    ("转速", "speed"),
+)
 
-    previous = max((item.end for item in terms if item.end <= term.start), default=0)
-    return content_tokens(text[previous : term.start])
+
+def _scalar_entities(text: str) -> set[int]:
+    return {
+        index
+        for index, aliases in enumerate(SCALAR_ENTITIES)
+        if any(_has_term(text, alias) for alias in aliases)
+    }
 
 
-def _claim_dominates(claim_skeleton: set[str], evidence_skeleton: set[str]) -> bool:
-    """True when the claim accounts for most of the evidence's subject material.
+def _subjects_about_claim(
+    claim_text: str, evidence_text: str, terms: list[ScalarTerm]
+) -> Iterable[tuple[ScalarTerm, bool]]:
+    """Resolve local subjects, inheriting across ambiguous continuations.
 
-    A predicate appended to the claim's own wording has no subject of its own to
-    attach to, so it speaks about the claim. This replaces asking which connective
-    joins them: 变多却下降了, 变多然后下降了 and 变多结果下降了 are all dominated,
-    while 加热使温度升高并且压力降低 says far more than a 温度升高 claim does.
+    Pronouns and arbitrary joiners do not demonstrate a new entity. Unknown
+    subjects cannot license discarding a potentially relevant opposite polarity.
     """
 
-    if not evidence_skeleton:
-        return True
-    return len(claim_skeleton & evidence_skeleton) * 2 >= len(evidence_skeleton)
+    claim_skeleton = predicate_skeleton(claim_text)
+    claim_entities = _scalar_entities(_strip_scalars(claim_text))
+    previous_end = 0
+    about_claim = not claim_skeleton
+    for term in terms:
+        slot = evidence_text[previous_end:term.start]
+        entities = _scalar_entities(slot)
+        if entities:
+            about_claim = not claim_skeleton or bool(entities & claim_entities)
+            if not claim_entities:
+                about_claim = not claim_skeleton or bool(content_tokens(slot) & claim_skeleton)
+        elif content_tokens(slot) & claim_skeleton:
+            about_claim = True
+        # Otherwise inherit: no identifiable new subject was introduced.
+        yield term, about_claim
+        previous_end = term.end
 
 
 def _adjacent_root_directions(text: str, term: ScalarTerm, terms: list[ScalarTerm]) -> set[str]:
@@ -466,9 +492,8 @@ def unsettled_directions(claim_text: str, evidence_text: str) -> set[str]:
 
     Both an up and a down polarity over the claim's proposition means the evidence
     never settles either one, whatever connective or punctuation sits between them.
-    A predicate counts as speaking about the claim when the claim dominates the
-    evidence's subject material, or when its own subject slot overlaps the claim's
-    skeleton — so a genuinely different subject keeps its own polarity.
+    Subjects resolve locally and inherit through discourse continuations, so
+    padding cannot hide corrections and distinct entities keep their polarity.
     """
 
     terms = scalar_terms(evidence_text)
@@ -478,11 +503,9 @@ def unsettled_directions(claim_text: str, evidence_text: str) -> set[str]:
     if {"up", "down"} <= claim_directions:
         # The claim reports both directions itself, so it picks no side to smuggle.
         return set()
-    claim_skeleton = predicate_skeleton(claim_text)
-    dominates = _claim_dominates(claim_skeleton, predicate_skeleton(evidence_text))
     about_claim: set[str] = set()
-    for term in terms:
-        if not dominates and not (_subject_slot(evidence_text, term, terms) & claim_skeleton):
+    for term, relevant in _subjects_about_claim(claim_text, evidence_text, terms):
+        if not relevant:
             continue
         about_claim.add(term.direction)
         about_claim |= _adjacent_root_directions(evidence_text, term, terms)

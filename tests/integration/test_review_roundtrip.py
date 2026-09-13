@@ -489,16 +489,28 @@ def test_measure_form_edit_copy_cannot_stay_verified():
 
 
 @pytest.mark.parametrize(
-    "measured",
+    ("copy", "measured"),
     [
-        "阀门打开后水流变多却下降了",
-        "阀门打开后水流变多然后下降了",
-        "阀门打开后水流变多不变少",
+        ("水流变多", "水流变多却下降了"),
+        ("水流变多", "水流变多，随后下降了"),
+        ("the flow increases", "the flow increases and then it decreases"),
+        ("the flow increases", "the flow increases. Later it drops"),
+        ("水流变多", "水流变多，然后它下降了"),
+        ("水流变多", "水流变多然后流量下降了"),
+        ("水位升高", "水位升高随后液位降低"),
+        ("压力升高", "压力升高然后压强降低"),
+        ("prices increase", "prices increase. they decrease afterwards"),
+        ("变多", "变多却下降了"),
+        ("阀门打开后水流变多", "阀门打开后水流变多却下降了"),
+        ("阀门打开后水流变多", "阀门打开后水流变多然后下降了"),
+        ("阀门打开后水流变多", "阀门打开后水流变多不变少"),
     ],
 )
-def test_unsettled_evidence_edit_copy_cannot_stay_verified(measured):
+@pytest.mark.parametrize("prefix", ["", "本节课程讨论实验背景和观察方法。" * 30])
+def test_unsettled_evidence_edit_copy_cannot_stay_verified(copy, measured, prefix):
     """One-sided copy cannot ride evidence that carries both polarities."""
 
+    measured = prefix + measured
     unit = concept_unit(
         "unit-flow",
         "claim-flow",
@@ -551,9 +563,9 @@ def test_unsettled_evidence_edit_copy_cannot_stay_verified(measured):
                 {
                     "op": "edit_copy",
                     "page_id": target.id,
-                    "title": "阀门打开后水流变多",
-                    "notes": "阀门打开后水流变多",
-                    "body_points": ["阀门打开后水流变多"],
+                    "title": copy,
+                    "notes": copy,
+                    "body_points": [copy],
                 }
             ],
         ),
@@ -564,7 +576,7 @@ def test_unsettled_evidence_edit_copy_cannot_stay_verified(measured):
         quality_mode="strict",
     )
     changed = next(page for page in updated.plan.pages if page.id == target.id)
-    assert changed.title == "阀门打开后水流变多"
+    assert changed.title == copy
     assert changed.quality_label == "draft"
     assert page_copy_grounded(
         changed, knowledge=updated.knowledge, transcript=transcript, visual=visual

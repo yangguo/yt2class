@@ -732,7 +732,7 @@ def test_both_polarities_over_the_claim_settle_nothing(claim_text, evidence_text
     ["却", "随后", "紧接着", "反倒", "殊不知", "XYZZY", "，", "；", "……", " "],
 )
 def test_unsettling_does_not_depend_on_naming_the_connective(joiner):
-    """Nothing in the code enumerates these; dominance decides, not the joiner."""
+    """Subject inheritance works without enumerating these joiners."""
 
     claim = "阀门打开后水流变多"
     evidence = f"阀门打开后水流变多{joiner}下降了"
@@ -963,3 +963,34 @@ def test_successful_strict_path_has_no_unresolved_critical_claims():
         for page in outcome.plan.pages
     )
     assert not any("[DRAFT]" in page.notes for page in outcome.plan.pages)
+
+
+@pytest.mark.parametrize("prefix", ["", "本节课程讨论实验背景和观察方法。" * 30])
+@pytest.mark.parametrize(
+    ("claim_text", "continuation"),
+    [
+        ("水流变多", "水流变多却下降了"),
+        ("水流变多", "水流变多，随后下降了"),
+        ("the flow increases", "the flow increases and then it decreases"),
+        ("the flow increases", "the flow increases. Later it drops"),
+        ("水流变多", "水流变多，然后它下降了"),
+        ("水流变多", "水流变多然后流量下降了"),
+        ("水位升高", "水位升高随后液位降低"),
+        ("压力升高", "压力升高然后压强降低"),
+        ("prices increase", "prices increase. they decrease afterwards"),
+        ("变多", "变多却下降了"),
+    ],
+)
+def test_discourse_polarities_fail_closed_with_padding(prefix, claim_text, continuation):
+    evidence = prefix + continuation
+    assert unsettled_directions(claim_text, evidence) == {"up", "down"}
+    assert not copy_is_affirmed(claim_text, evidence)
+    outcome, _ = _polarity_outcome(claim_text, evidence)
+    assert outcome.report.verdicts[0].verdict == "insufficient"
+    with pytest.raises(StrictVerificationError) as caught:
+        _polarity_outcome(claim_text, evidence, quality_mode="strict")
+    strict = caught.value.outcome
+    assert strict is not None
+    assert strict.report.quality_mode == "draft"
+    assert not strict.m3_gate_ok()
+    assert all(page.quality_label != "verified" for page in strict.plan.pages)
