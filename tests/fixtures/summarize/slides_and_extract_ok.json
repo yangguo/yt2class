@@ -1,0 +1,28 @@
+{
+  "ok": true,
+  "slides": {
+    "sourceUrl": "https://www.youtube.com/watch?v=fixture0001",
+    "sourceKind": "youtube",
+    "slidesDir": "frames",
+    "slides": [
+      {
+        "index": 1,
+        "timestamp": 12.5,
+        "imagePath": "frames/slide_0001_12.50s.png"
+      }
+    ]
+  },
+  "extract": {
+    "sourceUrl": "https://www.youtube.com/watch?v=fixture0001",
+    "sourceKind": "youtube",
+    "language": "ja",
+    "segments": [
+      {
+        "start": 12.0,
+        "end": 14.0,
+        "text": "合成字幕",
+        "origin": "auto-caption"
+      }
+    ]
+  }
+}

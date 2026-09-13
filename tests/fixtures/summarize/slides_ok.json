@@ -1,0 +1,22 @@
+{
+  "ok": true,
+  "slides": {
+    "sourceUrl": "./synthetic-local.mp4",
+    "sourceKind": "local",
+    "slidesDir": "frames",
+    "slides": [
+      {
+        "index": 1,
+        "timestamp": 12.5,
+        "imagePath": "frames/slide_0001_12.50s.png",
+        "ocrText": "合成画面 A",
+        "ocrConfidence": 0.9
+      },
+      {
+        "index": 2,
+        "timestamp": 40.0,
+        "imagePath": "frames/slide_0002_40.00s.png"
+      }
+    ]
+  }
+}

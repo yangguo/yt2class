@@ -1,0 +1,17 @@
+{
+  "ok": true,
+  "extract": {
+    "sourceUrl": "./synthetic-local.mp4",
+    "sourceKind": "local",
+    "language": "zh-CN",
+    "text": "此画面为课程原始截图。",
+    "segments": [
+      {
+        "start": 10.0,
+        "end": 20.0,
+        "text": "此画面为课程原始截图。",
+        "origin": "sidecar"
+      }
+    ]
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "source_kind": "local",
+  "download_count": 1,
+  "frame_timestamps": [1.0, 8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0],
+  "caption_origin": "sidecar",
+  "slides_capped_by_page_budget": false
+}

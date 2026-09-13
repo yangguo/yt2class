@@ -1,0 +1,15 @@
+{
+  "ok": true,
+  "slides": {
+    "sourceUrl": "./synthetic-local.mp4",
+    "sourceKind": "local",
+    "slidesDir": "frames",
+    "slides": [
+      {
+        "index": 1,
+        "timestamp": -1.0,
+        "imagePath": "frames/slide_0001_12.50s.png"
+      }
+    ]
+  }
+}
