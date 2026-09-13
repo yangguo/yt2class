@@ -17,7 +17,7 @@ from yt2class.domain.common import (
     validate_half_open,
 )
 from yt2class.domain.transcript import TranscriptDocument
-from yt2class.domain.visual import VisualCatalogue
+from yt2class.domain.visual import VisualCatalogue, is_accepted_visual_occurrence
 from yt2class.domain.source import SourceManifest
 
 EvidenceModality = Literal["transcript", "visual", "ocr", "asr"]
@@ -151,8 +151,7 @@ class EvidenceBundle(StrictModel):
         evidenced_scenes: set[str] = set()
         intervals: list[tuple[float, float]] = []
         for occurrence in self.visual.occurrences:
-            asset = assets.get(occurrence.asset_id)
-            if asset is None or asset.role != "frame":
+            if not is_accepted_visual_occurrence(occurrence, assets):
                 continue
             evidenced_scenes.add(occurrence.scene_id)
             point = (

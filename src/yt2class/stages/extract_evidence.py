@@ -6,6 +6,7 @@ from hashlib import sha256
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 from threading import Event
 from typing import Callable
@@ -28,7 +29,7 @@ from yt2class.adapters.subtitles import (
     choose_subtitle_track,
 )
 from yt2class.domain.evidence import EvidenceArtifact, EvidenceBundle, EvidenceGap
-from yt2class.domain.source import SourceManifest, content_sha256
+from yt2class.domain.source import SourceInputError, SourceManifest, content_sha256
 from yt2class.domain.transcript import SpeechCoverage, TranscriptDocument, TranscriptGap, TranscriptSegment
 from yt2class.domain.visual import FrameOccurrence, OcrRegion, VisualCatalogue, VisualGap
 from yt2class.orchestration.workspace import WorkspacePathError
@@ -248,6 +249,72 @@ def _safe_output_path(run_root: Path, relative: str, *, workspace: object | None
     return candidate
 
 
+def _snapshot_verified_media(
+    source: Path,
+    *,
+    expected_hash: str,
+    dest: Path,
+) -> Path:
+    """Copy verified media into immutable run storage before extraction."""
+
+    source = Path(source).expanduser()
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        source_resolved = source.resolve(strict=True)
+    except OSError as error:
+        raise ValueError(f"verified media does not exist: {source}") from error
+    if dest.exists():
+        try:
+            dest_resolved = dest.resolve(strict=True)
+        except OSError as error:
+            raise ValueError(f"cannot resolve verified media snapshot: {dest}") from error
+        if source_resolved == dest_resolved:
+            try:
+                actual = content_sha256(dest)
+            except (OSError, SourceInputError) as error:
+                raise ValueError(f"cannot hash verified media snapshot: {dest}") from error
+            if actual != expected_hash:
+                raise ValueError(f"verified media hash does not match: {dest}")
+            return dest
+    temporary = dest.with_name(f".{dest.name}.part")
+    temporary.unlink(missing_ok=True)
+    try:
+        shutil.copy2(source, temporary)
+        actual = content_sha256(temporary)
+    except (OSError, SourceInputError) as error:
+        temporary.unlink(missing_ok=True)
+        raise ValueError(f"cannot snapshot verified media: {source}") from error
+    if actual != expected_hash:
+        temporary.unlink(missing_ok=True)
+        raise ValueError("verified media changed before snapshot")
+    try:
+        temporary.replace(dest)
+    except OSError as error:
+        temporary.unlink(missing_ok=True)
+        raise ValueError(f"cannot snapshot verified media: {source}") from error
+    return dest
+
+
+def _discard_derived_outputs(run_root: Path) -> None:
+    wav = Path(run_root) / "tmp" / "asr-audio.wav"
+    wav.unlink(missing_ok=True)
+    frames = Path(run_root) / "frames"
+    if frames.is_dir():
+        for child in frames.iterdir():
+            if child.is_file() or child.is_symlink():
+                child.unlink(missing_ok=True)
+
+
+def _assert_verified_media_unchanged(path: Path, expected_hash: str) -> None:
+    try:
+        actual = content_sha256(Path(path))
+    except (OSError, SourceInputError) as error:
+        raise ValueError(f"cannot rehash verified media after extraction: {path}") from error
+    if actual != expected_hash:
+        raise ValueError("verified media changed during extraction")
+
+
 def _relative_output_path(path: Path, run_root: Path) -> str:
     root = Path(run_root).expanduser().resolve(strict=True)
     resolved = path.resolve(strict=False)
@@ -336,6 +403,16 @@ def _extract_evidence_unlocked(
         )
     except IngestError as error:
         raise ValueError(str(error)) from error
+    suffix = Path(media_path).suffix.lower() or ".mp4"
+    media_path = _snapshot_verified_media(
+        Path(media_path),
+        expected_hash=source.sha256,
+        dest=_safe_output_path(
+            run_root,
+            f"media/{source.sha256[:16]}{suffix}",
+            workspace=workspace,
+        ),
+    )
     duration = source.duration_seconds
     selected = choose_subtitle_track(sidecar=sidecar, manual=manual, auto=auto)
     subtitle_transcript: TranscriptDocument | None = None
@@ -424,6 +501,13 @@ def _extract_evidence_unlocked(
         raise EvidenceCancelled(f"frame extraction cancellation: {error}") from error
     except SceneError as error:
         visual = _empty_visual(source.source_id, duration, f"visual failure: {error}")
+    try:
+        _assert_verified_media_unchanged(media_path, source.sha256)
+    except ValueError as error:
+        _discard_derived_outputs(run_root)
+        reason = str(error)
+        transcript = _empty_transcript(source.source_id, duration, reason)
+        visual = _empty_visual(source.source_id, duration, reason)
 
     bundle_gaps: list[EvidenceGap] = []
     for gap in transcript.gaps:

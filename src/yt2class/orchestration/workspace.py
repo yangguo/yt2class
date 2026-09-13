@@ -28,18 +28,13 @@ _RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _HELD_LOCKS: set[str] = set()
 
 
-def _same_inode(left: os.stat_result, right: os.stat_result) -> bool:
-    return left.st_ino == right.st_ino and left.st_dev == right.st_dev
-
-
 @dataclass
 class _WriteLock:
-    """Exclusive run lock via flock; inode-checked unlink on release."""
+    """Exclusive run lock via flock. The lock file is kept; release is flock close."""
 
     path: Path
     _fd: int | None = None
     _key: str | None = None
-    _owned: os.stat_result | None = None
 
     def __enter__(self) -> Self:
         key = str(self.path)
@@ -64,7 +59,6 @@ class _WriteLock:
             os.ftruncate(self._fd, 0)
             os.write(self._fd, f"pid={os.getpid()}\n".encode("ascii"))
             os.fsync(self._fd)
-            self._owned = os.fstat(self._fd)
         except OSError:
             try:
                 fcntl.flock(self._fd, fcntl.LOCK_UN)
@@ -83,27 +77,15 @@ class _WriteLock:
             self._key = None
         if self._fd is None:
             return
-        owned = self._owned or os.fstat(self._fd)
-        same = False
-        try:
-            current = os.stat(self.path)
-            same = _same_inode(owned, current)
-        except OSError:
-            same = False
         try:
             fcntl.flock(self._fd, fcntl.LOCK_UN)
         except OSError:
             pass
-        os.close(self._fd)
+        try:
+            os.close(self._fd)
+        except OSError:
+            pass
         self._fd = None
-        self._owned = None
-        if same:
-            try:
-                current = os.stat(self.path)
-                if _same_inode(owned, current):
-                    os.unlink(self.path)
-            except OSError:
-                pass
 
 
 @dataclass(frozen=True)

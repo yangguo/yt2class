@@ -134,7 +134,7 @@ def test_stale_write_lock_from_dead_pid_is_reclaimed(tmp_path: Path):
     workspace.lock_path.write_text("pid=999999\n", encoding="ascii")
     with workspace.write_lock():
         assert workspace.lock_path.is_file()
-    assert not workspace.lock_path.exists()
+    assert workspace.lock_path.is_file()
 
 
 def _stale_lock_contest(root: str, run_id: str, result_path: str, go_path: str) -> None:
@@ -176,3 +176,45 @@ def test_two_stale_lock_reclaimers_cannot_both_own_the_workspace(tmp_path: Path)
         "held",
         "busy",
     }
+
+
+def _lock_handoff_holder(root: str, run_id: str, ready_path: str, release_path: str) -> None:
+    from yt2class.orchestration.workspace import Workspace
+
+    workspace = Workspace.create(Path(root), run_id=run_id)
+    with workspace.write_lock():
+        Path(ready_path).write_text("ready", encoding="ascii")
+        while not Path(release_path).exists():
+            time.sleep(0.01)
+
+
+def test_lock_handoff_cannot_produce_dual_owners(tmp_path: Path):
+    workspace = Workspace.create(tmp_path, run_id="handoff")
+    ready = tmp_path / "holder-ready"
+    release = tmp_path / "holder-release"
+    ctx = multiprocessing.get_context("spawn")
+    holder = ctx.Process(
+        target=_lock_handoff_holder,
+        args=(str(tmp_path), "handoff", str(ready), str(release)),
+    )
+    holder.start()
+    deadline = time.time() + 5
+    while not ready.exists() and time.time() < deadline:
+        time.sleep(0.01)
+    assert ready.exists()
+    inode = workspace.lock_path.stat().st_ino
+    with pytest.raises(WorkspaceBusy):
+        with workspace.write_lock():
+            pass
+    release.write_text("go", encoding="ascii")
+    holder.join(timeout=5.0)
+    assert holder.exitcode == 0
+    assert workspace.lock_path.is_file()
+    assert workspace.lock_path.stat().st_ino == inode
+    with workspace.write_lock():
+        assert workspace.lock_path.stat().st_ino == inode
+        with pytest.raises(WorkspaceBusy):
+            with workspace.write_lock():
+                pass
+    assert workspace.lock_path.is_file()
+    assert workspace.lock_path.stat().st_ino == inode

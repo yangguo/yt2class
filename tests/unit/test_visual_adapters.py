@@ -124,6 +124,9 @@ def test_visual_catalogue_keeps_dark_frame_occurrence_with_reject_reason(tmp_pat
     )
     assert catalogue.occurrences
     assert catalogue.occurrences[0].reject_reason == "near-black/low-variation"
+    assert catalogue.status == "degraded"
+    assert catalogue.gaps
+    assert any("no accepted visual occurrence" in gap.reason for gap in catalogue.gaps)
 
 
 def test_visual_catalogue_does_not_claim_requested_time_is_decoded_pts(tmp_path: Path):
@@ -279,6 +282,46 @@ def test_complete_visual_rejects_scenes_without_occurrences():
             scenes=[Scene(id="scene-1", start_seconds=0.0, end_seconds=1.0, detector="content")],
             assets=[],
             occurrences=[],
+            ocr_regions=[],
+            status="complete",
+        )
+
+
+def test_complete_visual_rejects_catalogue_with_only_rejected_occurrences():
+    with pytest.raises(ValueError, match="occurrence|usable"):
+        VisualCatalogue(
+            schema_version="1.0",
+            source_id="src-visual",
+            scenes=[Scene(id="scene-1", start_seconds=0.0, end_seconds=60.0, detector="content")],
+            assets=[
+                VisualAsset(
+                    id="asset-1",
+                    role="frame",
+                    path="frames/frame.jpg",
+                    sha256="a" * 64,
+                    mime_type="image/jpeg",
+                    width=80,
+                    height=40,
+                )
+            ],
+            occurrences=[
+                FrameOccurrence(
+                    id="occ-1",
+                    scene_id="scene-1",
+                    asset_id="asset-1",
+                    requested_seconds=0.2,
+                    timestamp_seconds=0.2,
+                    actual_source_seconds=0.2,
+                    reject_reason="near-black/low-variation",
+                    quality=FrameQuality(
+                        width=80,
+                        height=40,
+                        brightness=0.0,
+                        sharpness=0.0,
+                        ocr_density=0.0,
+                    ),
+                )
+            ],
             ocr_regions=[],
             status="complete",
         )

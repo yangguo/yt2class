@@ -6,7 +6,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from yt2class.adapters.asr import ASRError, ASRRequest, ASRResult, ASRSegment
+from yt2class.adapters.asr import (
+    ASRError,
+    ASRRequest,
+    ASRResult,
+    ASRSegment,
+    extract_audio_with_provenance,
+)
 from yt2class.domain.source import SourceManifest, content_sha256
 from yt2class.domain.transcript import TranscriptWord
 from yt2class.domain.visual import VisualCatalogue
@@ -198,6 +204,68 @@ def test_asr_result_requires_audio_provenance_and_matching_source():
     matching = result.model_copy(update={"source_id": "src-test"})
     with pytest.raises(ASRError, match="audio input hash"):
         _transcript_from_asr(matching, source_id="src-test", duration=2.0)
+
+
+def test_reference_media_mutation_during_extract_does_not_forge_provenance(tmp_path: Path):
+    original = b"original-reference-bytes"
+    media = _write_media(tmp_path / "source.mp4", original)
+    original_hash = content_sha256(media)
+    manifest = _manifest(media)
+    run_root = tmp_path / "run-ref-mutate"
+
+    def audio_runner(command, **kwargs):
+        media.write_bytes(b"mutated-during-ffmpeg")
+        Path(command[-1]).write_bytes(b"extracted-from-verified-media")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    def visual_runner(command, **kwargs):
+        media.write_bytes(b"mutated-during-frame-extract")
+        from PIL import Image
+
+        Image.new("RGB", (80, 40), "white").save(command[-1])
+        return SimpleNamespace(
+            returncode=0,
+            stdout="",
+            stderr="[Parsed_showinfo_0] n:1 pts_time:0.200000 duration:0.1",
+        )
+
+    request = ASRRequest(
+        request_id="asr-1",
+        source_id=manifest.source_id,
+        audio_path=tmp_path / "unused-placeholder.wav",
+    )
+    bundle = extract_evidence(
+        manifest,
+        media,
+        run_root,
+        asr_request=request,
+        asr_runner=_asr_runner,
+        audio_runner=audio_runner,
+        detector=lambda path, **kwargs: [(0.0, 2.0)],
+        runner=visual_runner,
+        ocr_engine="none",
+    )
+    snapshot = run_root / "media" / f"{original_hash[:16]}.mp4"
+    assert snapshot.is_file()
+    assert content_sha256(snapshot) == original_hash
+    assert content_sha256(media) != original_hash
+    assert bundle.source_hash == original_hash
+    assert bundle.transcript.audio_parent_hash == original_hash
+    assert bundle.transcript.segments
+
+
+def test_working_media_change_during_audio_extract_discards_output(tmp_path: Path):
+    media = _write_media(tmp_path / "source.mp4", b"stable-parent-bytes")
+    output = tmp_path / "out.wav"
+
+    def mutating_runner(command, **kwargs):
+        Path(command[command.index("-i") + 1]).write_bytes(b"changed-mid-extract")
+        Path(command[-1]).write_bytes(b"forged-audio")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with pytest.raises(ASRError, match="changed"):
+        extract_audio_with_provenance(media, output, runner=mutating_runner)
+    assert not output.exists()
 
 
 def test_scene_detector_failure_on_fresh_run_root_writes_failure_output(tmp_path: Path):

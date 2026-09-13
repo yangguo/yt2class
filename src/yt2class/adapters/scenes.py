@@ -26,6 +26,8 @@ from yt2class.domain.visual import (
     Scene,
     VisualAsset,
     VisualCatalogue,
+    VisualGap,
+    is_accepted_visual_occurrence,
 )
 
 
@@ -522,7 +524,23 @@ def extract_visual_catalogue(
                     "reason": str(error),
                 }
             )
-    from yt2class.domain.visual import VisualGap
+    assets_by_id = {asset.id: asset for asset in assets}
+    covered_scenes = {
+        occurrence.scene_id
+        for occurrence in occurrences
+        if is_accepted_visual_occurrence(occurrence, assets_by_id)
+    }
+    for scene in model_scenes:
+        if scene.id in covered_scenes:
+            continue
+        gaps.append(
+            {
+                "id": f"visual-gap-{len(gaps)+1:04d}",
+                "start_seconds": scene.start_seconds,
+                "end_seconds": scene.end_seconds,
+                "reason": "no accepted visual occurrence",
+            }
+        )
 
     visual_gaps = [VisualGap.model_validate(gap) for gap in gaps if gap["start_seconds"] < gap["end_seconds"]]
     missing_decoded_pts = any(

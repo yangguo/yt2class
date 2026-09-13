@@ -79,6 +79,18 @@ class FrameOccurrence(StrictModel):
         return self.actual_source_seconds if self.actual_source_seconds is not None else self.timestamp_seconds
 
 
+def is_accepted_visual_occurrence(
+    occurrence: FrameOccurrence,
+    assets: dict[str, VisualAsset],
+) -> bool:
+    """True when an occurrence is usable visual evidence for its scene."""
+
+    if occurrence.reject_reason:
+        return False
+    asset = assets.get(occurrence.asset_id)
+    return asset is not None and asset.role == "frame"
+
+
 class VisualGap(StrictModel):
     id: Identifier
     start_seconds: Seconds
@@ -159,10 +171,8 @@ class VisualCatalogue(StrictModel):
         assets = {asset.id: asset for asset in self.assets}
         evidenced_scenes: set[str] = set()
         for occurrence in self.occurrences:
-            asset = assets.get(occurrence.asset_id)
-            if asset is None or asset.role != "frame":
-                continue
-            evidenced_scenes.add(occurrence.scene_id)
+            if is_accepted_visual_occurrence(occurrence, assets):
+                evidenced_scenes.add(occurrence.scene_id)
         if not evidenced_scenes:
             raise ValueError(
                 "complete visual catalogue requires usable occurrences and assets, not scenes alone"
