@@ -13,7 +13,6 @@ from yt2class.domain.slide_spec_v3 import (
     SlideSource,
     SlideSpecV3,
     Theme,
-    TranscriptEvidence,
     RenderPolicy,
 )
 from yt2class.slide_spec import SlideSpec as SlideSpecV2
@@ -99,17 +98,8 @@ def migrate_v2_to_v3(
         )
         for asset in spec.assets
     ]
-    evidence: list[FrameEvidence | TranscriptEvidence] = []
-    if any(item.kind == "transcript" for item in spec.evidence):
-        assets.append(
-            SlideAsset(
-                id="asset-transcript-migrated",
-                role="transcript",
-                path="evidence/transcript.json",
-                sha256=spec.source.sha256,
-                mime_type="application/json",
-            )
-        )
+    evidence: list[FrameEvidence] = []
+    unresolved_transcript: list[MigrationIssue] = []
     for item in spec.evidence:
         if item.kind == "frame":
             evidence.append(
@@ -122,18 +112,20 @@ def migrate_v2_to_v3(
                     ),
                 )
             )
-        else:
-            evidence.append(
-                TranscriptEvidence(
-                    id=item.id,
-                    kind="transcript",
-                    asset_id="asset-transcript-migrated",
-                    start_seconds=item.start_seconds,
-                    end_seconds=item.end_seconds,
-                    text=item.text or "migrated transcript",
-                    origin=item.origin or "manual-caption",
-                )
+            continue
+        unresolved_transcript.append(
+            MigrationIssue(
+                kind="unresolved",
+                location=f"evidence[{item.id}]",
+                message=(
+                    "v2 transcript evidence has no distinct artifact bytes to bind; "
+                    "it stays unresolved and is not given a forged file or source-media hash"
+                ),
             )
+        )
+    if unresolved_transcript:
+        report = report.model_copy(update={"issues": [*report.issues, *unresolved_transcript]})
+    bound_evidence_ids = {item.id for item in evidence}
     claims: list[SlideClaim] = []
     slides: list[SlidePage] = []
     # Cover is required in 3.0 physical page lists.
@@ -151,19 +143,22 @@ def migrate_v2_to_v3(
     for index, slide in enumerate(spec.slides, start=1):
         claim_id = f"claim-migrated-{index}"
         point_ids = [f"{claim_id}-p{p}" for p in range(len(slide.points))]
+        frame_evidence = next(
+            item.id for item in spec.evidence if item.kind == "frame" and item.asset_id == slide.asset_id
+        )
         for point_index, point in enumerate(slide.points):
+            kept = [ref for ref in point.evidence_ids if ref in bound_evidence_ids]
+            if not kept:
+                kept = [frame_evidence]
             claims.append(
                 SlideClaim(
                     id=point_ids[point_index],
                     text=point.text,
-                    evidence_ids=list(point.evidence_ids),
+                    evidence_ids=kept,
                     verdict="insufficient",
                     provenance="source",
                 )
             )
-        frame_evidence = next(
-            item.id for item in spec.evidence if item.kind == "frame" and item.asset_id == slide.asset_id
-        )
         slides.append(
             SlidePage(
                 id=slide.id,

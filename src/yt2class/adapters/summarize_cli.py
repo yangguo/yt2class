@@ -104,14 +104,15 @@ class LooseEnvelope(StrictModel):
 
 
 def build_slides_command(source: str, output_dir: Path, *, slides_ocr: bool = False) -> list[str]:
-    command = ["summarize", "slides", source, "--json", "-o", str(output_dir)]
+    command = ["summarize", "slides", "--json", "-o", str(output_dir)]
     if slides_ocr:
         command.append("--slides-ocr")
+    command.extend(["--", source])
     return command
 
 
 def build_extract_command(source: str) -> list[str]:
-    return ["summarize", source, "--extract", "--json", "--timestamps"]
+    return ["summarize", "--extract", "--json", "--timestamps", "--", source]
 
 
 def classify_source(source: str) -> Literal["youtube", "local", "url"]:
@@ -142,11 +143,14 @@ def _slides_from_raw(raw: dict[str, Any], *, source: str | None) -> SummarizeSli
     for item in items:
         if not isinstance(item, dict):
             raise SummarizeContractError("slide entry must be an object")
+        image_path = item.get("imagePath") or item.get("image_path")
+        if not isinstance(image_path, str) or ".." in Path(image_path).parts:
+            raise SummarizeContractError("imagePath must not contain '..'")
         parsed.append(
             SummarizeSlide(
                 index=item.get("index"),
                 timestamp=item.get("timestamp"),
-                image_path=item.get("imagePath") or item.get("image_path"),
+                image_path=image_path,
                 ocr_text=item.get("ocrText", item.get("ocr_text")),
                 ocr_confidence=item.get("ocrConfidence", item.get("ocr_confidence")),
             )
@@ -200,6 +204,8 @@ def parse_summarize_json(
     *,
     exit_code: int = 0,
     source: str | None = None,
+    frame_root: Path | None = None,
+    duration_seconds: float | None = None,
 ) -> SummarizeResult:
     """Parse a fixture or CLI JSON envelope into a strict success result."""
 
@@ -208,7 +214,11 @@ def parse_summarize_json(
     extract = _extract_from_raw(envelope.extract, source=source) if envelope.extract is not None else None
     if slides is None and extract is None:
         raise SummarizeContractError("successful summarize JSON must include slides or extract")
-    return SummarizeResult(ok=True, slides=slides, extract=extract, exit_code=0)
+    result = SummarizeResult(ok=True, slides=slides, extract=extract, exit_code=0)
+    validate_slide_times(result, duration_seconds=duration_seconds)
+    if frame_root is not None:
+        validate_frame_bytes(result, root=frame_root)
+    return result
 
 
 def validate_slide_times(result: SummarizeResult, *, duration_seconds: float | None = None) -> None:
@@ -290,6 +300,8 @@ def run_summarize(
     timeout: float = 120.0,
     runner: Runner = subprocess.run,
     cwd: Path | None = None,
+    frame_root: Path | None = None,
+    duration_seconds: float | None = None,
 ) -> SummarizeResult:
     """Run summarize without a shell. Non-zero exits never become ``ok: true``."""
 
@@ -313,4 +325,9 @@ def run_summarize(
         raise SummarizeContractError("summarize stdout is not JSON") from error
     if not isinstance(payload, dict):
         raise SummarizeContractError("summarize JSON must be an object")
-    return parse_summarize_json(payload, exit_code=completed.returncode)
+    return parse_summarize_json(
+        payload,
+        exit_code=completed.returncode,
+        frame_root=frame_root,
+        duration_seconds=duration_seconds,
+    )

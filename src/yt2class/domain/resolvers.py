@@ -147,12 +147,14 @@ def resolve_reference_closure(bundle: DocumentBundle) -> None:
                 "binder must close claim references before render"
             )
 
-    spec_frames = {
-        asset.id for asset in bundle.slide_spec.assets if asset.role == "frame"
-    } | {occurrence.id for occurrence in bundle.visual.occurrences}
+    occurrences = {occurrence.id: occurrence for occurrence in bundle.visual.occurrences}
+    spec_assets = {asset.id: asset for asset in bundle.slide_spec.assets}
     for page in bundle.editorial.pages:
-        missing_frames = set(page.frame_ids) - spec_frames
-        if missing_frames:
-            raise ClosureError(
-                f"SlideSpec/catalogue missing editorial frame {sorted(missing_frames)}"
-            )
+        for frame_id in page.frame_ids:
+            occurrence = occurrences[frame_id]
+            bound = spec_assets.get(occurrence.asset_id)
+            if bound is None or bound.role != "frame":
+                raise ClosureError(
+                    f"SlideSpec is missing bound frame asset {occurrence.asset_id!r} "
+                    f"for editorial frame {frame_id!r}; occurrence ids are not a substitute"
+                )

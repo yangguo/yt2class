@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
 from yt2class.adapters.summarize_cli import (
     NativeIngestExpectation,
@@ -82,8 +83,15 @@ def test_nonzero_exit_is_not_success_even_if_ok_true():
 
 
 def test_invalid_times_fail_the_contract():
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, SummarizeContractError), match="greater than or equal to 0|timestamp"):
         parse_summarize_json(load("ok_bad_times.json"))
+
+
+def test_parent_image_path_is_rejected():
+    payload = load("slides_ok.json")
+    payload["slides"]["slides"][0]["imagePath"] = "../secret.png"
+    with pytest.raises(SummarizeContractError, match=r"\.\."):
+        parse_summarize_json(payload)
 
 
 def test_missing_frame_bytes_fail_the_contract(tmp_path):
@@ -95,8 +103,8 @@ def test_missing_frame_bytes_fail_the_contract(tmp_path):
 def test_command_vectors_are_argv_arrays():
     slides = build_slides_command("lesson.mp4", Path("out"))
     extract = build_extract_command("https://youtu.be/fixture0001")
-    assert slides[0] == "summarize" and "--json" in slides and "lesson.mp4" in slides
-    assert extract == ["summarize", "https://youtu.be/fixture0001", "--extract", "--json", "--timestamps"]
+    assert slides == ["summarize", "slides", "--json", "-o", "out", "--", "lesson.mp4"]
+    assert extract == ["summarize", "--extract", "--json", "--timestamps", "--", "https://youtu.be/fixture0001"]
 
 
 def test_subprocess_adapter_uses_injected_runner():
@@ -107,8 +115,12 @@ def test_subprocess_adapter_uses_injected_runner():
         assert kwargs["check"] is False
         return SimpleNamespace(returncode=0, stdout=payload, stderr="")
 
-    result = run_summarize(build_slides_command("./synthetic-local.mp4", Path("out")), runner=runner)
-    validate_frame_bytes(result, root=FIXTURES)
+    result = run_summarize(
+        build_slides_command("./synthetic-local.mp4", Path("out")),
+        runner=runner,
+        frame_root=FIXTURES,
+        duration_seconds=60.0,
+    )
     assert result.ok is True
 
 

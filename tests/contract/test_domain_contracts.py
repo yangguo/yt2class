@@ -174,6 +174,28 @@ def test_reference_closure_rejects_unknown_evidence():
         )
 
 
+def test_reference_closure_rejects_omitted_slidespec_frame_asset():
+    bundle = valid_bundle()
+    assert bundle.editorial.pages[1].frame_ids == ["frame-001"]
+    assert bundle.visual.occurrences[0].asset_id == "asset-frame-1"
+    broken_spec = bundle.slide_spec.model_copy(update={"assets": []}, deep=True)
+    assert not any(asset.id == "asset-frame-1" for asset in broken_spec.assets)
+    with pytest.raises(ClosureError, match="missing bound frame asset"):
+        resolve_reference_closure(
+            DocumentBundle(
+                source=bundle.source,
+                transcript=bundle.transcript,
+                visual=bundle.visual,
+                segments=bundle.segments,
+                course_map=bundle.course_map,
+                knowledge=bundle.knowledge,
+                editorial=bundle.editorial,
+                verification=bundle.verification,
+                slide_spec=broken_spec,
+            )
+        )
+
+
 def test_reference_closure_rejects_unknown_claim():
     bundle = valid_bundle()
     broken = bundle.editorial.model_copy(deep=True)
@@ -212,3 +234,16 @@ def test_v2_migration_report_forbids_supported_upgrade():
     assert all(claim.verdict != "supported" for claim in spec.claims)
     with pytest.raises(ValidationError, match="supported"):
         SlideSpecV3.model_validate(spec.model_dump() | {"quality_status": "verified"})
+    assert not any(item.kind == "transcript" for item in spec.evidence)
+    assert any(issue.kind == "unresolved" and "transcript" in issue.message for issue in migrated_report.issues)
+
+
+def test_v2_migration_does_not_reuse_source_hash_for_other_roles():
+    v2 = json.loads((ROOT / "docs/examples/slide-spec.v2.json").read_text(encoding="utf-8"))
+    _, spec = migrate_v2_to_v3(v2)
+    for asset in spec.assets:
+        if asset.sha256 == spec.source.sha256:
+            assert asset.path == spec.source.media_path
+            assert asset.role != "transcript"
+    assert all(asset.role != "transcript" for asset in spec.assets)
+    assert spec.source.sha256 not in {asset.sha256 for asset in spec.assets}
