@@ -22,7 +22,12 @@ from yt2class.domain.review import (
     StaleReviewError,
 )
 from yt2class.domain.transcript import TranscriptDocument
-from yt2class.domain.verification import QualityMode, VerificationReport
+from yt2class.domain.verification import (
+    QualityMode,
+    StrictClosureError,
+    VerificationReport,
+    require_strict_closure,
+)
 from yt2class.domain.visual import VisualCatalogue, is_accepted_visual_occurrence
 from yt2class.stages.llm_util import payload_digest
 from yt2class.stages.verify_claims import VerifyOutcome, page_copy_grounded, verify_claims
@@ -167,6 +172,32 @@ def _frame_paths(page: PageIntent, visual: VisualCatalogue) -> list[str]:
     return paths
 
 
+def guard_strict_render(
+    *,
+    knowledge: KnowledgeDocument,
+    plan: EditorialPlan,
+    report: VerificationReport,
+) -> None:
+    """A strict report, or any verified page, must close over the whole claim set.
+
+    Without this a hand-written partial report — one supported verdict for a document
+    with many claims — would still render pages labelled ``verified``.
+    """
+
+    verified = [page for page in plan.pages if page.quality_label == "verified"]
+    if report.quality_mode != "strict" and not verified:
+        return
+    require_strict_closure(
+        report,
+        claim_ids={claim.id for claim in knowledge.iter_claims()},
+        label="review render",
+    )
+    supported = {item.claim_id for item in report.verdicts if item.verdict == "supported"}
+    unverified = sorted({claim_id for page in verified for claim_id in page.claim_ids} - supported)
+    if unverified:
+        raise StrictClosureError(f"verified review pages cite unverified claims {unverified}")
+
+
 def build_review_bundle(
     *,
     knowledge: KnowledgeDocument,
@@ -178,6 +209,7 @@ def build_review_bundle(
     source_url: str | None = None,
     revision: int = 1,
 ) -> ReviewBundle:
+    guard_strict_render(knowledge=knowledge, plan=plan, report=report)
     views: list[ReviewPageView] = []
     for page in plan.pages:
         times = _page_times(page, knowledge)

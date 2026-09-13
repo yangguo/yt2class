@@ -3,9 +3,17 @@ from __future__ import annotations
 import json
 
 import pytest
+from pydantic import ValidationError
 
 from yt2class.adapters.providers.base import FakeProvider
-from yt2class.domain.review import IllegalReviewOpError, ReviewEdits, StaleReviewError
+from yt2class.domain.editorial import relabel_page
+from yt2class.domain.review import (
+    IllegalReviewOpError,
+    ReviewBundle,
+    ReviewEdits,
+    StaleReviewError,
+)
+from yt2class.domain.verification import StrictClosureError, VerificationReport
 from yt2class.stages.edit_deck import edit_deck
 from yt2class.stages.review import (
     apply_review_edits,
@@ -329,6 +337,239 @@ def test_contradictory_edit_copy_cannot_stay_verified():
     assert page_copy_grounded(
         changed, knowledge=updated.knowledge, transcript=transcript, visual=visual
     ) is False
+
+
+def test_unlisted_opposite_edit_copy_cannot_stay_verified():
+    unit = concept_unit(
+        "unit-flow",
+        "claim-flow",
+        "阀门打开后水流变多",
+        ["cap-flow"],
+        start=0.0,
+        end=10.0,
+        modality="audio",
+    )
+    doc = knowledge(unit)
+    topics = course_map([("topic-1", "水流", 0.0, 10.0)])
+    transcript = make_transcript([("cap-flow", 0.0, 10.0, "阀门打开后水流变多")], duration=10.0)
+    visual = make_visual([], duration=10.0)
+    plan = edit_deck(
+        doc,
+        course_map=topics,
+        transcript=transcript,
+        visual=visual,
+        provider=FakeProvider(frames_caps()),
+        target_pages=4,
+        max_pages=6,
+    )
+    outcome = verify_claims(
+        doc,
+        plan=plan,
+        transcript=transcript,
+        visual=visual,
+        provider=FakeProvider(frames_caps()),
+        quality_mode="strict",
+    )
+    assert any(
+        page.quality_label == "verified" and "claim-flow" in page.claim_ids
+        for page in outcome.plan.pages
+    )
+    bundle = build_review_bundle(
+        knowledge=outcome.knowledge,
+        plan=outcome.plan,
+        report=outcome.report,
+        transcript=transcript,
+        visual=visual,
+        course_map=topics,
+    )
+    target = next(page for page in bundle.plan.pages if "claim-flow" in page.claim_ids)
+    updated = apply_review_edits(
+        bundle,
+        ReviewEdits(
+            revision=bundle.revision,
+            baseline_hashes=bundle.baseline_hashes,
+            ops=[
+                {
+                    "op": "edit_copy",
+                    "page_id": target.id,
+                    "title": "阀门打开后水流变少",
+                    "notes": "阀门打开后水流变少",
+                    "body_points": ["阀门打开后水流变少"],
+                }
+            ],
+        ),
+        knowledge=outcome.knowledge,
+        transcript=transcript,
+        visual=visual,
+        provider=FakeProvider(frames_caps()),
+        quality_mode="strict",
+    )
+    changed = next(page for page in updated.plan.pages if page.id == target.id)
+    assert changed.title == "阀门打开后水流变少"
+    assert changed.quality_label == "draft"
+    assert page_copy_grounded(
+        changed, knowledge=updated.knowledge, transcript=transcript, visual=visual
+    ) is False
+
+
+def _forged_strict_report(claim_ids, *, source_id="src-demo"):
+    return VerificationReport(
+        schema_version="1.0",
+        source_id=source_id,
+        quality_mode="strict",
+        verdicts=[
+            {
+                "claim_id": claim_id,
+                "verdict": "supported",
+                "supporting_ids": ["cap-001"],
+                "reason": "forged strict verdict",
+            }
+            for claim_id in claim_ids
+        ],
+    )
+
+
+def test_partial_strict_report_cannot_render_verified_review_pages():
+    doc, topics, transcript, visual = lecture_knowledge()
+    plan = edit_deck(
+        doc,
+        course_map=topics,
+        transcript=transcript,
+        visual=visual,
+        provider=FakeProvider(frames_caps()),
+        target_pages=10,
+        max_pages=12,
+    )
+    verified_plan = plan.model_copy(
+        update={"pages": [relabel_page(page, "verified") for page in plan.pages]}
+    )
+    all_claim_ids = [claim.id for claim in doc.iter_claims()]
+    assert len(all_claim_ids) > 1
+
+    def render(report, target_plan=verified_plan):
+        return build_review_bundle(
+            knowledge=doc,
+            plan=target_plan,
+            report=report,
+            transcript=transcript,
+            visual=visual,
+            course_map=topics,
+        )
+
+    with pytest.raises(StrictClosureError, match="missing verdicts"):
+        render(_forged_strict_report(all_claim_ids[:1]))
+    with pytest.raises(StrictClosureError, match="unknown claims"):
+        render(_forged_strict_report([*all_claim_ids, "claim-forged"]))
+    with pytest.raises(StrictClosureError, match="strict verification report"):
+        render(
+            VerificationReport(
+                schema_version="1.0",
+                source_id="src-demo",
+                quality_mode="draft",
+                verdicts=[
+                    {
+                        "claim_id": claim_id,
+                        "verdict": "supported",
+                        "supporting_ids": ["cap-001"],
+                        "reason": "draft report behind verified pages",
+                    }
+                    for claim_id in all_claim_ids
+                ],
+            )
+        )
+    # A partial strict report is refused even when no page claims to be verified.
+    with pytest.raises(StrictClosureError, match="missing verdicts"):
+        render(_forged_strict_report(all_claim_ids[:1]), plan)
+
+
+def test_review_bundle_rejects_verified_pages_without_supported_claims():
+    outcome, transcript, visual, topics = _verified_bundle()
+    bundle = build_review_bundle(
+        knowledge=outcome.knowledge,
+        plan=outcome.plan,
+        report=outcome.report,
+        transcript=transcript,
+        visual=visual,
+        course_map=topics,
+    )
+    assert bundle.report.quality_mode == "draft"
+    forged = bundle.model_copy(
+        update={
+            "pages": [
+                view.model_copy(update={"page": relabel_page(view.page, "verified")})
+                for view in bundle.pages
+            ]
+        }
+    ).model_dump(mode="json")
+    with pytest.raises(ValidationError, match="verified review pages require a strict"):
+        ReviewBundle.model_validate(forged)
+
+
+def test_review_cli_refuses_a_forged_partial_strict_report(tmp_path):
+    from typer.testing import CliRunner
+
+    from yt2class.cli import app
+
+    doc, topics, transcript, visual = lecture_knowledge()
+    knowledge_path = tmp_path / "knowledge.json"
+    transcript_path = tmp_path / "transcript.json"
+    visual_path = tmp_path / "visual.json"
+    course_path = tmp_path / "course-map.json"
+    report_path = tmp_path / "verification-report.json"
+    knowledge_path.write_text(doc.model_dump_json(), encoding="utf-8")
+    transcript_path.write_text(transcript.model_dump_json(), encoding="utf-8")
+    visual_path.write_text(visual.model_dump_json(), encoding="utf-8")
+    course_path.write_text(topics.model_dump_json(), encoding="utf-8")
+    output = tmp_path / "editorial"
+    runner = CliRunner()
+    planned = runner.invoke(
+        app,
+        [
+            "plan",
+            "--knowledge",
+            str(knowledge_path),
+            "--transcript",
+            str(transcript_path),
+            "--visual",
+            str(visual_path),
+            "--course-map",
+            str(course_path),
+            "--output",
+            str(output),
+            "--provider",
+            "fake",
+        ],
+        prog_name="yt2class",
+    )
+    assert planned.exit_code == 0, planned.stdout + planned.stderr
+    report_path.write_text(
+        _forged_strict_report([next(iter(doc.iter_claims())).id]).model_dump_json(),
+        encoding="utf-8",
+    )
+    reviewed = runner.invoke(
+        app,
+        [
+            "review",
+            "--knowledge",
+            str(knowledge_path),
+            "--plan",
+            str(output / "editorial-plan.json"),
+            "--report",
+            str(report_path),
+            "--transcript",
+            str(transcript_path),
+            "--visual",
+            str(visual_path),
+            "--output",
+            str(output),
+            "--provider",
+            "fake",
+        ],
+        prog_name="yt2class",
+    )
+    assert reviewed.exit_code == 2, reviewed.stdout + reviewed.stderr
+    assert "refused strict render" in reviewed.stdout + reviewed.stderr
+    assert not (output / "review.html").exists()
 
 
 def test_rejected_or_unrelated_pick_asset_is_rejected():

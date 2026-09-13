@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal, Self
+from typing import Iterable, Literal, Self
 
 from pydantic import Field, model_validator
 
@@ -88,3 +88,51 @@ class VerificationReport(StrictModel):
                     "pending review items, or structural errors"
                 )
         return self
+
+
+class StrictClosureError(ValueError):
+    """A strict report was used against a claim set it does not close over."""
+
+
+def strict_closure_errors(
+    report: VerificationReport,
+    *,
+    claim_ids: Iterable[str],
+) -> list[str]:
+    """Reasons ``report`` cannot stand as a strict verdict set for ``claim_ids``."""
+
+    expected = set(claim_ids)
+    verdict_ids = {item.claim_id for item in report.verdicts}
+    problems: list[str] = []
+    if not expected:
+        problems.append("no claims to verify")
+    if missing := sorted(expected - verdict_ids):
+        problems.append(f"missing verdicts for {missing}")
+    if unknown := sorted(verdict_ids - expected):
+        problems.append(f"verdicts cite unknown claims {unknown}")
+    if unresolved := sorted(item.claim_id for item in report.verdicts if item.verdict != "supported"):
+        problems.append(f"unresolved claims {unresolved}")
+    if ungrounded := sorted(item.claim_id for item in report.verdicts if not item.supporting_ids):
+        problems.append(f"claims without supporting evidence {ungrounded}")
+    if report.pending_review:
+        problems.append(f"pending review {sorted(report.pending_review)}")
+    if report.structural_errors:
+        problems.append("structural errors present")
+    return problems
+
+
+def require_strict_closure(
+    report: VerificationReport,
+    *,
+    claim_ids: Iterable[str],
+    label: str,
+) -> None:
+    """Refuse ``label`` unless ``report`` is strict and closes over ``claim_ids`` exactly."""
+
+    if report.quality_mode != "strict":
+        raise StrictClosureError(
+            f"{label} requires a strict verification report, got {report.quality_mode!r}"
+        )
+    problems = strict_closure_errors(report, claim_ids=claim_ids)
+    if problems:
+        raise StrictClosureError(f"{label} rejected an unclosed strict verdict set: {'; '.join(problems)}")

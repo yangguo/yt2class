@@ -81,6 +81,21 @@ class ReviewBundle(StrictModel):
         missing = required - set(self.baseline_hashes)
         if missing:
             raise ValueError(f"review bundle missing baseline hashes {sorted(missing)}")
+        verified = [item.page for item in self.pages if item.page.quality_label == "verified"]
+        if verified:
+            if self.report.quality_mode != "strict":
+                raise ValueError(
+                    "verified review pages require a strict verification report, "
+                    f"got {self.report.quality_mode!r}"
+                )
+            supported = {
+                item.claim_id for item in self.report.verdicts if item.verdict == "supported"
+            }
+            unverified = sorted(
+                {claim_id for page in verified for claim_id in page.claim_ids} - supported
+            )
+            if unverified:
+                raise ValueError(f"verified review pages cite unverified claims {unverified}")
         return self
 
 

@@ -11,7 +11,7 @@ from yt2class.domain.evidence import EvidenceBundle
 from yt2class.domain.knowledge import KnowledgeDocument
 from yt2class.domain.review import ReviewEdits
 from yt2class.domain.transcript import TranscriptDocument
-from yt2class.domain.verification import QualityMode, VerificationReport
+from yt2class.domain.verification import QualityMode, StrictClosureError, VerificationReport
 from yt2class.domain.visual import VisualCatalogue
 from yt2class.inputs import read_urls
 from yt2class.orchestration.analyze import analyze_evidence_bundle, write_analysis_artifacts
@@ -305,6 +305,9 @@ def review(
         paths = write_editorial_artifacts(
             planned, output, report=report, bundle=bundle, knowledge=doc
         )
+    except StrictClosureError as error:
+        typer.echo(f"Review refused strict render: {error}", err=True)
+        raise typer.Exit(code=2) from error
     except (OSError, ValueError) as error:
         typer.echo(f"Review failed: {error}", err=True)
         raise typer.Exit(code=1) from error
