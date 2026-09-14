@@ -27,6 +27,7 @@ path = "hatch_build.py"
 [dependency-groups]
 dev = [
   "pytest>=8.3",
+  "hatchling>=1.25",
 ]
 
 [tool.pytest.ini_options]

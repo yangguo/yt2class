@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from typing import Optional
+import json
 
 import typer
 
@@ -25,11 +26,29 @@ from yt2class.orchestration.edit import (
     verify_plan,
     write_editorial_artifacts,
 )
-from yt2class.pipeline import PipelineError, build_batch
+from yt2class.config import BuildSource, CourseConfig, load_config
+from yt2class.orchestration.batch import BatchItem, run_batch as run_product_batch
+from yt2class.orchestration.doctor import run_doctor
+from yt2class.orchestration.manifest_io import load_manifest
+from yt2class.orchestration.pipeline import PipelineError, PipelinePaused, execute_run
+from yt2class.orchestration.workspace import Workspace
+from yt2class.pipeline import PipelineError as LegacyPipelineError, build_batch
+from yt2class.stages.ingest import ingest_source
+from yt2class.stages.render import render_bound_spec
+from yt2class.stages.bind_spec import bind_editorial_plan
+from yt2class.domain.source import SourceInput
 from yt2class.stages.review import apply_review_edits, stub_binder, stub_renderer
 
+EXIT_OK = 0
+EXIT_FAIL = 1
+EXIT_REVIEW_OR_BUDGET = 2
+EXIT_BATCH_PARTIAL = 3
+
 app = typer.Typer(
-    help="Batch-convert YouTube course videos into source-faithful PPTX notes.",
+    help=(
+        "Convert course videos into source-faithful PPTX notes. "
+        "Exit codes: 0=success, 1=failure, 2=review/budget pause, 3=batch partial failure."
+    ),
     no_args_is_help=True,
 )
 
@@ -85,9 +104,9 @@ def build(
             force=force,
             preview=preview,
         )
-    except (ValueError, PipelineError) as error:
+    except (ValueError, LegacyPipelineError) as error:
         typer.echo(f"Build failed: {error}", err=True)
-        raise typer.Exit(code=1) from error
+        raise typer.Exit(code=EXIT_FAIL) from error
 
     for result in results:
         typer.echo(
@@ -312,3 +331,196 @@ def review(
         typer.echo(f"Review failed: {error}", err=True)
         raise typer.Exit(code=1) from error
     typer.echo(f"OK review -> {paths['review_html']} (revision={bundle.revision})")
+
+
+@app.command("build-run")
+def build_run(
+    output: Path = typer.Option(Path("runs"), "--output", "-o", help="Runs root directory."),
+    run_id: Optional[str] = typer.Option(None, "--run-id", help="Stable run id for resume."),
+    config: Optional[Path] = typer.Option(None, "--config", exists=True, readable=True),
+    url: Optional[str] = typer.Option(None, "--url"),
+    video: Optional[Path] = typer.Option(None, "--video", exists=True, file_okay=True),
+    subtitles: Optional[Path] = typer.Option(None, "--subtitles", exists=True, file_okay=True),
+    resume: bool = typer.Option(False, "--resume", help="Reuse cached stages from manifest.json."),
+) -> None:
+    """Run the M5 stage DAG (ingest→evidence→analysis→editorial→bind→render)."""
+
+    if url and video:
+        typer.echo("Provide only one of --url or --video.", err=True)
+        raise typer.Exit(code=EXIT_FAIL)
+    if not url and not video:
+        typer.echo("build-run requires --url or --video.", err=True)
+        raise typer.Exit(code=EXIT_FAIL)
+    cfg = load_config(config)
+    build = BuildSource(url=url, video=video, subtitles=subtitles, run_id=run_id)
+    try:
+        outcome = execute_run(output, build=build, config=cfg, run_id=run_id, resume=resume)
+    except PipelinePaused as error:
+        typer.echo(f"Paused: {error}", err=True)
+        raise typer.Exit(code=EXIT_REVIEW_OR_BUDGET) from error
+    except PipelineError as error:
+        typer.echo(f"Run failed: {error}", err=True)
+        raise typer.Exit(code=EXIT_FAIL) from error
+    pptx = outcome.pptx_path or outcome.workspace.safe_path("delivery/lesson.pptx")
+    typer.echo(f"OK run {outcome.manifest.run_id} -> {pptx}")
+
+
+@app.command()
+def batch(
+    inputs: Path = typer.Option(..., "--inputs", "-i", exists=True, readable=True),
+    output: Path = typer.Option(Path("runs"), "--output", "-o"),
+    config: Optional[Path] = typer.Option(None, "--config", exists=True, readable=True),
+    continue_on_error: bool = typer.Option(True, "--continue-on-error/--fail-fast"),
+) -> None:
+    """Batch M5 runs from a text file (one local video path or URL per line)."""
+
+    cfg = load_config(config)
+    lines = [line.strip() for line in inputs.read_text(encoding="utf-8").splitlines() if line.strip()]
+    items: list[BatchItem] = []
+    for line in lines:
+        if line.startswith("http"):
+            items.append(BatchItem(label=line, build=BuildSource(url=line)))
+        else:
+            items.append(BatchItem(label=line, build=BuildSource(video=Path(line))))
+    report = run_product_batch(output, items, config=cfg, continue_on_error=continue_on_error)
+    for row in report.results:
+        if row.ok:
+            typer.echo(f"OK {row.label} -> run {row.run_id}")
+        else:
+            typer.echo(f"FAIL {row.label}: {row.error}", err=True)
+    if not report.all_ok:
+        raise typer.Exit(code=EXIT_BATCH_PARTIAL if report.any_ok else EXIT_FAIL)
+
+
+@app.command()
+def ingest(
+    video: Optional[Path] = typer.Option(None, "--video", exists=True, file_okay=True),
+    url: Optional[str] = typer.Option(None, "--url"),
+    output: Path = typer.Option(Path("runs"), "--output", "-o"),
+    run_id: Optional[str] = typer.Option(None, "--run-id"),
+) -> None:
+    """Ingest one source into a run workspace (metadata/source-manifest.json)."""
+
+    if bool(video) == bool(url):
+        typer.echo("Provide exactly one of --video or --url.", err=True)
+        raise typer.Exit(code=EXIT_FAIL)
+    from yt2class.orchestration.manifest_io import new_run_id
+
+    rid = run_id or new_run_id()
+    workspace = Workspace.create(output, run_id=rid)
+    source = SourceInput.from_value(url if url else video)
+    try:
+        result = ingest_source(source, workspace)
+    except Exception as error:  # noqa: BLE001
+        typer.echo(f"Ingest failed: {error}", err=True)
+        raise typer.Exit(code=EXIT_FAIL) from error
+    typer.echo(f"OK ingest -> {result.manifest_path}")
+
+
+@app.command()
+def resume(
+    run: Path = typer.Option(..., "--run", file_okay=False, dir_okay=True),
+    config: Optional[Path] = typer.Option(None, "--config", exists=True, readable=True),
+) -> None:
+    """Resume a run from manifest.json under the run directory."""
+
+    run_dir = run.resolve()
+    manifest = load_manifest(run_dir)
+    if manifest is None:
+        typer.echo(f"No manifest.json in {run_dir}", err=True)
+        raise typer.Exit(code=EXIT_FAIL)
+    cfg = load_config(config)
+    build = BuildSource(source_id=manifest.source_id, run_id=manifest.run_id)
+    try:
+        outcome = execute_run(
+            run_dir.parent,
+            build=build,
+            config=cfg,
+            run_id=manifest.run_id,
+            resume=True,
+        )
+    except PipelinePaused as error:
+        typer.echo(f"Paused: {error}", err=True)
+        raise typer.Exit(code=EXIT_REVIEW_OR_BUDGET) from error
+    except PipelineError as error:
+        typer.echo(f"Resume failed: {error}", err=True)
+        raise typer.Exit(code=EXIT_FAIL) from error
+    pptx = outcome.pptx_path or run_dir / "delivery" / "lesson.pptx"
+    typer.echo(f"OK resume -> {pptx}")
+
+
+@app.command()
+def render(
+    run: Path = typer.Option(..., "--run", exists=True, file_okay=False, dir_okay=True),
+    spec: Optional[Path] = typer.Option(None, "--spec", exists=True, readable=True),
+    preview: str = typer.Option("optional", "--preview", help="off|optional|required"),
+) -> None:
+    """Render delivery/lesson.pptx from a bound SlideSpec in the run workspace."""
+
+    run_dir = run.resolve()
+    workspace = Workspace(
+        root=run_dir,
+        media_dir=run_dir / "media",
+        metadata_dir=run_dir / "metadata",
+        tmp_dir=run_dir / "tmp",
+        lock_path=run_dir / ".write.lock",
+    )
+    spec_path = spec or (run_dir / "delivery" / "slide-spec.v3.json")
+    if not spec_path.is_file():
+        typer.echo(f"SlideSpec not found: {spec_path}", err=True)
+        raise typer.Exit(code=EXIT_FAIL)
+    from yt2class.domain.editorial import EditorialPlan
+    from yt2class.domain.knowledge import KnowledgeDocument
+    from yt2class.domain.transcript import TranscriptDocument
+    from yt2class.domain.verification import VerificationReport
+    from yt2class.domain.visual import VisualCatalogue
+    from yt2class.domain.source import SourceManifest
+
+    editorial = run_dir / "editorial"
+    try:
+        plan = EditorialPlan.model_validate_json((editorial / "editorial-plan.json").read_text(encoding="utf-8"))
+        report = VerificationReport.model_validate_json(
+            (editorial / "verification-report.json").read_text(encoding="utf-8")
+        )
+        knowledge = KnowledgeDocument.model_validate_json((editorial / "knowledge.json").read_text(encoding="utf-8"))
+        transcript = TranscriptDocument.model_validate_json(
+            (run_dir / "evidence" / "transcript.json").read_text(encoding="utf-8")
+        )
+        visual = VisualCatalogue.model_validate_json((run_dir / "evidence" / "visual.json").read_text(encoding="utf-8"))
+        source = SourceManifest.model_validate_json(
+            (run_dir / "metadata" / "source-manifest.json").read_text(encoding="utf-8")
+        )
+        bind = bind_editorial_plan(
+            plan=plan,
+            knowledge=knowledge,
+            report=report,
+            source=source,
+            transcript=transcript,
+            visual=visual,
+            workspace=workspace,
+        )
+        stage = render_bound_spec(
+            bind,
+            workspace,
+            request_id=f"cli-render-{manifest.run_id if (manifest := load_manifest(run_dir)) else 'adhoc'}",
+            preview_policy=preview,  # type: ignore[arg-type]
+        )
+    except Exception as error:  # noqa: BLE001
+        typer.echo(f"Render failed: {error}", err=True)
+        raise typer.Exit(code=EXIT_FAIL) from error
+    typer.echo(f"OK render -> {workspace.safe_path(stage.pptx_path)}")
+
+
+@app.command()
+def doctor(
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable report."),
+) -> None:
+    """Check ffmpeg, yt-dlp, Node renderer bundle, preview, and fonts."""
+
+    report = run_doctor()
+    if json_output:
+        typer.echo(json.dumps(report.to_json(), ensure_ascii=False, indent=2))
+    else:
+        for check in report.checks:
+            typer.echo(f"{check.status.upper():4} {check.name}: {check.detail}")
+    raise typer.Exit(code=EXIT_OK if report.ok else EXIT_FAIL)
