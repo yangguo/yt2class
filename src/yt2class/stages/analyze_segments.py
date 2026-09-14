@@ -525,6 +525,7 @@ def analyze_segments(
     provider: Provider,
     cancel_event: Event | None = None,
     extra_clips: Iterable[object] | None = None,
+    analysis_mode: str = "frames",
 ) -> tuple[SegmentManifest, list[KnowledgeUnit], list[SegmentAnalysisOutcome]]:
     """Run every scheduled window. Does not apply a PPT page budget."""
 
@@ -552,6 +553,7 @@ def analyze_segments(
             provider=provider,
             cancel_event=cancel_event,
             extra_clips=extra_clips,
+            analysis_mode=analysis_mode,
         )
         current = set_window_status(
             running,

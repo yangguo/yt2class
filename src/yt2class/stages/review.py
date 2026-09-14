@@ -11,6 +11,7 @@ from yt2class.adapters.providers.base import Provider
 from yt2class.domain.course_map import CourseMap
 from yt2class.domain.editorial import EditorialPlan, Omission, PageIntent, relabel_page
 from yt2class.domain.knowledge import KnowledgeDocument
+from yt2class.domain.media_audit import MediaPrivacyAudit
 from yt2class.domain.review import (
     ALLOWED_REVIEW_OPS,
     IllegalReviewOpError,
@@ -208,6 +209,7 @@ def build_review_bundle(
     course_map: CourseMap | None = None,
     source_url: str | None = None,
     revision: int = 1,
+    media_privacy: MediaPrivacyAudit | None = None,
 ) -> ReviewBundle:
     guard_strict_render(knowledge=knowledge, plan=plan, report=report)
     views: list[ReviewPageView] = []
@@ -250,6 +252,7 @@ def build_review_bundle(
         omitted_topics=list(dict.fromkeys(omitted_topics)),
         allowed_ops=list(ALLOWED_REVIEW_OPS),
         allowed_frame_ids=sorted(accepted_frame_ids(visual)),
+        media_privacy=media_privacy,
     )
 
 
@@ -425,6 +428,7 @@ def apply_review_edits(
         course_map=course_map,
         source_url=source_url,
         revision=bundle.revision + 1,
+        media_privacy=bundle.media_privacy,
     )
     if binder is not None:
         binder_status = binder(planned)

@@ -1,0 +1,27 @@
+{
+  "sample": "dynamic-lecture-fixture",
+  "note": "Curated synthetic snapshot; regenerate via tests/integration/test_hybrid_analysis.py (no repo write in CI).",
+  "rows": [
+    {
+      "mode": "frames",
+      "claims": 6,
+      "uploads": 0,
+      "billed_video_seconds": 0,
+      "coverage_complete": true
+    },
+    {
+      "mode": "native-video",
+      "claims": 6,
+      "uploads": 1,
+      "billed_video_seconds": 60.0,
+      "coverage_complete": false
+    },
+    {
+      "mode": "hybrid",
+      "claims": 6,
+      "uploads": 0,
+      "billed_video_seconds": 0,
+      "coverage_complete": true
+    }
+  ]
+}

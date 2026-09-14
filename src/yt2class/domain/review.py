@@ -8,6 +8,7 @@ from pydantic import Field, model_validator
 
 from yt2class.domain.common import Digest, Identifier, StrictModel, unique_ids
 from yt2class.domain.editorial import EditorialPlan, PageIntent
+from yt2class.domain.media_audit import MediaPrivacyAudit
 from yt2class.domain.verification import VerificationReport
 
 ReviewOpName = Literal["edit_copy", "pick_asset", "delete", "lock", "reorder"]
@@ -70,6 +71,7 @@ class ReviewBundle(StrictModel):
     omitted_topics: list[str] = Field(default_factory=list)
     allowed_ops: list[ReviewOpName] = Field(default_factory=lambda: list(ALLOWED_REVIEW_OPS))
     allowed_frame_ids: list[Identifier] = Field(default_factory=list)
+    media_privacy: MediaPrivacyAudit | None = None
 
     @model_validator(mode="after")
     def check_bundle(self) -> Self:

@@ -18,6 +18,7 @@ from yt2class.domain.visual import VisualCatalogue
 from yt2class.orchestration.analyze import (
     AnalysisResult,
     analyze_evidence_bundle,
+    resolve_native_adapter,
     default_capabilities,
     write_analysis_artifacts,
 )
@@ -324,6 +325,7 @@ def run_analysis_stages(ctx: RunContext, bundle: EvidenceBundle) -> AnalysisResu
         digest_parts(bundle.transcript.raw_artifact_hash or ""),
         model_digest(bundle.transcript),
         model_digest(bundle.visual),
+        ctx.config.analysis.mode,
     ]
     outline_key = compute_cache_key(
         "outline",
@@ -390,6 +392,12 @@ def run_analysis_stages(ctx: RunContext, bundle: EvidenceBundle) -> AnalysisResu
             provider=provider,
             cancel_event=ctx.cancel_event,
             output_dir=ctx.workspace.root,
+            analysis_mode=ctx.config.analysis.mode,
+            native_adapter=resolve_native_adapter(
+                analysis_mode=ctx.config.analysis.mode,
+                provider_name=ctx.config.analysis.provider,
+                max_video_seconds=ctx.config.budget.max_video_seconds,
+            ),
         )
     except BudgetExceeded as error:
         raise PipelinePaused(str(error), reason=error.kind) from error
