@@ -179,6 +179,42 @@ def test_resolve_openrouter_json_mode_from_env(monkeypatch):
     assert resolve_openrouter_json_mode(AnalysisConfig(provider="openrouter")) == "off"
 
 
+def test_openrouter_appends_role_json_reminder_after_payload():
+    payload = {
+        "prompt": "outline",
+        "block": {"id": "block-0001"},
+        "transcript": [],
+        "visual_overview": [],
+        "allowed_evidence_ids": [],
+        "constraints": {},
+    }
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": '{"topics":[],"relations":[],"unverified_guesses":[]}'}}],
+                "usage": {},
+            },
+        )
+
+    provider = _provider(client=httpx.Client(transport=httpx.MockTransport(handler)), json_mode="off")
+    provider.last_payload = payload
+    request = model_request(request_id="outline:block-0001", role="outline", payload=payload)
+    provider.complete(request)
+    body = captured["body"]
+    assert isinstance(body, dict)
+    text = body["messages"][0]["content"][0]["text"]
+    payload_at = text.rfind("Payload:")
+    assert payload_at != -1
+    reminder = text[payload_at:]
+    assert "goal" in reminder
+    assert "teaching_goal" in reminder
+    assert "student_goal" in reminder
+
+
 @respx.mock
 def test_openrouter_trailing_extra_json_is_parsed():
     """Ling edit_deck: complete JSON object plus trailing Extra data must parse."""

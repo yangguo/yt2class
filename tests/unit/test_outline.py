@@ -242,3 +242,75 @@ def test_non_speculative_topic_must_cite_block_local_evidence():
         transcript, visual, provider, source_id="src-demo", duration_seconds=60.0, max_block_chars=20
     )
     assert all(topic.id not in {"topic-stolen", "topic-empty"} for topic in course_map.topics)
+
+
+def test_ling_outline_aliases_and_missing_fields_are_coerced():
+    from yt2class.stages.outline import validate_outline_topics
+
+    block = OutlineBlock(
+        id="block-0001", start_seconds=10.0, end_seconds=40.0, evidence_ids=["cap-001"]
+    )
+    topics, reasons = validate_outline_topics(
+        {
+            "topics": [
+                {
+                    "title": "自动词",
+                    "teaching_goal": "讲清自动词",
+                    "student_goal": "能区分自动词和他动词",
+                    "notes": "extra field must be stripped",
+                    "evidence_ids": ["cap-001"],
+                }
+            ]
+        },
+        block=block,
+        allowed={"cap-001"},
+        duration_seconds=60.0,
+    )
+    assert reasons == []
+    assert len(topics) == 1
+    assert topics[0].goal == "能区分自动词和他动词"
+    assert topics[0].id == "topic-block-0001-01"
+    assert topics[0].start_seconds == 10.0
+    assert topics[0].end_seconds == 40.0
+    assert topics[0].evidence_ids == ["cap-001"]
+
+
+def test_outline_integer_times_and_extra_keys_are_accepted():
+    from yt2class.stages.outline import validate_outline_topics
+
+    block = OutlineBlock(id="block-0001", start_seconds=0.0, end_seconds=30.0, evidence_ids=["cap-001"])
+    topics, _reasons = validate_outline_topics(
+        {
+            "topics": [
+                {
+                    "id": "topic-1",
+                    "title": "導入",
+                    "goal": "听懂本段",
+                    "start_seconds": 0,
+                    "end_seconds": 30,
+                    "evidence_ids": ["cap-001"],
+                    "teaching_goal": "alias leftover",
+                }
+            ]
+        },
+        block=block,
+        allowed={"cap-001"},
+        duration_seconds=30.0,
+    )
+    assert [topic.id for topic in topics] == ["topic-1"]
+    assert topics[0].start_seconds == 0.0
+    assert topics[0].end_seconds == 30.0
+
+
+def test_outline_still_drops_topic_without_goal_alias():
+    from yt2class.stages.outline import validate_outline_topics
+
+    block = OutlineBlock(id="block-0001", start_seconds=0.0, end_seconds=10.0, evidence_ids=["cap-001"])
+    topics, reasons = validate_outline_topics(
+        {"topics": [{"title": "只有标题", "evidence_ids": ["cap-001"]}]},
+        block=block,
+        allowed={"cap-001"},
+        duration_seconds=10.0,
+    )
+    assert topics == []
+    assert any("missing title, goal, or time range" in item for item in reasons)

@@ -8,7 +8,34 @@ Shared constraints:
 - Every fact must cite parseable evidence IDs from `allowed_evidence_ids`.
 - Preserve negation, conditions, numbers, units, and exceptions.
 - If evidence is insufficient, mark `insufficient` / add `uncertainty` or request bounded extra evidence.
-- Return only the specified JSON object of KnowledgeUnits.
+- Return only the specified JSON object.
+
+Required JSON (exact keys; extra keys are rejected). Top-level key MUST be `units` (an array):
+
+```json
+{
+  "units": [
+    {
+      "id": "unit-0001",
+      "topic_id": "<course_context.topic_id>",
+      "segment_ids": ["<segment_id>"],
+      "start_seconds": 0.0,
+      "end_seconds": 30.0,
+      "kind": "concept",
+      "claims": [
+        {
+          "id": "claim-0001",
+          "text": "sourced fact from this window",
+          "evidence_ids": ["cap-001"],
+          "status": "draft"
+        }
+      ]
+    }
+  ]
+}
+```
+
+`kind` is one of: `concept`, `example`, `procedure`, `comparison`, `warning`, `recap`. Times are half-open source seconds inside `context_range`. Cite only `allowed_evidence_ids`. Do not invent evidence IDs or timestamps.
 
 Additional questions:
 

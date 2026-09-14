@@ -27,6 +27,7 @@ from yt2class.domain.visual import VisualCatalogue
 from yt2class.llm import parse_model_json
 from yt2class.orchestration.retry import NonRetryableError, RetryableError, parse_retry_after
 from yt2class.stages.llm_util import payload_digest
+from yt2class.stages.structured_coerce import ROLE_JSON_REMINDERS
 
 DEFAULT_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_MODEL = "google/gemma-4-31b-it:free"
@@ -225,11 +226,13 @@ class OpenRouterProvider(Provider):
     def _build_messages(self, request: ModelRequest, payload: dict[str, Any]) -> list[dict[str, Any]]:
         prompt = str(payload.get("prompt") or "Follow the JSON schema implied by your role.")
         serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        reminder = ROLE_JSON_REMINDERS.get(request.role, "Return only the specified JSON object.")
         text = (
             f"{prompt}\n\n"
             "Respond with a single JSON object only. No markdown fences or commentary.\n\n"
             f"Request role: {request.role}\n"
-            f"Payload:\n{serialized}"
+            f"Payload:\n{serialized}\n\n"
+            f"{reminder}"
         )
         content: list[dict[str, Any]] = [{"type": "text", "text": text}]
         for path in self._image_paths_for_payload(payload, request.image_count):

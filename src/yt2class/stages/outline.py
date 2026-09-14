@@ -23,6 +23,7 @@ from yt2class.stages.llm_util import (
     model_request,
     transcript_in_range,
 )
+from yt2class.stages.structured_coerce import coerce_topic, extract_topics_list
 
 DEFAULT_BLOCK_CHARS = 4000
 
@@ -97,9 +98,19 @@ def _validate_topic_payload(
     block: OutlineBlock,
     allowed: set[str],
     duration_seconds: float,
+    index: int,
 ) -> Topic | str:
+    coerced = coerce_topic(
+        raw,
+        block_id=block.id,
+        block_start=block.start_seconds,
+        block_end=block.end_seconds,
+        index=index,
+    )
+    if coerced is None:
+        return f"invalid topic in {block.id}: missing title, goal, or time range"
     try:
-        topic = Topic.model_validate(raw)
+        topic = Topic.model_validate(coerced)
     except ValidationError as error:
         return f"invalid topic in {block.id}: {error}"
     if topic.end_seconds > duration_seconds + 1e-9 or topic.start_seconds >= duration_seconds:
@@ -115,31 +126,35 @@ def _validate_topic_payload(
 
 
 def validate_outline_topics(
-    structured: dict[str, Any] | None,
+    structured: dict[str, Any] | list[Any] | None,
     *,
     block: OutlineBlock,
     allowed: set[str],
     duration_seconds: float,
 ) -> tuple[list[Topic], list[str]]:
-    if not isinstance(structured, dict):
+    if structured is None:
         return [], [f"{block.id}: missing structured outline"]
-    raw_topics = structured.get("topics")
+    raw_topics = extract_topics_list(structured)
     if not isinstance(raw_topics, list):
         return [], [f"{block.id}: outline topics must be a list"]
     topics: list[Topic] = []
     reasons: list[str] = []
-    for raw in raw_topics:
+    for index, raw in enumerate(raw_topics, start=1):
         if not isinstance(raw, dict):
             reasons.append(f"{block.id}: topic is not an object")
             continue
         result = _validate_topic_payload(
-            raw, block=block, allowed=allowed, duration_seconds=duration_seconds
+            raw,
+            block=block,
+            allowed=allowed,
+            duration_seconds=duration_seconds,
+            index=index,
         )
         if isinstance(result, str):
             reasons.append(result)
         else:
             topics.append(result)
-    extra_guesses = structured.get("unverified_guesses") or []
+    extra_guesses = structured.get("unverified_guesses") if isinstance(structured, dict) else []
     if isinstance(extra_guesses, list):
         reasons.extend(str(item) for item in extra_guesses if item)
     return topics, reasons

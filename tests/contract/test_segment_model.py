@@ -108,7 +108,7 @@ def test_rejects_unknown_ids_bare_paths_and_unsourced_facts():
             }])]},
             {**payload, "allowed_evidence_ids": ["/tmp/slide.jpg", *payload["allowed_evidence_ids"]]},
         )
-    with pytest.raises(SegmentContractError, match="unsourced|at least 1"):
+    with pytest.raises(SegmentContractError, match="unsourced|at least 1|missing claims"):
         validate_knowledge_units(
             {"units": [_valid_unit(claims=[{
                 "id": "claim-1",
@@ -380,3 +380,106 @@ def test_mid_analysis_cancel_persists_failed_ledger():
         window.status == "failed" and window.failure_reason == "cancelled"
         for window in updated.windows
     )
+
+
+def test_ling_knowledge_units_alias_and_missing_times_are_coerced():
+    payload = build_segment_payload(
+        _window(),
+        transcript=make_transcript([("cap-001", 10.0, 20.0, "内容。")], duration=60.0),
+        visual=make_visual([("frame-001", 12.5, "scene-001")], duration=60.0),
+        course_map=sample_course_map(),
+    )
+    structured = {
+        "knowledge_units": [
+            {
+                "teaching_note": "extra forbidden field",
+                "type": "definition",
+                "start": 10,
+                "end": 20,
+                "claims": [
+                    {
+                        "statement": "此画面为课程原始截图。",
+                        "evidence": ["cap-001", "frame-001"],
+                    }
+                ],
+            }
+        ]
+    }
+    units = validate_knowledge_units(structured, payload)
+    assert len(units) == 1
+    assert units[0].kind == "concept"
+    assert units[0].start_seconds == 10.0
+    assert units[0].end_seconds == 20.0
+    assert units[0].topic_id == "topic-1"
+    assert units[0].segment_ids == ["seg-0001"]
+    assert units[0].claims[0].text == "此画面为课程原始截图。"
+    assert units[0].claims[0].status == "draft"
+
+
+def test_ling_missing_unit_times_use_analysis_window_not_invented_claims():
+    payload = build_segment_payload(
+        _window(),
+        transcript=make_transcript([("cap-001", 10.0, 20.0, "内容。")], duration=60.0),
+        visual=make_visual([("frame-001", 12.5, "scene-001")], duration=60.0),
+        course_map=sample_course_map(),
+    )
+    units = validate_knowledge_units(
+        {
+            "units": [
+                {
+                    "claims": [
+                        {
+                            "text": "此画面为课程原始截图。",
+                            "evidence_ids": ["cap-001"],
+                            "status": "draft",
+                        }
+                    ]
+                }
+            ]
+        },
+        payload,
+    )
+    assert len(units) == 1
+    assert units[0].start_seconds == 0.0
+    assert units[0].end_seconds == 60.0
+    with pytest.raises(SegmentContractError, match="missing claims|units list"):
+        validate_knowledge_units(
+            {
+                "units": [
+                    {"kind": "concept", "claims": [{"text": "无证据的断言", "status": "draft"}]}
+                ]
+            },
+            payload,
+        )
+
+
+def test_segment_accepts_units_list_or_single_unit_object():
+    payload = build_segment_payload(
+        _window(),
+        transcript=make_transcript([("cap-001", 10.0, 20.0, "内容。")], duration=60.0),
+        visual=make_visual([("frame-001", 12.5, "scene-001")], duration=60.0),
+        course_map=sample_course_map(),
+    )
+    from_list = validate_knowledge_units([_valid_unit()], payload)
+    from_object = validate_knowledge_units(_valid_unit(), payload)
+    assert [unit.id for unit in from_list] == ["unit-1"]
+    assert [unit.id for unit in from_object] == ["unit-1"]
+
+
+def test_invalid_sibling_unit_is_dropped_valid_unit_kept():
+    payload = build_segment_payload(
+        _window(),
+        transcript=make_transcript([("cap-001", 10.0, 20.0, "内容。")], duration=60.0),
+        visual=make_visual([("frame-001", 12.5, "scene-001")], duration=60.0),
+        course_map=sample_course_map(),
+    )
+    units = validate_knowledge_units(
+        {
+            "units": [
+                {"kind": "concept", "claims": [{"text": "无证据", "status": "draft"}]},
+                _valid_unit(id="unit-keep"),
+            ]
+        },
+        payload,
+    )
+    assert [unit.id for unit in units] == ["unit-keep"]
