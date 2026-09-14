@@ -14,6 +14,7 @@ __pycache__/
 *.mov
 output/
 test-output/
+dist/
 
 # Per-machine renderer and model configuration
 .env
@@ -23,3 +24,7 @@ test-output/
 # Local input lists may contain private URLs.
 links.txt
 test-links.txt
+
+# Node renderer installs (copy into src/yt2class/_renderer after npm ci)
+renderer/node_modules/
+src/yt2class/renderer_bundle/node_modules/

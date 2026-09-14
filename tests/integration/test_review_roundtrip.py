@@ -813,9 +813,9 @@ def test_after_edits_only_affected_claims_are_reverified():
     assert "claim-b" not in counted["ids"]
 
 
-def test_binder_and_renderer_remain_m4_stubs():
-    assert stub_binder()["milestone"] == "M4"
-    assert stub_renderer()["milestone"] == "M4"
+def test_binder_and_renderer_stubs_remain_for_default_review_path():
+    assert stub_binder()["status"] == "deferred"
+    assert stub_renderer()["status"] == "deferred"
     outcome, transcript, visual, topics = _verified_bundle()
     bundle = build_review_bundle(
         knowledge=outcome.knowledge,

@@ -1,0 +1,13 @@
+{
+  "name": "@yt2class/renderer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "SlideSpec 3.0 to PPTX via PptxGenJS",
+  "scripts": {
+    "render": "node src/render.mjs"
+  },
+  "dependencies": {
+    "pptxgenjs": "3.12.0"
+  }
+}
