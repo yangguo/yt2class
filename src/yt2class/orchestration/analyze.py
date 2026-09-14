@@ -22,7 +22,7 @@ from yt2class.domain.knowledge import KnowledgeDocument
 from yt2class.domain.segment import SegmentManifest, cores_cover_duration
 from yt2class.domain.transcript import TranscriptDocument
 from yt2class.domain.visual import VisualCatalogue
-from yt2class.orchestration.scheduler import SchedulerConfig, schedule_windows
+from yt2class.orchestration.scheduler import SchedulerConfig, schedule_windows, set_window_status
 from yt2class.stages.analyze_segments import SegmentAnalysisOutcome, analyze_segments
 from yt2class.stages.evidence_refinement import RefinementBudget, refine_window
 from yt2class.stages.outline import outline_course
@@ -150,7 +150,7 @@ def analyze_course(
         build_media_privacy_audit,
     )
 
-    refined_outcomes, budget = apply_hybrid_native_pass(
+    refined_outcomes, budget, hybrid_gaps = apply_hybrid_native_pass(
         refined_outcomes,
         analysis_mode=analysis_mode,
         transcript=transcript,
@@ -161,10 +161,19 @@ def analyze_course(
         native_adapter=native_adapter,
         media_path=media_path,
         budget=budget,
+        output_dir=output_dir,
+        clip_extractor=clip_extractor,
         cancel_event=cancel_event,
     )
     if refined_outcomes:
         refined_units = [unit for outcome in refined_outcomes for unit in outcome.units]
+        for outcome in refined_outcomes:
+            segments = set_window_status(
+                segments,
+                outcome.window.id,
+                outcome.window.status,
+                failure_reason=outcome.window.failure_reason,
+            )
 
     knowledge = reduce_knowledge(refined_units, source_id=source_id, course_map=course_map)
     media_audit = build_media_privacy_audit(
@@ -178,8 +187,11 @@ def analyze_course(
         for window in segments.windows
         if window.status != "complete"
     ]
+    gap_reasons.extend(hybrid_gaps)
     tiled = cores_cover_duration(segments.windows, duration_seconds)
     coverage = tiled and all(window.status == "complete" for window in segments.windows)
+    if hybrid_gaps:
+        coverage = False
     if not tiled:
         gap_reasons.append("core windows do not tile [0, duration)")
     unfinished = [window.id for window in segments.windows if window.status == "scheduled"]

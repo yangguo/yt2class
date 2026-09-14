@@ -7,14 +7,12 @@ from threading import Event
 
 import pytest
 
-from yt2class.adapters.providers.base import ProviderCapabilities, RequestCancelled
-from yt2class.adapters.providers.base import UnsupportedModality
+from yt2class.adapters.providers.base import ProviderCapabilities, RequestCancelled, UnsupportedModality
 from yt2class.adapters.providers.native_video import (
     NATIVE_VIDEO_DOC_VERSION,
-    DeleteRemoteFailed,
     FakeNativeVideoBackend,
     NativeVideoAdapter,
-    NativeVideoError,
+    NativeVideoEmptyOutput,
     fake_native_adapter,
     hash_file,
     redact_handle,
@@ -36,7 +34,7 @@ def test_sniff_mime_and_duration_on_clip():
     adapter = fake_native_adapter()
     upload = adapter.prepare_clip_upload(
         upload_id="up-1",
-        media_path=clip,
+        clip_path=clip,
         start_seconds=10.0,
         end_seconds=25.0,
         segment_id="seg-1",
@@ -53,32 +51,41 @@ def test_redacted_provider_handle_never_contains_raw_secret():
     assert len(digest) == 64
 
 
-def test_upload_analyze_delete_records_usage_and_probe():
+def test_upload_analyze_delete_records_usage_once():
     clip_path = _write_clip(Path("sample.webm"))
-    backend = FakeNativeVideoBackend(
-        structured={"units": []},
-        approximate_seconds=[12.5, 13.0],
-    )
+    backend = FakeNativeVideoBackend(approximate_seconds=[12.5, 13.0])
     adapter = fake_native_adapter(backend=backend)
     assert adapter.probe is not None
     assert adapter.probe.doc_version == NATIVE_VIDEO_DOC_VERSION
-    assert adapter.probe.supports_video is True
     clip = adapter.prepare_clip_upload(
         upload_id="up-usage",
-        media_path=clip_path,
+        clip_path=clip_path,
         start_seconds=0.0,
         end_seconds=8.0,
     )
     analysis = adapter.upload_and_analyze(clip, prompt_digest="a" * 64)
     assert analysis.usage.video_seconds == 8.0
-    assert analysis.usage.estimated_usd == 0.01
-    assert len(analysis.approximate_timestamps) == 2
+    assert len(adapter.audit_records) == 1
+    record = adapter.audit_records[0]
+    assert record.state == "deleted"
+    assert record.bytes_sent is True
+    assert record.usage_video_seconds == 8.0
     assert backend.deleted == ["up-usage"]
-    assert adapter.audit_records[-1].state == "deleted"
-    assert adapter.audit_records[-1].remote is not None
-    assert adapter.audit_records[-1].remote.handle_digest == redact_handle(
-        "fake-native", "fh-up-usage"
+
+
+def test_empty_native_units_is_failure():
+    clip_path = _write_clip(Path("empty.webm"))
+    backend = FakeNativeVideoBackend(structured={"units": []})
+    adapter = fake_native_adapter(backend=backend)
+    clip = adapter.prepare_clip_upload(
+        upload_id="up-empty",
+        clip_path=clip_path,
+        start_seconds=0.0,
+        end_seconds=5.0,
     )
+    with pytest.raises(NativeVideoEmptyOutput):
+        adapter.upload_and_analyze(clip, prompt_digest="a" * 64)
+    assert adapter.audit_records[0].state == "failed"
 
 
 def test_cancel_during_upload_marks_failed():
@@ -87,7 +94,7 @@ def test_cancel_during_upload_marks_failed():
     clip_path = _write_clip(Path("cancel.mp4"))
     clip = adapter.prepare_clip_upload(
         upload_id="up-cancel",
-        media_path=clip_path,
+        clip_path=clip_path,
         start_seconds=0.0,
         end_seconds=6.0,
     )
@@ -117,13 +124,13 @@ def test_delete_failure_records_retention_state():
     clip_path = _write_clip(Path("retain.mp4"))
     clip = adapter.prepare_clip_upload(
         upload_id="up-del-fail",
-        media_path=clip_path,
+        clip_path=clip_path,
         start_seconds=1.0,
         end_seconds=10.0,
     )
     adapter.upload_and_analyze(clip, prompt_digest="c" * 64)
-    assert adapter.audit_records[-1].state in {"delete_failed", "retained"}
-    assert "simulated delete" in adapter.audit_records[-1].note
+    assert adapter.audit_records[0].state in {"delete_failed", "retained"}
+    assert "simulated delete" in adapter.audit_records[0].note
 
 
 def test_unavailable_backend_raises_unsupported():
@@ -147,7 +154,7 @@ def test_unavailable_backend_raises_unsupported():
     clip_path = _write_clip(Path("noop.mp4"))
     clip = adapter.prepare_clip_upload(
         upload_id="up-no",
-        media_path=clip_path,
+        clip_path=clip_path,
         start_seconds=0.0,
         end_seconds=6.0,
     )
@@ -161,7 +168,7 @@ def test_clip_range_validation():
     with pytest.raises(Exception):
         adapter.prepare_clip_upload(
             upload_id="bad",
-            media_path=clip_path,
+            clip_path=clip_path,
             start_seconds=5.0,
             end_seconds=5.0,
         )

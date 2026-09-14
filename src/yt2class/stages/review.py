@@ -428,6 +428,7 @@ def apply_review_edits(
         course_map=course_map,
         source_url=source_url,
         revision=bundle.revision + 1,
+        media_privacy=bundle.media_privacy,
     )
     if binder is not None:
         binder_status = binder(planned)

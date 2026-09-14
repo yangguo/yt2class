@@ -12,6 +12,7 @@ from yt2class.adapters.providers.synthetic import fake_course_provider
 from yt2class.domain.course_map import CourseMap
 from yt2class.domain.editorial import DeckOrder, EditorialPlan
 from yt2class.domain.knowledge import KnowledgeDocument
+from yt2class.domain.media_audit import MediaPrivacyAudit
 from yt2class.domain.review import ReviewBundle
 from yt2class.domain.transcript import TranscriptDocument
 from yt2class.domain.verification import QualityMode, VerificationReport
@@ -142,6 +143,7 @@ def build_review(
     course_map: CourseMap | None = None,
     source_url: str | None = None,
     revision: int = 1,
+    media_privacy: MediaPrivacyAudit | None = None,
 ) -> ReviewBundle:
     return build_review_bundle(
         knowledge=knowledge,
@@ -152,6 +154,7 @@ def build_review(
         course_map=course_map,
         source_url=source_url,
         revision=revision,
+        media_privacy=media_privacy,
     )
 
 

@@ -13,6 +13,7 @@ from yt2class.domain.knowledge import KnowledgeDocument
 from yt2class.domain.review import ReviewEdits
 from yt2class.domain.transcript import TranscriptDocument
 from yt2class.domain.verification import QualityMode, StrictClosureError, VerificationReport
+from yt2class.domain.media_audit import MediaPrivacyAudit
 from yt2class.domain.slide_spec_v3 import AnalysisMode
 from yt2class.domain.visual import VisualCatalogue
 from yt2class.inputs import read_urls
@@ -318,6 +319,18 @@ def review(
         persisted_report = load_persisted_report(output, doc.source_id)
         if persisted_report is not None:
             report = persisted_report
+        media_privacy: MediaPrivacyAudit | None = None
+        audit_candidates = [
+            knowledge.parent / "media-privacy-audit.json",
+            output / "media-privacy-audit.json",
+            output.parent / "analysis" / "media-privacy-audit.json",
+        ]
+        for audit_path in audit_candidates:
+            if audit_path.is_file():
+                media_privacy = MediaPrivacyAudit.model_validate_json(
+                    audit_path.read_text(encoding="utf-8")
+                )
+                break
         bundle = build_review(
             knowledge=doc,
             plan=planned,
@@ -327,6 +340,7 @@ def review(
             course_map=topics,
             source_url=source_url,
             revision=load_persisted_revision(output, doc.source_id),
+            media_privacy=media_privacy,
         )
         if apply is not None:
             from yt2class.adapters.providers.synthetic import fake_course_provider

@@ -50,6 +50,10 @@ class DeleteRemoteFailed(NativeVideoError):
     code = "delete_remote_failed"
 
 
+class NativeVideoEmptyOutput(NativeVideoError):
+    code = "empty_native_output"
+
+
 class ClipUpload(StrictModel):
     upload_id: Identifier
     local_path: str = Field(min_length=1, max_length=400)
@@ -176,7 +180,7 @@ class NativeVideoAdapter:
     capabilities: ProviderCapabilities
     backend: NativeVideoBackend | None = None
     probe: ProviderProbeRecord | None = None
-    audit_records: list[MediaUploadRecord] = field(default_factory=list)
+    _records_by_id: dict[str, MediaUploadRecord] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.probe = probe_capabilities(self.provider_name, self.capabilities)
@@ -189,30 +193,31 @@ class NativeVideoAdapter:
     def available(self) -> bool:
         return self.capabilities.supports_video and self.backend is not None
 
+    @property
+    def audit_records(self) -> list[MediaUploadRecord]:
+        return list(self._records_by_id.values())
+
     def prepare_clip_upload(
         self,
         *,
         upload_id: str,
-        media_path: Path,
+        clip_path: Path,
         start_seconds: float,
         end_seconds: float,
         segment_id: str | None = None,
-        duration_seconds: float | None = None,
     ) -> ClipUpload:
+        """Build upload metadata for an already-extracted clip file (not the full source)."""
+
         validate_half_open(start_seconds, end_seconds, label="clip range")
-        if not media_path.is_file():
-            raise NativeVideoError(f"media file missing: {media_path}")
-        local_sha256 = hash_file(media_path)
-        byte_length = media_path.stat().st_size
+        if not clip_path.is_file():
+            raise NativeVideoError(f"clip file missing: {clip_path}")
         clip_duration = max(0.0, end_seconds - start_seconds)
-        if duration_seconds is not None:
-            clip_duration = min(clip_duration, duration_seconds)
         return ClipUpload(
             upload_id=upload_id,
-            local_path=str(media_path),
-            local_sha256=local_sha256,
-            mime_type=sniff_mime(media_path),
-            byte_length=byte_length,
+            local_path=str(clip_path),
+            local_sha256=hash_file(clip_path),
+            mime_type=sniff_mime(clip_path),
+            byte_length=clip_path.stat().st_size,
             duration_seconds=clip_duration,
             source_range=MediaClipRange(
                 start_seconds=start_seconds,
@@ -221,7 +226,7 @@ class NativeVideoAdapter:
             ),
         )
 
-    def _record(
+    def _upsert_record(
         self,
         clip: ClipUpload,
         *,
@@ -229,7 +234,12 @@ class NativeVideoAdapter:
         remote: RedactedRemoteHandle | None = None,
         usage: Usage | None = None,
         note: str = "",
+        bytes_sent: bool | None = None,
     ) -> MediaUploadRecord:
+        previous = self._records_by_id.get(clip.upload_id)
+        sent = bytes_sent if bytes_sent is not None else (previous.bytes_sent if previous else False)
+        if state in {"uploaded", "ready", "analyzed", "deleted", "retained", "delete_failed"}:
+            sent = True
         record = MediaUploadRecord(
             upload_id=clip.upload_id,
             local_sha256=clip.local_sha256,
@@ -237,17 +247,74 @@ class NativeVideoAdapter:
             byte_length=clip.byte_length,
             duration_seconds=clip.duration_seconds,
             source_range=clip.source_range,
-            remote=remote,
+            remote=remote if remote is not None else (previous.remote if previous else None),
             retention_policy=self.capabilities.remote_retention,
             state=state,  # type: ignore[arg-type]
-            usage_input_tokens=usage.input_tokens if usage else 0,
-            usage_output_tokens=usage.output_tokens if usage else 0,
-            usage_video_seconds=usage.video_seconds if usage else clip.duration_seconds,
-            estimated_usd=usage.estimated_usd if usage else None,
-            note=note[:400],
+            usage_input_tokens=usage.input_tokens if usage else (previous.usage_input_tokens if previous else 0),
+            usage_output_tokens=usage.output_tokens if usage else (previous.usage_output_tokens if previous else 0),
+            usage_video_seconds=(
+                usage.video_seconds
+                if usage
+                else (previous.usage_video_seconds if previous else clip.duration_seconds)
+            ),
+            estimated_usd=usage.estimated_usd if usage else (previous.estimated_usd if previous else None),
+            note=(note or (previous.note if previous else ""))[:400],
+            bytes_sent=sent,
         )
-        self.audit_records.append(record)
+        self._records_by_id[clip.upload_id] = record
         return record
+
+    def _attempt_delete(
+        self,
+        backend: NativeVideoBackend,
+        handle: NativeVideoHandle,
+        clip: ClipUpload,
+        *,
+        cancel_event: Event | None,
+        usage: Usage | None = None,
+        keep_state: str | None = None,
+    ) -> None:
+        if not self.capabilities.can_delete_remote:
+            self._upsert_record(
+                clip,
+                state="retained",
+                remote=RedactedRemoteHandle(
+                    provider=handle.provider,
+                    handle_digest=handle.handle_digest,
+                    state="retained",
+                ),
+                usage=usage,
+                note="provider cannot delete remote objects",
+            )
+            return
+        try:
+            deleted = backend.delete_remote(handle, cancel_event=cancel_event)
+            final = keep_state or "deleted"
+            self._upsert_record(
+                clip,
+                state=final,  # type: ignore[arg-type]
+                remote=RedactedRemoteHandle(
+                    provider=deleted.provider,
+                    handle_digest=deleted.handle_digest,
+                    state=final,  # type: ignore[arg-type]
+                ),
+                usage=usage,
+            )
+        except DeleteRemoteFailed as error:
+            retained_state = keep_state or (
+                "retained" if self.capabilities.remote_retention != "none" else "delete_failed"
+            )
+            self._upsert_record(
+                clip,
+                state=retained_state,  # type: ignore[arg-type]
+                remote=RedactedRemoteHandle(
+                    provider=handle.provider,
+                    handle_digest=handle.handle_digest,
+                    state=retained_state,  # type: ignore[arg-type]
+                ),
+                usage=usage,
+                note=str(error)[:400],
+            )
 
     def upload_and_analyze(
         self,
@@ -262,22 +329,34 @@ class NativeVideoAdapter:
         if clip.duration_seconds > self.capabilities.max_video_seconds:
             raise NativeVideoError("clip duration exceeds provider max_video_seconds")
         if cancel_event is not None and cancel_event.is_set():
-            self._record(clip, state="failed", note="cancelled")
+            self._upsert_record(clip, state="failed", note="cancelled")
             raise RequestCancelled(f"upload {clip.upload_id} cancelled")
         backend = self.backend
         assert backend is not None
-        self._record(clip, state="planned")
+        self._upsert_record(clip, state="planned")
+        handle: NativeVideoHandle | None = None
+        usage: Usage | None = None
         try:
             handle = backend.upload(clip, cancel_event=cancel_event)
-            remote = RedactedRemoteHandle(
-                provider=handle.provider,
-                handle_digest=handle.handle_digest,
-                state="uploaded",  # type: ignore[arg-type]
+            self._upsert_record(
+                clip,
+                state="uploaded",
+                remote=RedactedRemoteHandle(
+                    provider=handle.provider,
+                    handle_digest=handle.handle_digest,
+                    state="uploaded",
+                ),
             )
-            self._record(clip, state="uploaded", remote=remote)
             handle = backend.wait_ready(handle, cancel_event=cancel_event)
-            remote = remote.model_copy(update={"state": "ready"})
-            self._record(clip, state="ready", remote=remote)
+            self._upsert_record(
+                clip,
+                state="ready",
+                remote=RedactedRemoteHandle(
+                    provider=handle.provider,
+                    handle_digest=handle.handle_digest,
+                    state="ready",
+                ),
+            )
             if cancel_event is not None and cancel_event.is_set():
                 raise RequestCancelled(f"analyze {clip.upload_id} cancelled")
             analysis = backend.analyze(
@@ -285,42 +364,58 @@ class NativeVideoAdapter:
                 prompt_digest=prompt_digest,
                 cancel_event=cancel_event,
             )
-            remote = remote.model_copy(update={"state": "analyzed"})
-            self._record(clip, state="analyzed", remote=remote, usage=analysis.usage)
-            if delete_after and self.capabilities.can_delete_remote:
-                try:
-                    deleted = backend.delete_remote(handle, cancel_event=cancel_event)
-                    remote = remote.model_copy(update={"state": deleted.state})  # type: ignore[arg-type]
-                    self._record(clip, state="deleted", remote=remote, usage=analysis.usage)
-                except DeleteRemoteFailed as error:
-                    retained_state = (
-                        "retained"
-                        if self.capabilities.remote_retention != "none"
-                        else "delete_failed"
-                    )
-                    remote = remote.model_copy(update={"state": retained_state})  # type: ignore[arg-type]
-                    self._record(
-                        clip,
-                        state=retained_state,  # type: ignore[arg-type]
-                        remote=remote,
-                        usage=analysis.usage,
-                        note=str(error),
-                    )
-            elif delete_after and not self.capabilities.can_delete_remote:
-                remote = remote.model_copy(update={"state": "retained"})
-                self._record(
+            usage = analysis.usage
+            units = analysis.structured.get("units") if isinstance(analysis.structured, dict) else None
+            if not units:
+                raise NativeVideoEmptyOutput("native provider returned no knowledge units")
+            self._upsert_record(
+                clip,
+                state="analyzed",
+                remote=RedactedRemoteHandle(
+                    provider=handle.provider,
+                    handle_digest=handle.handle_digest,
+                    state="analyzed",
+                ),
+                usage=usage,
+            )
+            if delete_after:
+                self._attempt_delete(backend, handle, clip, cancel_event=cancel_event, usage=usage)
+            elif not self.capabilities.can_delete_remote:
+                self._upsert_record(
                     clip,
                     state="retained",
-                    remote=remote,
-                    usage=analysis.usage,
-                    note="provider cannot delete remote objects",
+                    remote=RedactedRemoteHandle(
+                        provider=handle.provider,
+                        handle_digest=handle.handle_digest,
+                        state="retained",
+                    ),
+                    usage=usage,
+                    note="delete_after=False; remote retained",
                 )
             return analysis
         except RequestCancelled:
-            self._record(clip, state="failed", note="cancelled")
+            self._upsert_record(clip, state="failed", note="cancelled", usage=usage)
+            if handle is not None:
+                self._attempt_delete(
+                    backend,
+                    handle,
+                    clip,
+                    cancel_event=cancel_event,
+                    usage=usage,
+                    keep_state="failed",
+                )
             raise
         except NativeVideoError as error:
-            self._record(clip, state="failed", note=str(error)[:400])
+            self._upsert_record(clip, state="failed", note=str(error)[:400], usage=usage)
+            if handle is not None:
+                self._attempt_delete(
+                    backend,
+                    handle,
+                    clip,
+                    cancel_event=cancel_event,
+                    usage=usage,
+                    keep_state="failed",
+                )
             raise
 
 
@@ -383,7 +478,36 @@ class FakeNativeVideoBackend(NativeVideoBackend):
             raise RequestCancelled(f"analyze {handle.upload_id} cancelled")
         if self.fail_analyze:
             raise NativeVideoError("simulated analyze failure")
-        structured = self.structured or {"units": [], "prompt_digest": prompt_digest}
+        structured = self.structured
+        if structured is None:
+            structured = {
+                "units": [
+                    {
+                        "id": f"unit-{handle.upload_id}",
+                        "topic_id": "topic-native",
+                        "segment_ids": [handle.source_range.segment_id or "seg-native"],
+                        "start_seconds": handle.source_range.start_seconds,
+                        "end_seconds": handle.source_range.end_seconds,
+                        "kind": "procedure",
+                        "claims": [
+                            {
+                                "id": f"claim-{handle.upload_id}",
+                                "text": "native-supported step",
+                                "evidence_ids": ["cap-001"],
+                                "status": "supported",
+                                "qualifiers": [],
+                                "modality": "visual",
+                                "provenance": "source",
+                            }
+                        ],
+                        "relations": [],
+                        "visual_candidates": [],
+                        "uncertainty": [],
+                        "evidence_requests": [],
+                    }
+                ],
+                "prompt_digest": prompt_digest,
+            }
         usage = Usage(
             request_id=f"native:{handle.upload_id}",
             input_tokens=120,

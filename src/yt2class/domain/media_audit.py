@@ -57,6 +57,7 @@ class MediaUploadRecord(StrictModel):
     usage_output_tokens: int = Field(default=0, ge=0)
     usage_video_seconds: float = Field(default=0.0, ge=0, allow_inf_nan=False)
     estimated_usd: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    bytes_sent: bool = False
     note: str = Field(default="", max_length=400)
 
 
