@@ -43,6 +43,24 @@ UNITS_LIST_KEYS = ("units", "knowledge_units", "knowledgeUnits", "items")
 TOPICS_LIST_KEYS = ("topics", "outline", "sections")
 
 
+def allocate_unique_id(preferred: str, used: set[str]) -> str:
+    """Keep the first occurrence; suffix later collisions. Does not invent content."""
+
+    base = (preferred or "id").strip()[:100] or "id"
+    if base not in used:
+        used.add(base)
+        return base
+    n = 2
+    while True:
+        suffix = f"-{n}"
+        room = 100 - len(suffix)
+        candidate = f"{base[:room]}{suffix}" if len(base) + len(suffix) > 100 else f"{base}{suffix}"
+        if candidate not in used:
+            used.add(candidate)
+            return candidate
+        n += 1
+
+
 def _first(raw: dict[str, Any], keys: tuple[str, ...]) -> Any:
     for key in keys:
         if key in raw and raw[key] is not None:
@@ -312,11 +330,13 @@ def coerce_knowledge_unit(
     if not isinstance(claims_raw, list):
         return None
     claims = []
+    used_claim_ids: set[str] = set()
     for claim_index, item in enumerate(claims_raw, start=1):
         if not isinstance(item, dict):
             continue
         claim = coerce_claim(item, index=claim_index, unit_id=ident[:80])
         if claim is not None:
+            claim["id"] = allocate_unique_id(claim["id"], used_claim_ids)
             claims.append(claim)
     if not claims:
         return None
@@ -391,17 +411,70 @@ def coerce_knowledge_unit(
     return dumped
 
 
+def uniquify_knowledge_units(units: list[Any]) -> list[Any]:
+    """Renumber colliding unit/claim ids, keeping the first occurrence."""
+
+    from yt2class.domain.knowledge import KnowledgeUnit
+
+    used_units: set[str] = set()
+    used_claims: set[str] = set()
+    result: list[Any] = []
+    for unit in units:
+        if not isinstance(unit, KnowledgeUnit):
+            result.append(unit)
+            continue
+        new_unit_id = allocate_unique_id(unit.id, used_units)
+        first_claim_new: dict[str, str] = {}
+        new_claims = []
+        for claim in unit.claims:
+            new_claim_id = allocate_unique_id(claim.id, used_claims)
+            first_claim_new.setdefault(claim.id, new_claim_id)
+            new_claims.append(
+                claim if new_claim_id == claim.id else claim.model_copy(update={"id": new_claim_id})
+            )
+
+        def _rewrite(ref: str, *, old_unit: str = unit.id, new_unit: str = new_unit_id) -> str:
+            if ref == old_unit:
+                return new_unit
+            return first_claim_new.get(ref, ref)
+
+        new_relations = [
+            relation
+            if _rewrite(relation.from_id) == relation.from_id
+            and _rewrite(relation.to_id) == relation.to_id
+            else relation.model_copy(
+                update={"from_id": _rewrite(relation.from_id), "to_id": _rewrite(relation.to_id)}
+            )
+            for relation in unit.relations
+        ]
+        updates: dict[str, Any] = {}
+        if new_unit_id != unit.id:
+            updates["id"] = new_unit_id
+        if any(left.id != right.id for left, right in zip(new_claims, unit.claims)):
+            updates["claims"] = new_claims
+        if any(
+            left.from_id != right.from_id or left.to_id != right.to_id
+            for left, right in zip(new_relations, unit.relations)
+        ):
+            updates["relations"] = new_relations
+        result.append(unit.model_copy(update=updates) if updates else unit)
+    return result
+
+
 ROLE_JSON_REMINDERS = {
     "outline": (
         "Output a JSON object with keys topics, relations, unverified_guesses. "
         "Each topic MUST use exactly: id, title, goal, start_seconds, end_seconds, "
-        "evidence_ids, speculative. Use `goal` (not teaching_goal or student_goal)."
+        "evidence_ids, speculative. Use `goal` (not teaching_goal or student_goal). "
+        "Topic ids must be unique; do not reuse topic-0001."
     ),
     "segment": (
         "Output a JSON object whose top-level key is `units` (an array). Each unit MUST use: "
         "id, topic_id, segment_ids, start_seconds, end_seconds, kind, claims. "
         "Each claim MUST use: id, text, evidence_ids, status. kind is one of "
-        "concept|example|procedure|comparison|warning|recap. Do not invent evidence IDs."
+        "concept|example|procedure|comparison|warning|recap. "
+        "Unit and claim ids must be unique across the course; do not reuse unit-0001. "
+        "Do not invent evidence IDs."
     ),
     "editor": (
         "Output a JSON object for the editorial plan. Use the specified field names only."

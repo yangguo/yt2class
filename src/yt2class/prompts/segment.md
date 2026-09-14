@@ -36,6 +36,7 @@ Required JSON (exact keys; extra keys are rejected). Top-level key MUST be `unit
 ```
 
 `kind` is one of: `concept`, `example`, `procedure`, `comparison`, `warning`, `recap`. Times are half-open source seconds inside `context_range`. Cite only `allowed_evidence_ids`. Do not invent evidence IDs or timestamps.
+Each `units[].id` and `claims[].id` must be unique (use the segment id, e.g. `unit-seg-0001-01`). Do not reuse `unit-0001` / `claim-0001` for every item.
 
 Additional questions:
 

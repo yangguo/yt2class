@@ -33,7 +33,7 @@ from yt2class.stages.llm_util import (
     text_has_units,
     transcript_in_range,
 )
-from yt2class.stages.structured_coerce import coerce_knowledge_unit, extract_units_list
+from yt2class.stages.structured_coerce import coerce_knowledge_unit, extract_units_list, uniquify_knowledge_units
 
 TEMPORAL_MARKERS = (
     "然后",
@@ -352,7 +352,7 @@ def validate_knowledge_units(
         if errors:
             raise SegmentContractError(errors[0] if len(errors) == 1 else "; ".join(errors[:3]))
         return []
-    return units
+    return uniquify_knowledge_units(units)
 
 
 def reserved_output_tokens(window: AnalysisWindow, provider: Provider) -> int:

@@ -50,6 +50,15 @@ def test_coerce_topic_prefers_student_goal_and_strips_aliases():
     assert "teaching_goal" not in topic
 
 
+def test_allocate_unique_id_keeps_first_and_suffixes_collisions():
+    from yt2class.stages.structured_coerce import allocate_unique_id
+
+    used: set[str] = set()
+    assert allocate_unique_id("unit-0001", used) == "unit-0001"
+    assert allocate_unique_id("unit-0001", used) == "unit-0001-2"
+    assert allocate_unique_id("unit-0001", used) == "unit-0001-3"
+
+
 def test_prompts_list_exact_json_keys():
     from yt2class.stages.llm_util import load_prompt
 
@@ -61,3 +70,7 @@ def test_prompts_list_exact_json_keys():
     assert '"units"' in segment
     assert "start_seconds" in segment
     assert "allowed_evidence_ids" in segment
+    assert "unique" in segment
+    assert "unit-0001" in segment
+    assert "unique" in outline
+    assert "topic-0001" in outline

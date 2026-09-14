@@ -483,3 +483,39 @@ def test_invalid_sibling_unit_is_dropped_valid_unit_kept():
         payload,
     )
     assert [unit.id for unit in units] == ["unit-keep"]
+
+
+def test_duplicate_unit_0001_in_segment_payload_is_renumbered():
+    payload = build_segment_payload(
+        _window(),
+        transcript=make_transcript([("cap-001", 10.0, 20.0, "内容。")], duration=60.0),
+        visual=make_visual([("frame-001", 12.5, "scene-001")], duration=60.0),
+        course_map=sample_course_map(),
+    )
+    units = validate_knowledge_units(
+        {
+            "units": [
+                _valid_unit(id="unit-0001", start_seconds=10.0, end_seconds=20.0),
+                _valid_unit(
+                    id="unit-0001",
+                    start_seconds=30.0,
+                    end_seconds=40.0,
+                    claims=[
+                        {
+                            "id": "claim-0001",
+                            "text": "另一处板书。",
+                            "evidence_ids": ["cap-001"],
+                            "status": "draft",
+                            "qualifiers": [],
+                            "modality": "both",
+                            "provenance": "source",
+                        }
+                    ],
+                ),
+            ]
+        },
+        payload,
+    )
+    assert [unit.id for unit in units] == ["unit-0001", "unit-0001-2"]
+    assert units[0].claims[0].id == "claim-1"
+    assert units[1].claims[0].id == "claim-0001"

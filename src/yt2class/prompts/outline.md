@@ -31,6 +31,7 @@ Required JSON (exact keys; extra keys are rejected):
 ```
 
 Use `goal` for the student goal. Do not emit `teaching_goal` or `student_goal`. Times are half-open `[start_seconds, end_seconds)` in source video seconds, inside the supplied block. Cite only `allowed_evidence_ids`.
+Each topic `id` must be unique (include the block id, e.g. `topic-block-0001-01`). Do not reuse `topic-0001`.
 
 Questions to answer:
 

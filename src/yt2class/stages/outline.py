@@ -23,7 +23,7 @@ from yt2class.stages.llm_util import (
     model_request,
     transcript_in_range,
 )
-from yt2class.stages.structured_coerce import coerce_topic, extract_topics_list
+from yt2class.stages.structured_coerce import allocate_unique_id, coerce_topic, extract_topics_list
 
 DEFAULT_BLOCK_CHARS = 4000
 
@@ -139,6 +139,7 @@ def validate_outline_topics(
         return [], [f"{block.id}: outline topics must be a list"]
     topics: list[Topic] = []
     reasons: list[str] = []
+    used_topic_ids: set[str] = set()
     for index, raw in enumerate(raw_topics, start=1):
         if not isinstance(raw, dict):
             reasons.append(f"{block.id}: topic is not an object")
@@ -153,7 +154,8 @@ def validate_outline_topics(
         if isinstance(result, str):
             reasons.append(result)
         else:
-            topics.append(result)
+            new_id = allocate_unique_id(result.id, used_topic_ids)
+            topics.append(result if new_id == result.id else result.model_copy(update={"id": new_id}))
     extra_guesses = structured.get("unverified_guesses") if isinstance(structured, dict) else []
     if isinstance(extra_guesses, list):
         reasons.extend(str(item) for item in extra_guesses if item)
@@ -223,20 +225,16 @@ def reduce_outline(
         guesses.append("no verified outline topics; speculative placeholder only")
 
     kept.sort(key=lambda topic: (topic.start_seconds, topic.end_seconds, topic.id))
-    relations: list[TopicRelation] = []
-    for previous, current in zip(kept, kept[1:]):
-        relations.append(
-            TopicRelation(from_topic_id=previous.id, to_topic_id=current.id, kind="follows")
-        )
-
     unique: list[Topic] = []
     seen: set[str] = set()
     for topic in kept:
-        if topic.id in seen:
-            guesses.append(f"dropped duplicate topic id {topic.id}")
-            continue
-        seen.add(topic.id)
-        unique.append(topic)
+        new_id = allocate_unique_id(topic.id, seen)
+        unique.append(topic if new_id == topic.id else topic.model_copy(update={"id": new_id}))
+    relations: list[TopicRelation] = []
+    for previous, current in zip(unique, unique[1:]):
+        relations.append(
+            TopicRelation(from_topic_id=previous.id, to_topic_id=current.id, kind="follows")
+        )
 
     return CourseMap(
         schema_version="1.0",

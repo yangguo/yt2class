@@ -314,3 +314,78 @@ def test_outline_still_drops_topic_without_goal_alias():
     )
     assert topics == []
     assert any("missing title, goal, or time range" in item for item in reasons)
+
+
+def test_duplicate_placeholder_topic_ids_are_renumbered():
+    first = OutlineBlock(id="block-0001", start_seconds=0.0, end_seconds=20.0, evidence_ids=["cap-1"])
+    second = OutlineBlock(id="block-0002", start_seconds=20.0, end_seconds=40.0, evidence_ids=["cap-2"])
+    course_map = reduce_outline(
+        "src-demo",
+        [
+            (
+                first,
+                [
+                    Topic(
+                        id="topic-0001",
+                        title="开始",
+                        goal="引入",
+                        start_seconds=0.0,
+                        end_seconds=20.0,
+                        evidence_ids=["cap-1"],
+                    )
+                ],
+                [],
+            ),
+            (
+                second,
+                [
+                    Topic(
+                        id="topic-0001",
+                        title="继续",
+                        goal="推进",
+                        start_seconds=20.0,
+                        end_seconds=40.0,
+                        evidence_ids=["cap-2"],
+                    )
+                ],
+                [],
+            ),
+        ],
+        duration_seconds=40.0,
+    )
+    assert [topic.id for topic in course_map.topics] == ["topic-0001", "topic-0001-2"]
+    assert [topic.title for topic in course_map.topics] == ["开始", "继续"]
+    assert course_map.relations[0].from_topic_id == "topic-0001"
+    assert course_map.relations[0].to_topic_id == "topic-0001-2"
+
+
+def test_outline_payload_duplicate_topic_0001_is_renumbered():
+    from yt2class.stages.outline import validate_outline_topics
+
+    block = OutlineBlock(id="block-0001", start_seconds=0.0, end_seconds=40.0, evidence_ids=["cap-001"])
+    topics, _reasons = validate_outline_topics(
+        {
+            "topics": [
+                {
+                    "id": "topic-0001",
+                    "title": "第一",
+                    "goal": "引入",
+                    "start_seconds": 0.0,
+                    "end_seconds": 20.0,
+                    "evidence_ids": ["cap-001"],
+                },
+                {
+                    "id": "topic-0001",
+                    "title": "第二",
+                    "goal": "推进",
+                    "start_seconds": 20.0,
+                    "end_seconds": 40.0,
+                    "evidence_ids": ["cap-001"],
+                },
+            ]
+        },
+        block=block,
+        allowed={"cap-001"},
+        duration_seconds=40.0,
+    )
+    assert [topic.id for topic in topics] == ["topic-0001", "topic-0001-2"]
