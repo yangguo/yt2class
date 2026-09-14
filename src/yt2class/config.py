@@ -45,6 +45,7 @@ class AnalysisConfig(BaseModel):
     max_images_per_batch: int = 8
     max_evidence_rounds: int = 2
     provider: str = "fake"
+    openrouter_json_mode: Literal["auto", "on", "off"] = "auto"
 
 
 class EditorConfig(BaseModel):

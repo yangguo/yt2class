@@ -36,6 +36,7 @@ Example configs:
 
 - Offline/CI: [docs/examples/course.fixture.json](docs/examples/course.fixture.json) (`"provider": "fake"`)
 - OpenRouter frames mode: [docs/examples/course.openrouter.json](docs/examples/course.openrouter.json) (requires `OPENROUTER_API_KEY` in the environment; no secrets in git)
+- Ling VL free (no API `response_format`): [docs/examples/course.openrouter.ling.json](docs/examples/course.openrouter.ling.json) — or keep default `openrouter_json_mode: auto` to retry once without structured outputs on HTTP 400
 
 **OpenRouter (frames mode)**
 
@@ -44,11 +45,23 @@ export OPENROUTER_API_KEY="sk-or-..."
 # optional overrides:
 # export YT2CLASS_OPENROUTER_MODEL="google/gemma-4-31b-it:free"
 # export OPENROUTER_MODEL="google/gemma-4-31b-it:free"
+# export OPENROUTER_JSON_MODE="auto"   # auto | on | off — auto retries without response_format on structured-output 400s
 
 uv run yt2class build-run \
   --video path/to/lesson.mp4 \
   --subtitles path/to/lesson.vtt \
   --config docs/examples/course.openrouter.json \
+  --output runs
+```
+
+For **`inclusionai/ling-3.0-flash-vl:free`**, use [docs/examples/course.openrouter.ling.json](docs/examples/course.openrouter.ling.json) or set `"openrouter_json_mode": "off"` (env `OPENROUTER_JSON_MODE=off`). Default **`auto`** still works: first request uses `response_format`, then yt2class retries once with prompt-only JSON if the upstream rejects structured outputs.
+
+```bash
+export OPENROUTER_API_KEY="sk-or-..."
+uv run yt2class build-run \
+  --video path/to/lesson.mp4 \
+  --subtitles path/to/lesson.vtt \
+  --config docs/examples/course.openrouter.ling.json \
   --output runs
 ```
 

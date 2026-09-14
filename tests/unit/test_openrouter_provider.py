@@ -19,12 +19,13 @@ from yt2class.stages.llm_util import model_request, payload_digest
 ENDPOINT = "https://openrouter.test/v1/chat/completions"
 
 
-def _provider(*, client: httpx.Client | None = None) -> OpenRouterProvider:
+def _provider(*, client: httpx.Client | None = None, json_mode: str = "auto") -> OpenRouterProvider:
     return OpenRouterProvider(
         api_key="test-key",
         model="google/gemma-4-31b-it:free",
         endpoint=ENDPOINT,
         client=client,
+        json_mode=json_mode,  # type: ignore[arg-type]
     )
 
 
@@ -65,6 +66,117 @@ def test_openrouter_successful_structured_json():
     assert result.structured == {"topics": [], "relations": [], "unverified_guesses": []}
     assert result.usage.input_tokens == 10
     assert result.usage.output_tokens == 4
+
+
+def test_openrouter_success_includes_response_format_by_default():
+    payload = {
+        "prompt": "outline",
+        "block": {"id": "block-0001"},
+        "transcript": [],
+        "visual_overview": [],
+        "allowed_evidence_ids": [],
+        "constraints": {},
+    }
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": '{"topics":[],"relations":[],"unverified_guesses":[]}'}}],
+                "usage": {},
+            },
+        )
+
+    provider = _provider(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    provider.last_payload = payload
+    request = model_request(request_id="outline:block-0001", role="outline", payload=payload)
+    provider.complete(request)
+    body = captured["body"]
+    assert isinstance(body, dict)
+    assert body.get("response_format") == {"type": "json_object"}
+
+
+def test_openrouter_json_mode_off_omits_response_format():
+    payload = {
+        "prompt": "outline",
+        "block": {"id": "block-0001"},
+        "transcript": [],
+        "visual_overview": [],
+        "allowed_evidence_ids": [],
+        "constraints": {},
+    }
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": '{"topics":[],"relations":[],"unverified_guesses":[]}'}}],
+                "usage": {},
+            },
+        )
+
+    provider = _provider(client=httpx.Client(transport=httpx.MockTransport(handler)), json_mode="off")
+    provider.last_payload = payload
+    request = model_request(request_id="outline:block-0001", role="outline", payload=payload)
+    provider.complete(request)
+    body = captured["body"]
+    assert isinstance(body, dict)
+    assert "response_format" not in body
+
+
+def test_openrouter_auto_retries_without_response_format_on_structured_400():
+    payload = {
+        "prompt": "outline",
+        "block": {"id": "block-0001"},
+        "transcript": [],
+        "visual_overview": [],
+        "allowed_evidence_ids": [],
+        "constraints": {},
+    }
+    bodies: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        bodies.append(body)
+        if "response_format" in body:
+            return httpx.Response(
+                400,
+                json={
+                    "error": {
+                        "message": "model: inclusionai/ling-3.0-flash-vl does not support feature: structured-outputs"
+                    }
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": '{"topics":[],"relations":[],"unverified_guesses":[]}'}}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 2},
+            },
+        )
+
+    provider = _provider(
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        json_mode="auto",
+    )
+    provider.last_payload = payload
+    request = model_request(request_id="outline:block-0001", role="outline", payload=payload)
+    result = provider.complete(request)
+    assert len(bodies) == 2
+    assert "response_format" in bodies[0]
+    assert "response_format" not in bodies[1]
+    assert result.structured == {"topics": [], "relations": [], "unverified_guesses": []}
+
+
+def test_resolve_openrouter_json_mode_from_env(monkeypatch):
+    from yt2class.adapters.providers.openrouter import resolve_openrouter_json_mode
+
+    monkeypatch.setenv("OPENROUTER_JSON_MODE", "off")
+    assert resolve_openrouter_json_mode(AnalysisConfig(provider="openrouter")) == "off"
 
 
 @respx.mock

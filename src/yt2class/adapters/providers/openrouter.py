@@ -8,7 +8,7 @@ import mimetypes
 import os
 from pathlib import Path
 from threading import Event
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
@@ -32,6 +32,16 @@ DEFAULT_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_MODEL = "google/gemma-4-31b-it:free"
 DEFAULT_REFERER = "https://github.com/yangguo/yt2class"
 DEFAULT_APP_TITLE = "yt2class"
+
+OpenRouterJsonMode = Literal["auto", "on", "off"]
+STRUCTURED_OUTPUT_REJECT_HINTS = (
+    "structured-output",
+    "structured output",
+    "structured-outputs",
+    "json_object",
+    "response_format",
+    "json schema",
+)
 
 
 def openrouter_capabilities() -> ProviderCapabilities:
@@ -70,6 +80,44 @@ def resolve_openrouter_endpoint() -> str:
     return DEFAULT_ENDPOINT
 
 
+def _normalize_openrouter_json_mode(raw: str) -> OpenRouterJsonMode:
+    value = raw.strip().lower()
+    if value in {"auto", "on", "off", "true", "false", "1", "0", "yes", "no"}:
+        if value in {"true", "1", "yes", "on"}:
+            return "on"
+        if value in {"false", "0", "no", "off"}:
+            return "off"
+        return value  # type: ignore[return-value]
+    raise ProviderError(
+        f"invalid OpenRouter JSON mode {raw!r}; expected auto, on, or off "
+        "(config analysis.openrouter_json_mode or env OPENROUTER_JSON_MODE)"
+    )
+
+
+def resolve_openrouter_json_mode(analysis: AnalysisConfig) -> OpenRouterJsonMode:
+    for key in ("YT2CLASS_OPENROUTER_JSON_MODE", "OPENROUTER_JSON_MODE"):
+        value = os.getenv(key)
+        if value:
+            return _normalize_openrouter_json_mode(value)
+    configured = getattr(analysis, "openrouter_json_mode", None)
+    if configured:
+        return _normalize_openrouter_json_mode(str(configured))
+    return "auto"
+
+
+def structured_output_rejected(status_code: int, detail: str) -> bool:
+    if status_code != 400:
+        return False
+    lowered = detail.lower()
+    return any(hint in lowered for hint in STRUCTURED_OUTPUT_REJECT_HINTS)
+
+
+class StructuredOutputUnsupported(ProviderError):
+    """Upstream rejected response_format / json_object (retry without it in auto mode)."""
+
+    code = "structured_output_unsupported"
+
+
 class OpenRouterProvider(Provider):
     """HTTP vision provider; stages attach JSON payloads on ``last_payload``."""
 
@@ -84,6 +132,7 @@ class OpenRouterProvider(Provider):
         client: httpx.Client | None = None,
         referer: str | None = None,
         app_title: str | None = None,
+        json_mode: OpenRouterJsonMode = "auto",
     ) -> None:
         super().__init__(capabilities or openrouter_capabilities())
         if not api_key.strip():
@@ -95,6 +144,7 @@ class OpenRouterProvider(Provider):
         self._client = client
         self._referer = referer or os.getenv("OPENROUTER_HTTP_REFERER", DEFAULT_REFERER)
         self._app_title = app_title or os.getenv("OPENROUTER_APP_TITLE", DEFAULT_APP_TITLE)
+        self._json_mode = json_mode
         self.last_payload: dict[str, Any] | None = None
         self._run_root: Path | None = None
         self._visual: VisualCatalogue | None = None
@@ -107,6 +157,7 @@ class OpenRouterProvider(Provider):
             model=resolve_openrouter_model(analysis),
             endpoint=resolve_openrouter_endpoint(),
             client=client,
+            json_mode=resolve_openrouter_json_mode(analysis),
         )
 
     def bind_run_context(self, run_root: Path, *, visual: VisualCatalogue | None = None) -> None:
@@ -268,6 +319,8 @@ class OpenRouterProvider(Provider):
             detail = response.text[:240] or detail
         if response.status_code in {401, 403}:
             raise NonRetryableError(detail)
+        if response.status_code == 400 and structured_output_rejected(response.status_code, detail):
+            raise StructuredOutputUnsupported(detail)
         if response.status_code == 429 or response.status_code >= 500:
             raise RetryableError(
                 detail,
@@ -275,6 +328,22 @@ class OpenRouterProvider(Provider):
                 retry_after=parse_retry_after(response.headers.get("Retry-After")),
             )
         raise NonRetryableError(detail)
+
+    def _build_request_body(
+        self,
+        request: ModelRequest,
+        payload: dict[str, Any],
+        *,
+        use_structured_output: bool,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "model": self._model,
+            "temperature": 0.1,
+            "messages": self._build_messages(request, payload),
+        }
+        if use_structured_output:
+            body["response_format"] = {"type": "json_object"}
+        return body
 
     def _post(self, body: dict[str, Any]) -> dict[str, Any]:
         client = self._client or httpx.Client(timeout=self._timeout)
@@ -292,25 +361,18 @@ class OpenRouterProvider(Provider):
             raise ProviderError("OpenRouter response was not a JSON object")
         return data
 
-    def _complete(
+    def _complete_with_json_mode(
         self,
         request: ModelRequest,
+        payload: dict[str, Any],
         *,
-        cancel_event: Event | None = None,
+        use_structured_output: bool,
     ) -> ModelResult:
-        if cancel_event is not None and cancel_event.is_set():
-            raise RequestCancelled(f"request {request.request_id} cancelled")
-        payload = self.last_payload
-        if not isinstance(payload, dict):
-            raise ProviderError("OpenRouter provider missing stage payload (last_payload)")
-        if payload_digest(payload) != request.payload_digest:
-            raise ProviderError("stage payload digest does not match ModelRequest")
-        body = {
-            "model": self._model,
-            "temperature": 0.1,
-            "messages": self._build_messages(request, payload),
-            "response_format": {"type": "json_object"},
-        }
+        body = self._build_request_body(
+            request,
+            payload,
+            use_structured_output=use_structured_output,
+        )
         data = self._post(body)
         text = self._extract_message_content(data)
         try:
@@ -325,11 +387,53 @@ class OpenRouterProvider(Provider):
             usage=self._usage_from_response(request, data),
         )
 
+    def _complete(
+        self,
+        request: ModelRequest,
+        *,
+        cancel_event: Event | None = None,
+    ) -> ModelResult:
+        if cancel_event is not None and cancel_event.is_set():
+            raise RequestCancelled(f"request {request.request_id} cancelled")
+        payload = self.last_payload
+        if not isinstance(payload, dict):
+            raise ProviderError("OpenRouter provider missing stage payload (last_payload)")
+        if payload_digest(payload) != request.payload_digest:
+            raise ProviderError("stage payload digest does not match ModelRequest")
+        if self._json_mode == "off":
+            return self._complete_with_json_mode(
+                request,
+                payload,
+                use_structured_output=False,
+            )
+        if self._json_mode == "on":
+            return self._complete_with_json_mode(
+                request,
+                payload,
+                use_structured_output=True,
+            )
+        try:
+            return self._complete_with_json_mode(
+                request,
+                payload,
+                use_structured_output=True,
+            )
+        except StructuredOutputUnsupported:
+            return self._complete_with_json_mode(
+                request,
+                payload,
+                use_structured_output=False,
+            )
+
 
 __all__ = [
     "DEFAULT_MODEL",
+    "OpenRouterJsonMode",
     "OpenRouterProvider",
+    "StructuredOutputUnsupported",
     "openrouter_capabilities",
     "resolve_openrouter_endpoint",
+    "resolve_openrouter_json_mode",
     "resolve_openrouter_model",
+    "structured_output_rejected",
 ]
