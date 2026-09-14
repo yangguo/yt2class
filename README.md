@@ -53,6 +53,25 @@ uv run yt2class build-run \
   --output runs
 ```
 
+YouTube ingest downloads one available VTT/SRT track, preferring manual captions
+and then auto captions. Within each group it tries the video's declared language
+(or the auto-caption `-orig` language when undeclared, with base/original variants), then `ja`, `ja-orig`, `en`, and other available
+languages. The caption and its language/origin record stay beside the media in
+the run workspace and are picked up automatically by evidence extraction;
+`--subtitles` takes precedence. Caption content changes invalidate extraction's
+cache. If no supported captions or ASR evidence exist, the transcript remains
+degraded with the explicit gap `no subtitle or ASR evidence`. A selected caption
+that fails to download fails ingest rather than silently producing an empty transcript.
+
+`build-run` and `resume` report pipeline, bind, and validation failures with exit
+code `1`. When logging through `tee`, use `set -o pipefail` so the shell preserves
+failure of the CLI, rather than returning only `tee`'s status:
+
+```bash
+set -o pipefail
+uv run yt2class build-run --url 'https://youtu.be/VIDEO_ID' --output runs 2>&1 | tee build.log
+```
+
 **Resume** after interrupt or budget pause (exit code `2`)
 
 ```bash

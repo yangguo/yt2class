@@ -575,3 +575,9 @@ def test_editor_rejects_path_literals_during_contract_check():
             target_pages=4,
             order="chronological",
         )
+
+
+def test_empty_knowledge_does_not_emit_empty_summary():
+    plan = edit_deck(knowledge(), transcript=make_transcript([], duration=10),
+                     visual=make_visual([], duration=10), provider=_provider())
+    assert not any(page.type == "summary" for page in plan.pages)

@@ -11,6 +11,7 @@ import subprocess
 from threading import Event
 from typing import Callable
 
+from yt2class.adapters.ytdlp import downloaded_subtitle
 from yt2class.adapters.asr import (
     ASRCancelled,
     ASRError,
@@ -403,6 +404,13 @@ def _extract_evidence_unlocked(
         )
     except IngestError as error:
         raise ValueError(str(error)) from error
+    if source.kind == "youtube" and sidecar is None and manual is None and auto is None:
+        track = downloaded_subtitle(Path(media_path))
+        if track is not None:
+            if track.origin == "manual-caption":
+                manual = [track]
+            else:
+                auto = [track]
     suffix = Path(media_path).suffix.lower() or ".mp4"
     media_path = _snapshot_verified_media(
         Path(media_path),

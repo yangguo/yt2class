@@ -221,3 +221,11 @@ def test_strict_verified_quality_requires_supported_claims(tmp_path: Path):
     )
     assert bound.spec.quality_status == "verified"
     assert all(claim.verdict == "supported" for claim in bound.spec.claims)
+
+
+def test_empty_summary_raises_readable_bind_error():
+    from yt2class.stages.bind_spec import _bind_summary
+    page = PageIntent(id="empty-summary", type="summary", title="Summary", claim_ids=[],
+                      selection_reason="regression", quality_label="draft")
+    with pytest.raises(BindError, match="empty-summary.*at least one claim"):
+        _bind_summary(page, claims={})

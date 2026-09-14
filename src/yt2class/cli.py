@@ -5,6 +5,7 @@ from typing import Optional
 import json
 
 import typer
+from pydantic import ValidationError
 
 from yt2class.domain.course_map import CourseMap
 from yt2class.domain.editorial import EditorialPlan
@@ -41,7 +42,7 @@ from yt2class.orchestration.workspace import Workspace
 from yt2class.pipeline import PipelineError as LegacyPipelineError, build_batch
 from yt2class.stages.ingest import ingest_source
 from yt2class.stages.render import render_bound_spec
-from yt2class.stages.bind_spec import bind_editorial_plan
+from yt2class.stages.bind_spec import BindError, bind_editorial_plan
 from yt2class.domain.source import SourceInput
 from yt2class.stages.review import apply_review_edits, stub_binder, stub_renderer
 
@@ -467,7 +468,7 @@ def build_run(
     except PipelinePaused as error:
         typer.echo(f"Paused: {error}", err=True)
         raise typer.Exit(code=EXIT_REVIEW_OR_BUDGET) from error
-    except PipelineError as error:
+    except (PipelineError, BindError, ValidationError) as error:
         typer.echo(f"Run failed: {error}", err=True)
         raise typer.Exit(code=EXIT_FAIL) from error
     pptx = outcome.pptx_path or outcome.workspace.safe_path("delivery/lesson.pptx")
@@ -560,7 +561,7 @@ def resume(
     except PipelinePaused as error:
         typer.echo(f"Paused: {error}", err=True)
         raise typer.Exit(code=EXIT_REVIEW_OR_BUDGET) from error
-    except PipelineError as error:
+    except (PipelineError, BindError, ValidationError) as error:
         typer.echo(f"Resume failed: {error}", err=True)
         raise typer.Exit(code=EXIT_FAIL) from error
     pptx = outcome.pptx_path or run_dir / "delivery" / "lesson.pptx"

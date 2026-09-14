@@ -482,3 +482,55 @@ def test_real_ffmpeg_speed_smoke_preserves_audio_and_video(tmp_path: Path):
     assert any(stream.codec_type == "video" for stream in transformed.streams)
     assert any(stream.codec_type == "audio" for stream in transformed.streams)
     assert transformed.duration_seconds < original.duration_seconds * 0.75
+
+@pytest.mark.parametrize("manual,auto,language,expected,origin", [
+    ({}, {"ja": [{"ext": "vtt"}], "en": [{"ext": "vtt"}]}, None, "ja", "auto-caption"),
+    ({}, {"ja-orig": [{"ext": "vtt"}], "en": [{"ext": "vtt"}]}, "ja", "ja-orig", "auto-caption"),
+    ({"en": [{"ext": "vtt"}]}, {"ja": [{"ext": "vtt"}]}, "ja", "en", "manual-caption"),
+    ({}, {"fr": [{"ext": "vtt"}], "en": [{"ext": "vtt"}]}, "fr", "fr", "auto-caption"),
+    ({}, {"fr-orig": [{"ext": "vtt"}], "ja": [{"ext": "vtt"}]}, None, "fr-orig", "auto-caption"),
+])
+def test_download_selects_and_persists_captions(tmp_path, manual, auto, language, expected, origin):
+    from yt2class.adapters.ytdlp import downloaded_subtitle
+    from yt2class.adapters.subtitles import build_transcript_document
+
+    media = tmp_path / "lesson [fixture-id].webm"
+    def runner(command, **kwargs):
+        if "--skip-download" in command:
+            selected = command[command.index("--sub-langs") + 1]
+            flag = "--write-subs" if origin == "manual-caption" else "--write-auto-subs"
+            assert flag in command
+            media.with_suffix(f".{selected}.vtt").write_text(
+                "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nにつき\n", encoding="utf-8")
+        else:
+            media.write_bytes(b"video")
+            media.with_suffix(".info.json").write_text(json.dumps({
+                "id": "fixture-id", "title": "lesson", "language": language,
+                "subtitles": manual, "automatic_captions": auto,
+            }))
+        return SimpleNamespace(returncode=0, stdout=str(media), stderr="")
+
+    download_video("https://youtu.be/fixture-id", tmp_path, runner=runner)
+    track = downloaded_subtitle(media)
+    assert track is not None
+    assert track.path == media.with_suffix(f".{expected}.vtt")
+    assert track.origin == origin
+    transcript = build_transcript_document(track, source_id="fixture-id", duration_seconds=1.0)
+    assert transcript.segments[0].text_original == "につき"
+
+
+def test_download_without_supported_captions_keeps_media(tmp_path):
+    from yt2class.adapters.ytdlp import downloaded_subtitle
+    media = tmp_path / "lesson [fixture-id].webm"
+
+    def runner(command, **kwargs):
+        assert "--skip-download" not in command
+        media.write_bytes(b"media")
+        media.with_suffix(".info.json").write_text(json.dumps({
+            "id": "fixture-id", "title": "lesson", "subtitles": {}, "automatic_captions": {},
+        }))
+        return SimpleNamespace(returncode=0, stdout=str(media), stderr="")
+
+    result = download_video("https://youtu.be/fixture-id", tmp_path, runner=runner)
+    assert result.media_path.read_bytes() == b"media"
+    assert downloaded_subtitle(result.media_path) is None

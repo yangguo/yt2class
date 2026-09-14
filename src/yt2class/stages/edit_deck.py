@@ -404,7 +404,8 @@ def build_deterministic_plan(
     for item in selected:
         page_type = "quiz" if _is_practice(knowledge, item.claim_ids) else "content"
         pages.append(_content_page(item, page_type=page_type))
-    pages.append(_summary_page(selected))
+    if any(item.claim_ids for item in selected):
+        pages.append(_summary_page(selected))
     if len(pages) > max_pages:
         body = pages[1:-1][: max(0, max_pages - 2)]
         pages = [pages[0], *body, pages[-1]]

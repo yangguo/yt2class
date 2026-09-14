@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from yt2class import cli
@@ -49,3 +50,52 @@ def test_batch_continue_on_error_reports_partial_failure(tmp_path: Path, monkeyp
     )
     assert result.exit_code == 3
     assert "item-b" in (result.stdout + result.stderr)
+
+
+@pytest.mark.parametrize("command", ["build-run", "resume"])
+def test_bind_failure_is_reported_with_nonzero_exit(tmp_path, monkeypatch, command):
+    from yt2class.domain.editorial import PageIntent
+    from yt2class.stages.bind_spec import _bind_summary
+
+    def fail_bind(*args, **kwargs):
+        _bind_summary(PageIntent(id="empty-summary", type="summary", title="Summary",
+                      claim_ids=[], selection_reason="regression", quality_label="draft"), claims={})
+
+    monkeypatch.setattr(cli, "execute_run", fail_bind)
+    if command == "resume":
+        from yt2class.orchestration.manifest_io import initial_manifest, save_manifest
+        save_manifest(tmp_path, initial_manifest(run_id="run-test", source_id="src-test"))
+        args = ["resume", "--run", str(tmp_path)]
+        message = "Resume failed:"
+    else:
+        args = ["build-run", "--url", "https://youtu.be/fixture-id", "--output", str(tmp_path)]
+        message = "Run failed:"
+    result = CliRunner().invoke(cli.app, args)
+    assert result.exit_code == 1
+    assert message in result.output
+    assert "OK " not in result.output
+
+
+
+def test_build_run_validation_failure_is_reported(tmp_path, monkeypatch):
+    from yt2class.domain.slide_spec_v3 import SlidePage
+
+    def fail_validation(*args, **kwargs):
+        SlidePage(id="invalid-summary", type="summary", title="Summary", claim_ids=[])
+
+    monkeypatch.setattr(cli, "execute_run", fail_validation)
+    result = CliRunner().invoke(cli.app, ["build-run", "--url", "https://youtu.be/fixture-id",
+                                          "--output", str(tmp_path)])
+    assert result.exit_code == 1
+    assert "Run failed:" in result.output
+
+
+def test_build_run_pipeline_failure_is_reported(tmp_path, monkeypatch):
+    def fail_pipeline(*args, **kwargs):
+        raise cli.PipelineError("fixture pipeline failure")
+
+    monkeypatch.setattr(cli, "execute_run", fail_pipeline)
+    result = CliRunner().invoke(cli.app, ["build-run", "--url", "https://youtu.be/fixture-id",
+                                          "--output", str(tmp_path)])
+    assert result.exit_code == 1
+    assert "Run failed: fixture pipeline failure" in result.output
