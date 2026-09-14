@@ -36,7 +36,8 @@ class RetryPolicy:
 
     def delay_before_attempt(self, attempt: int, retry_after: float | None = None) -> float:
         if retry_after is not None and retry_after > 0:
-            base = min(retry_after, self.max_delay_seconds)
+            # Honor server Retry-After; only exponential backoff is capped.
+            base = retry_after
         else:
             base = min(self.base_delay_seconds * (2 ** max(0, attempt - 1)), self.max_delay_seconds)
         jitter = base * self.jitter_ratio * random.random()

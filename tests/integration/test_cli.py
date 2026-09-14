@@ -29,12 +29,9 @@ def test_resume_requires_run_dir(tmp_path: Path):
 
 
 def test_batch_continue_on_error_reports_partial_failure(tmp_path: Path, monkeypatch):
-    manifest_file = tmp_path / "batch.txt"
-    manifest_file.write_text("item-a\nitem-b\n", encoding="utf-8")
+    from yt2class.orchestration.batch import BatchItemResult, BatchReport
 
     def fake_batch(*_args, **_kwargs):
-        from yt2class.orchestration.batch import BatchItemResult, BatchReport
-
         return BatchReport(
             results=[
                 BatchItemResult(label="item-a", ok=True, run_id="run-a"),
@@ -43,6 +40,8 @@ def test_batch_continue_on_error_reports_partial_failure(tmp_path: Path, monkeyp
         )
 
     monkeypatch.setattr(cli, "run_product_batch", fake_batch)
+    manifest_file = tmp_path / "batch.txt"
+    manifest_file.write_text("item-a\nitem-b\n", encoding="utf-8")
     result = CliRunner().invoke(
         cli.app,
         ["batch", "--inputs", str(manifest_file), "--output", str(tmp_path / "runs")],

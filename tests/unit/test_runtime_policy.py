@@ -37,6 +37,32 @@ def test_retry_honors_retry_after_and_jitter(monkeypatch):
     assert sleeps == [0.5, 0.5]
 
 
+def test_retry_after_not_capped_by_max_delay():
+    policy = RetryPolicy(max_delay_seconds=8.0, jitter_ratio=0.0)
+    assert policy.delay_before_attempt(1, retry_after=30.0) == 30.0
+
+
+def test_budget_stops_execute_run(tmp_path, monkeypatch):
+    from yt2class.config import CourseConfig
+    from yt2class.orchestration.pipeline import PipelinePaused, execute_run
+    from tests.helpers.m5 import build_evidence_bundle
+
+    workspace, bundle = build_evidence_bundle(tmp_path)
+    cfg = CourseConfig()
+    cfg = cfg.model_copy(update={"budget": cfg.budget.model_copy(update={"max_model_calls": 0})})
+    with pytest.raises(PipelinePaused):
+        execute_run(
+            tmp_path,
+            build=__import__("yt2class.config", fromlist=["BuildSource"]).BuildSource(
+                source_id=bundle.source_id
+            ),
+            config=cfg,
+            run_id=workspace.root.name,
+            evidence_bundle=bundle,
+            stop_after="reduce_knowledge",
+        )
+
+
 def test_non_retryable_http_codes():
     assert classify_http_status(401) is NonRetryableError
     assert classify_http_status(429) is RetryableError

@@ -78,11 +78,14 @@ def run_batch(
                 build=build,
                 config=config,
                 run_id=run_id,
+                cancel_event=shared_cancel,
             )
             return BatchItemResult(label=item.label, ok=True, run_id=run_id, outcome=outcome)
         except PipelinePaused as error:
             return BatchItemResult(label=item.label, ok=False, run_id=run_id, error=str(error))
         except PipelineError as error:
+            return BatchItemResult(label=item.label, ok=False, run_id=run_id, error=str(error))
+        except Exception as error:  # noqa: BLE001
             return BatchItemResult(label=item.label, ok=False, run_id=run_id, error=str(error))
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:

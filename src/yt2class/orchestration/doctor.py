@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import os
 import shutil
 from pathlib import Path
 from typing import Any, Literal
 
-from yt2class.adapters.render.pptxgenjs import renderer_root
+from yt2class.adapters.render.base import RenderError
 
 CheckStatus = Literal["ok", "warn", "fail"]
 
@@ -38,22 +39,46 @@ class DoctorReport:
         }
 
 
-def _check_tool(name: str, binary: str) -> DoctorCheck:
+def _check_required(name: str, binary: str) -> DoctorCheck:
+    path = shutil.which(binary)
+    if path:
+        return DoctorCheck(name=name, status="ok", detail=path)
+    return DoctorCheck(name=name, status="fail", detail=f"{binary} not found on PATH")
+
+
+def _check_optional(name: str, binary: str) -> DoctorCheck:
     path = shutil.which(binary)
     if path:
         return DoctorCheck(name=name, status="ok", detail=path)
     return DoctorCheck(name=name, status="warn", detail=f"{binary} not found on PATH")
 
 
+def _safe_renderer_root() -> tuple[Path | None, str | None]:
+    env = os.getenv("YT2CLASS_RENDERER_ROOT")
+    if env:
+        candidate = Path(env).expanduser()
+        if (candidate / "package.json").is_file():
+            return candidate, None
+        return None, f"YT2CLASS_RENDERER_ROOT is invalid: {candidate}"
+    try:
+        from yt2class.adapters.render.pptxgenjs import renderer_root
+
+        return renderer_root(), None
+    except RenderError as error:
+        return None, str(error)
+
+
 def run_doctor() -> DoctorReport:
     checks: list[DoctorCheck] = [
-        _check_tool("ffmpeg", "ffmpeg"),
-        _check_tool("ffprobe", "ffprobe"),
-        _check_tool("yt-dlp", "yt-dlp"),
-        _check_tool("node", "node"),
+        _check_required("ffmpeg", "ffmpeg"),
+        _check_required("ffprobe", "ffprobe"),
+        _check_required("node", "node"),
+        _check_optional("yt-dlp", "yt-dlp"),
     ]
-    root = renderer_root()
-    if (root / "package.json").is_file() and (root / "node_modules" / "pptxgenjs").is_dir():
+    root, renderer_error = _safe_renderer_root()
+    if renderer_error:
+        checks.append(DoctorCheck("pptxgenjs_renderer", "fail", renderer_error))
+    elif root is not None and (root / "node_modules" / "pptxgenjs").is_dir():
         checks.append(DoctorCheck("pptxgenjs_renderer", "ok", str(root)))
     else:
         checks.append(
@@ -74,6 +99,13 @@ def run_doctor() -> DoctorReport:
                 "ImageMagick not found; preview thumbnails may be skipped",
             )
         )
+    checks.append(
+        DoctorCheck(
+            "asr",
+            "warn",
+            "ASR (WhisperX) not probed in doctor; optional extra / worker env",
+        )
+    )
     font_dirs = [Path("/usr/share/fonts"), Path.home() / ".local" / "share" / "fonts"]
     if any(path.is_dir() for path in font_dirs):
         checks.append(DoctorCheck("fonts", "ok", "system font directories present"))

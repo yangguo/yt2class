@@ -30,7 +30,11 @@ from yt2class.config import BuildSource, CourseConfig, load_config
 from yt2class.orchestration.batch import BatchItem, run_batch as run_product_batch
 from yt2class.orchestration.doctor import run_doctor
 from yt2class.orchestration.manifest_io import load_manifest
+from yt2class.orchestration.cancel import install_sigint_handler
+from yt2class.orchestration.cache_policy import invalidate_stage_tree
+from yt2class.orchestration.delivery import bind_plan_to_spec, render_spec, binder_status_dict, renderer_status_dict
 from yt2class.orchestration.pipeline import PipelineError, PipelinePaused, execute_run
+from yt2class.orchestration.run_request import bump_review_revision
 from yt2class.orchestration.workspace import Workspace
 from yt2class.pipeline import PipelineError as LegacyPipelineError, build_batch
 from yt2class.stages.ingest import ingest_source
@@ -270,6 +274,13 @@ def review(
     course_map: Optional[Path] = typer.Option(None, "--course-map", exists=True, file_okay=True, readable=True),
     source_url: Optional[str] = typer.Option(None, "--source-url"),
     apply: Optional[Path] = typer.Option(None, "--apply", exists=True, file_okay=True, readable=True),
+    run_dir: Optional[Path] = typer.Option(
+        None,
+        "--run",
+        file_okay=False,
+        dir_okay=True,
+        help="Run workspace for M4 bind/render after --apply.",
+    ),
     provider_name: str = typer.Option("fake", "--provider"),
 ) -> None:
     """Write offline review.html/json, or apply a controlled review edit file."""
@@ -305,6 +316,56 @@ def review(
             from yt2class.orchestration.analyze import default_capabilities
 
             edits = ReviewEdits.model_validate_json(apply.read_text(encoding="utf-8"))
+            binder = None
+            renderer = None
+            if run_dir is not None:
+                run_root = run_dir.resolve()
+                workspace = Workspace(
+                    root=run_root,
+                    media_dir=run_root / "media",
+                    metadata_dir=run_root / "metadata",
+                    tmp_dir=run_root / "tmp",
+                    lock_path=run_root / ".write.lock",
+                )
+                from yt2class.domain.source import SourceManifest
+
+                source = SourceManifest.model_validate_json(
+                    (run_root / "metadata" / "source-manifest.json").read_text(encoding="utf-8")
+                )
+
+                def _binder(plan_model):
+                    nonlocal doc, report, speech, frames, source
+                    bind = bind_plan_to_spec(
+                        plan=plan_model,
+                        knowledge=doc,
+                        report=report,
+                        source=source,
+                        transcript=speech,
+                        visual=frames,
+                        workspace=workspace,
+                    )
+                    return binder_status_dict(bind)
+
+                def _renderer(plan_model):
+                    bind = bind_plan_to_spec(
+                        plan=plan_model,
+                        knowledge=doc,
+                        report=report,
+                        source=source,
+                        transcript=speech,
+                        visual=frames,
+                        workspace=workspace,
+                    )
+                    stage = render_spec(
+                        bind,
+                        workspace,
+                        request_id=f"review-render-{bundle.revision}",
+                        preview_policy="optional",
+                    )
+                    return renderer_status_dict(stage)
+
+                binder = _binder
+                renderer = _renderer
             applied = apply_review_edits(
                 bundle,
                 edits,
@@ -314,13 +375,17 @@ def review(
                 provider=fake_course_provider(default_capabilities()),
                 course_map=topics,
                 source_url=source_url,
-                binder=stub_binder,
-                renderer=stub_renderer,
+                binder=binder,
+                renderer=renderer,
             )
             bundle = applied.bundle
             planned = applied.plan
             report = applied.report
             doc = applied.knowledge
+            if run_dir is not None:
+                bump_review_revision(run_dir.resolve())
+                invalidate_stage_tree(run_dir.resolve(), "bind_spec")
+                output = run_dir.resolve() / "editorial"
         paths = write_editorial_artifacts(
             planned, output, report=report, bundle=bundle, knowledge=doc
         )
@@ -353,8 +418,16 @@ def build_run(
         raise typer.Exit(code=EXIT_FAIL)
     cfg = load_config(config)
     build = BuildSource(url=url, video=video, subtitles=subtitles, run_id=run_id)
+    cancel = install_sigint_handler()
     try:
-        outcome = execute_run(output, build=build, config=cfg, run_id=run_id, resume=resume)
+        outcome = execute_run(
+            output,
+            build=build,
+            config=cfg,
+            run_id=run_id,
+            resume=resume,
+            cancel_event=cancel,
+        )
     except PipelinePaused as error:
         typer.echo(f"Paused: {error}", err=True)
         raise typer.Exit(code=EXIT_REVIEW_OR_BUDGET) from error
@@ -431,6 +504,7 @@ def resume(
         raise typer.Exit(code=EXIT_FAIL)
     cfg = load_config(config)
     build = BuildSource(source_id=manifest.source_id, run_id=manifest.run_id)
+    cancel = install_sigint_handler()
     try:
         outcome = execute_run(
             run_dir.parent,
@@ -438,6 +512,7 @@ def resume(
             config=cfg,
             run_id=manifest.run_id,
             resume=True,
+            cancel_event=cancel,
         )
     except PipelinePaused as error:
         typer.echo(f"Paused: {error}", err=True)

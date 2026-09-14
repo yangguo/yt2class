@@ -27,11 +27,27 @@ from yt2class.orchestration.cache import (
     atomic_write_json,
     compute_cache_key,
     digest_parts,
+    invalidate_from,
     load_validated_json,
     mark_stage_complete,
     stage_artifact_path,
     stage_cache_hit,
 )
+from yt2class.orchestration.cache_policy import (
+    invalidate_stage_tree,
+    model_digest,
+    refresh_stage_keys,
+    validated_cache_hit,
+)
+from yt2class.orchestration.provider_gate import wrap_provider
+from yt2class.orchestration.run_request import (
+    load_run_request,
+    merge_build_for_resume,
+    record_from_build,
+    save_run_request,
+    subtitles_digest,
+)
+from yt2class.orchestration.tool_probe import probe_tool_versions
 from yt2class.orchestration.delivery import bind_plan_to_spec, render_spec
 from yt2class.orchestration.edit import plan_deck, verify_plan, write_editorial_artifacts
 from yt2class.orchestration.manifest_io import (
@@ -86,13 +102,20 @@ class RunContext:
 
     def tool_versions(self) -> dict[str, str | None]:
         tv = self.manifest.tool_versions
+        provider_label = tv.provider or (
+            f"{self.config.analysis.provider}:{self.config.analysis.model_profile}"
+        )
         return {
             "producer_version": tv.producer_version,
             "yt_dlp": tv.yt_dlp,
             "ffmpeg": tv.ffmpeg,
-            "provider": tv.provider or self.config.analysis.provider,
-            "prompt": tv.prompt,
+            "provider": provider_label,
+            "prompt": tv.prompt or "m2-m4-bundle",
         }
+
+    def review_revision(self) -> int:
+        record = load_run_request(self.workspace.root)
+        return record.review_revision if record is not None else 0
 
     def config_digest(self) -> str:
         return self.config.config_digest()
@@ -100,12 +123,21 @@ class RunContext:
 
 def _provider(ctx: RunContext) -> Provider:
     if ctx.provider is not None:
-        return ctx.provider
-    if ctx.config.analysis.provider != "fake":
+        inner = ctx.provider
+    elif ctx.config.analysis.provider != "fake":
         raise PipelineError(
             "only fake provider is wired in the MVP CLI; use tests/live for real models"
         )
-    return fake_course_provider(default_capabilities())
+    else:
+        inner = fake_course_provider(default_capabilities())
+    return wrap_provider(inner, ctx.budget, cancel_event=ctx.cancel_event)
+
+
+def _invalidate_from(ctx: RunContext, stage: StageName) -> None:
+    invalidate_stage_tree(ctx.workspace.root, stage)
+    names = (stage,) + tuple(invalidate_from(stage))
+    ctx.manifest = reset_stages(ctx.manifest, names)
+    _persist(ctx)
 
 
 def _persist(ctx: RunContext) -> None:
@@ -121,6 +153,8 @@ def _reconcile_resume_cache(ctx: RunContext) -> None:
         if not stage_cache_hit(ctx.workspace.root, name, record.cache_key):
             stale.append(name)
     if stale:
+        for name in stale:
+            invalidate_stage_tree(ctx.workspace.root, name)
         ctx.manifest = reset_stages(ctx.manifest, tuple(stale))
         _persist(ctx)
 
@@ -144,19 +178,40 @@ def _fail_stage(ctx: RunContext, stage: StageName, message: str) -> None:
     raise PipelineError(message)
 
 
+def _ingest_input_hashes(build: BuildSource) -> list[str]:
+    parts: list[str] = []
+    if build.video is not None and build.video.is_file():
+        from yt2class.orchestration.cache import file_sha256
+
+        parts.append(file_sha256(build.video))
+    elif build.url:
+        parts.append(digest_parts(build.url))
+    sub = subtitles_digest(build.subtitles)
+    parts.append(sub or "no-subtitles")
+    return parts
+
+
 def run_ingest(ctx: RunContext, build: BuildSource) -> SourceManifest:
     stage: StageName = "ingest"
-    input_hash = digest_parts(build.url or "", str(build.video or ""), str(build.subtitles or ""))
     cache_key = compute_cache_key(
         stage,
         config_digest=ctx.config_digest(),
-        input_hashes=[input_hash],
+        input_hashes=_ingest_input_hashes(build),
         tool_versions=ctx.tool_versions(),
     )
+    ctx.manifest = refresh_stage_keys(
+        ctx.manifest,
+        ctx.workspace.root,
+        stage,
+        cache_key,
+        save=lambda m: save_manifest(ctx.workspace.root, m),
+    )
     artifact = stage_artifact_path(ctx.workspace.root, stage, cache_key, "source-manifest.json")
-    if not _should_run(ctx, stage, cache_key) and artifact.is_file():
-        ctx.manifest = set_stage_status(ctx.manifest, stage, "running")
-        _persist(ctx)
+
+    def _validate(_cache_dir: Path) -> None:
+        load_validated_json(artifact, SourceManifest)
+
+    if validated_cache_hit(ctx.workspace.root, stage, cache_key, _validate):
         manifest = load_validated_json(artifact, SourceManifest)
         ctx.source = manifest
         ctx.manifest = set_stage_status(ctx.manifest, stage, "complete", cache_key=cache_key)
@@ -186,20 +241,45 @@ def run_ingest(ctx: RunContext, build: BuildSource) -> SourceManifest:
     return result.manifest
 
 
+def _extract_input_hashes(ctx: RunContext, source: SourceManifest) -> list[str]:
+    sub = "no-subtitles"
+    if ctx.build and ctx.build.subtitles:
+        sub = subtitles_digest(ctx.build.subtitles) or "no-subtitles"
+    else:
+        record = load_run_request(ctx.workspace.root)
+        if record and record.subtitles_sha256:
+            sub = record.subtitles_sha256
+    return [source.sha256, sub]
+
+
 def run_extract_evidence(ctx: RunContext, source: SourceManifest) -> EvidenceBundle:
     stage: StageName = "extract_evidence"
     cache_key = compute_cache_key(
         stage,
         config_digest=ctx.config_digest(),
-        input_hashes=[source.sha256],
+        input_hashes=_extract_input_hashes(ctx, source),
         tool_versions=ctx.tool_versions(),
     )
+    ctx.manifest = refresh_stage_keys(
+        ctx.manifest,
+        ctx.workspace.root,
+        stage,
+        cache_key,
+        save=lambda m: save_manifest(ctx.workspace.root, m),
+    )
     artifact = stage_artifact_path(ctx.workspace.root, stage, cache_key, "evidence-bundle.json")
-    if not _should_run(ctx, stage, cache_key) and artifact.is_file():
+
+    def _validate(_cache_dir: Path) -> None:
+        load_validated_json(artifact, EvidenceBundle)
+
+    if validated_cache_hit(ctx.workspace.root, stage, cache_key, _validate):
         bundle = load_validated_json(artifact, EvidenceBundle)
         ctx.evidence = bundle
-        ctx.manifest = set_stage_status(ctx.manifest, stage, "complete", cache_key=cache_key)
-        _persist(ctx)
+        atomic_write_json(
+            ctx.workspace.safe_path("evidence/evidence-bundle.json", create_parent=True),
+            bundle.model_dump(mode="json"),
+        )
+        _complete_stage(ctx, stage, cache_key)
         return bundle
 
     ctx.manifest = set_stage_status(ctx.manifest, stage, "running")
@@ -216,6 +296,10 @@ def run_extract_evidence(ctx: RunContext, source: SourceManifest) -> EvidenceBun
     except Exception as error:  # noqa: BLE001
         _fail_stage(ctx, stage, f"extract_evidence failed: {error}")
     atomic_write_json(artifact, bundle.model_dump(mode="json"))
+    atomic_write_json(
+        ctx.workspace.safe_path("evidence/evidence-bundle.json", create_parent=True),
+        bundle.model_dump(mode="json"),
+    )
     _complete_stage(ctx, stage, cache_key)
     ctx.evidence = bundle
     return bundle
@@ -228,7 +312,12 @@ def _write_analysis_cache(ctx: RunContext, stage: StageName, cache_key: str, fil
 
 def run_analysis_stages(ctx: RunContext, bundle: EvidenceBundle) -> AnalysisResult:
     provider = _provider(ctx)
-    base_inputs = [bundle.source_hash, digest_parts(bundle.transcript.raw_artifact_hash or "")]
+    base_inputs = [
+        bundle.source_hash,
+        digest_parts(bundle.transcript.raw_artifact_hash or ""),
+        model_digest(bundle.transcript),
+        model_digest(bundle.visual),
+    ]
     outline_key = compute_cache_key(
         "outline",
         config_digest=ctx.config_digest(),
@@ -315,79 +404,152 @@ def run_analysis_stages(ctx: RunContext, bundle: EvidenceBundle) -> AnalysisResu
     return result
 
 
+def _load_editorial_plan(ctx: RunContext) -> "EditorialPlan | None":
+    from yt2class.domain.editorial import EditorialPlan
+
+    path = ctx.workspace.root / "editorial" / "editorial-plan.json"
+    if not path.is_file():
+        return None
+    try:
+        return EditorialPlan.model_validate_json(path.read_text(encoding="utf-8"))
+    except ValueError:
+        raise CacheCorrupt(f"corrupt editorial plan at {path}") from None
+
+
 def run_editorial_stages(ctx: RunContext, analysis: AnalysisResult, bundle: EvidenceBundle) -> None:
+    from yt2class.domain.editorial import EditorialPlan
+    from yt2class.domain.verification import VerificationReport
+
     provider = _provider(ctx)
     knowledge = analysis.knowledge
     transcript = bundle.transcript
     visual = analysis.visual
     course_map = analysis.course_map
+    revision = ctx.review_revision()
 
     plan_key = compute_cache_key(
         "edit_deck",
         config_digest=ctx.config_digest(),
-        input_hashes=[digest_parts(knowledge.source_id, str(len(knowledge.units)))],
+        input_hashes=[
+            model_digest(knowledge),
+            str(ctx.config.editor.target_pages),
+            str(ctx.config.editor.max_pages),
+            ctx.config.editor.order,
+        ],
         tool_versions=ctx.tool_versions(),
     )
+    ctx.manifest = refresh_stage_keys(
+        ctx.manifest,
+        ctx.workspace.root,
+        "edit_deck",
+        plan_key,
+        save=lambda m: save_manifest(ctx.workspace.root, m),
+    )
     plan_path = stage_artifact_path(ctx.workspace.root, "edit_deck", plan_key, "editorial-plan.json")
-    if not _should_run(ctx, "edit_deck", plan_key) and plan_path.is_file():
-        from yt2class.domain.editorial import EditorialPlan
+    on_disk_plan = _load_editorial_plan(ctx)
+    plan_regenerated = False
 
-        plan = load_validated_json(plan_path, EditorialPlan)
+    def _validate_plan(_: Path) -> None:
+        load_validated_json(plan_path, EditorialPlan)
+
+    if validated_cache_hit(ctx.workspace.root, "edit_deck", plan_key, _validate_plan):
+        cached_plan = load_validated_json(plan_path, EditorialPlan)
+        if on_disk_plan is not None and model_digest(on_disk_plan) != model_digest(cached_plan):
+            plan = on_disk_plan
+        else:
+            plan = cached_plan
+        ctx.manifest = set_stage_status(ctx.manifest, "edit_deck", "complete", cache_key=plan_key)
+        _persist(ctx)
     else:
         ctx.manifest = set_stage_status(ctx.manifest, "edit_deck", "running")
         _persist(ctx)
-        plan = plan_deck(
-            knowledge,
-            transcript=transcript,
-            visual=visual,
-            course_map=course_map,
-            provider=provider,
-            target_pages=ctx.config.editor.target_pages,
-            max_pages=ctx.config.editor.max_pages,
-            order=ctx.config.editor.order,
-        )
+        if on_disk_plan is not None and revision > 0:
+            plan = on_disk_plan
+        else:
+            try:
+                plan = plan_deck(
+                    knowledge,
+                    transcript=transcript,
+                    visual=visual,
+                    course_map=course_map,
+                    provider=provider,
+                    target_pages=ctx.config.editor.target_pages,
+                    max_pages=ctx.config.editor.max_pages,
+                    order=ctx.config.editor.order,
+                )
+            except BudgetExceeded as error:
+                raise PipelinePaused(str(error), reason=error.kind) from error
         atomic_write_json(plan_path, plan.model_dump(mode="json"))
         _complete_stage(ctx, "edit_deck", plan_key)
+        plan_regenerated = True
 
     verify_key = compute_cache_key(
         "verify_claims",
         config_digest=ctx.config_digest(),
-        input_hashes=[plan_key, ctx.config.quality.mode],
+        input_hashes=[model_digest(plan), ctx.config.quality.mode],
         tool_versions=ctx.tool_versions(),
+    )
+    ctx.manifest = refresh_stage_keys(
+        ctx.manifest,
+        ctx.workspace.root,
+        "verify_claims",
+        verify_key,
+        save=lambda m: save_manifest(ctx.workspace.root, m),
     )
     report_path = stage_artifact_path(
         ctx.workspace.root, "verify_claims", verify_key, "verification-report.json"
     )
-    if not _should_run(ctx, "verify_claims", verify_key) and report_path.is_file():
-        from yt2class.domain.verification import VerificationReport
 
+    def _validate_report(_: Path) -> None:
+        load_validated_json(report_path, VerificationReport)
+
+    if validated_cache_hit(ctx.workspace.root, "verify_claims", verify_key, _validate_report):
         report = load_validated_json(report_path, VerificationReport)
         outcome_plan = plan
         outcome_knowledge = knowledge
+        ctx.manifest = set_stage_status(ctx.manifest, "verify_claims", "complete", cache_key=verify_key)
+        _persist(ctx)
     else:
         ctx.manifest = set_stage_status(ctx.manifest, "verify_claims", "running")
         _persist(ctx)
-        outcome = verify_plan(
-            knowledge,
-            plan=plan,
-            transcript=transcript,
-            visual=visual,
-            provider=provider,
-            quality_mode=ctx.config.quality.mode,
-        )
+        try:
+            outcome = verify_plan(
+                knowledge,
+                plan=plan,
+                transcript=transcript,
+                visual=visual,
+                provider=provider,
+                quality_mode=ctx.config.quality.mode,
+            )
+        except BudgetExceeded as error:
+            raise PipelinePaused(str(error), reason=error.kind) from error
         atomic_write_json(report_path, outcome.report.model_dump(mode="json"))
         _complete_stage(ctx, "verify_claims", verify_key)
         report = outcome.report
-        outcome_plan = outcome.plan
+        outcome_plan = on_disk_plan if revision > 0 and on_disk_plan is not None else outcome.plan
         outcome_knowledge = outcome.knowledge
 
     editorial_dir = ctx.workspace.root / "editorial"
-    write_editorial_artifacts(
-        outcome_plan,
-        editorial_dir,
-        report=report,
-        knowledge=outcome_knowledge,
-    )
+    if revision > 0:
+        disk_plan = _load_editorial_plan(ctx)
+        if disk_plan is not None:
+            outcome_plan = disk_plan
+    report_disk = editorial_dir / "verification-report.json"
+    if report_disk.is_file():
+        try:
+            on_disk_report = VerificationReport.model_validate_json(report_disk.read_text(encoding="utf-8"))
+            if model_digest(on_disk_report) != model_digest(report):
+                report = on_disk_report
+        except ValueError:
+            pass
+    should_write_editorial = plan_regenerated or revision == 0 or on_disk_plan is None
+    if should_write_editorial:
+        write_editorial_artifacts(
+            outcome_plan,
+            editorial_dir,
+            report=report,
+            knowledge=outcome_knowledge,
+        )
     if ctx.config.quality.mode == "strict" and report.quality_mode != "strict":
         review_path = editorial_dir / "review.html"
         raise PipelinePaused(
@@ -397,8 +559,11 @@ def run_editorial_stages(ctx: RunContext, analysis: AnalysisResult, bundle: Evid
 
 
 def run_delivery_stages(ctx: RunContext, bundle: EvidenceBundle, analysis: AnalysisResult) -> Path:
+    from yt2class.adapters.render.pptxgenjs import validate_pptx_package
     from yt2class.domain.editorial import EditorialPlan
     from yt2class.domain.verification import VerificationReport
+    from yt2class.domain.slide_spec_v3 import SlideSpecV3
+    from yt2class.stages.bind_spec import BindResult
 
     editorial_dir = ctx.workspace.root / "editorial"
     plan = EditorialPlan.model_validate_json((editorial_dir / "editorial-plan.json").read_text(encoding="utf-8"))
@@ -406,21 +571,32 @@ def run_delivery_stages(ctx: RunContext, bundle: EvidenceBundle, analysis: Analy
         (editorial_dir / "verification-report.json").read_text(encoding="utf-8")
     )
     knowledge = analysis.knowledge
+    revision = ctx.review_revision()
 
     bind_key = compute_cache_key(
         "bind_spec",
         config_digest=ctx.config_digest(),
-        input_hashes=[digest_parts(plan.schema_version, report.quality_mode)],
+        input_hashes=[model_digest(plan), model_digest(report), model_digest(knowledge)],
         tool_versions=ctx.tool_versions(),
+        review_revision=revision,
+    )
+    ctx.manifest = refresh_stage_keys(
+        ctx.manifest,
+        ctx.workspace.root,
+        "bind_spec",
+        bind_key,
+        save=lambda m: save_manifest(ctx.workspace.root, m),
     )
     spec_cache = stage_artifact_path(ctx.workspace.root, "bind_spec", bind_key, "slide-spec.v3.json")
     spec_delivery = ctx.workspace.safe_path("delivery/slide-spec.v3.json")
-    if not _should_run(ctx, "bind_spec", bind_key) and spec_delivery.is_file():
-        from yt2class.stages.bind_spec import BindResult
-        from yt2class.domain.slide_spec_v3 import SlideSpecV3
 
+    def _validate_bind(_: Path) -> None:
+        load_validated_json(spec_delivery, SlideSpecV3)
+
+    if validated_cache_hit(ctx.workspace.root, "bind_spec", bind_key, _validate_bind):
         spec = load_validated_json(spec_delivery, SlideSpecV3)
         bind = BindResult(spec=spec, spec_path="delivery/slide-spec.v3.json")
+        _complete_stage(ctx, "bind_spec", bind_key)
     else:
         ctx.manifest = set_stage_status(ctx.manifest, "bind_spec", "running")
         _persist(ctx)
@@ -440,13 +616,26 @@ def run_delivery_stages(ctx: RunContext, bundle: EvidenceBundle, analysis: Analy
     render_key = compute_cache_key(
         "render",
         config_digest=ctx.config_digest(),
-        input_hashes=[bind_key, ctx.config.render.preview],
+        input_hashes=[bind_key, ctx.config.render.preview, model_digest(bind.spec)],
         tool_versions=ctx.tool_versions(),
+        review_revision=revision,
+    )
+    ctx.manifest = refresh_stage_keys(
+        ctx.manifest,
+        ctx.workspace.root,
+        "render",
+        render_key,
+        save=lambda m: save_manifest(ctx.workspace.root, m),
     )
     pptx = ctx.workspace.safe_path("delivery/lesson.pptx")
-    if not _should_run(ctx, "render", render_key) and pptx.is_file():
-        ctx.manifest = set_stage_status(ctx.manifest, "render", "complete", cache_key=render_key)
-        _persist(ctx)
+
+    def _validate_render(_: Path) -> None:
+        if not pptx.is_file() or pptx.stat().st_size < 100:
+            raise CacheCorrupt("pptx missing or truncated")
+        validate_pptx_package(pptx, spec=bind.spec)
+
+    if validated_cache_hit(ctx.workspace.root, "render", render_key, _validate_render):
+        _complete_stage(ctx, "render", render_key)
         return pptx
 
     ctx.manifest = set_stage_status(ctx.manifest, "render", "running")
@@ -460,9 +649,7 @@ def run_delivery_stages(ctx: RunContext, bundle: EvidenceBundle, analysis: Analy
     )
     if ctx.config.render.preview == "required" and not stage.report.render_complete:
         _fail_stage(ctx, "render", "preview_policy=required but render QA did not pass")
-    mark_stage_complete(ctx.workspace.root, "render", render_key)
-    ctx.manifest = set_stage_status(ctx.manifest, "render", "complete", cache_key=render_key)
-    _persist(ctx)
+    _complete_stage(ctx, "render", render_key)
     return ctx.workspace.safe_path(stage.pptx_path)
 
 
@@ -490,10 +677,20 @@ def execute_run(
     workspace = Workspace.create(workspace_root, run_id=rid)
 
     manifest = load_manifest(workspace.root) if resume else None
+    merged_build, _request_record, inputs_changed = merge_build_for_resume(workspace.root, build)
+    build = merged_build
     source_id = build.source_id or (evidence_bundle.source_id if evidence_bundle else "src-pending")
     if manifest is None:
-        manifest = initial_manifest(run_id=rid, source_id=source_id, analysis_mode=cfg.analysis.mode)
+        tools = probe_tool_versions(provider=cfg.analysis.provider)
+        manifest = initial_manifest(
+            run_id=rid,
+            source_id=source_id,
+            analysis_mode=cfg.analysis.mode,
+            producer_version=tools.producer_version,
+        )
+        manifest = manifest.model_copy(update={"tool_versions": tools})
     write_desensitized_snapshot(cfg, workspace.root)
+    save_run_request(workspace.root, record_from_build(build, review_revision=_request_record.review_revision))
 
     ctx = RunContext(
         workspace=workspace,
@@ -508,19 +705,18 @@ def execute_run(
     )
     if resume:
         _reconcile_resume_cache(ctx)
+    if inputs_changed:
+        _invalidate_from(ctx, "extract_evidence")
 
-    if evidence_bundle is None:
-        evidence_bundle = load_persisted_evidence(workspace)
-
-    if evidence_bundle is not None:
+    injected_bundle = evidence_bundle is not None
+    if injected_bundle:
         ctx.evidence = evidence_bundle
         ctx.source = evidence_bundle.source
         ctx.manifest = ctx.manifest.model_copy(update={"source_id": evidence_bundle.source_id})
     elif build.video is None and build.url is None:
         raise PipelineError("run requires a source or evidence bundle")
 
-    skip_ingest = evidence_bundle is not None
-    if skip_ingest:
+    if injected_bundle:
         source = ctx.source  # type: ignore[assignment]
     else:
         source = run_ingest(ctx, build)
@@ -528,8 +724,8 @@ def execute_run(
     if stop_after == "ingest":
         return RunOutcome(manifest=ctx.manifest, workspace=workspace)
 
-    if ctx.evidence is not None:
-        bundle = ctx.evidence
+    if injected_bundle:
+        bundle = evidence_bundle  # type: ignore[assignment]
     else:
         bundle = run_extract_evidence(ctx, source)
     if stop_after == "extract_evidence":
