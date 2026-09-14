@@ -442,7 +442,9 @@ def _bind_content_pages(
 
 
 def _bind_summary(page: PageIntent, *, claims: dict[str, SlideClaim]) -> list[SlidePage]:
-    chunks = [page.claim_ids[i : i + 4] for i in range(0, len(page.claim_ids), 4)] or [[]]
+    if not page.claim_ids:
+        raise BindError(f"summary page {page.id!r} requires at least one claim")
+    chunks = [page.claim_ids[i : i + 4] for i in range(0, len(page.claim_ids), 4)]
     pages: list[SlidePage] = []
     for index, chunk in enumerate(chunks):
         page_id = page.id if index == 0 else f"{page.id}-{index + 1}"

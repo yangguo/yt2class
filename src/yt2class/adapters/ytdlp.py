@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import re
 from pathlib import Path
 import subprocess
 from threading import Event
@@ -16,6 +17,7 @@ from yt2class.adapters.process import (
     ProcessUnavailable,
     run_process,
 )
+from yt2class.adapters.subtitles import SubtitleTrack
 from yt2class.domain.source import SourceInput
 
 
@@ -195,24 +197,12 @@ def _locate_info_path(
     raise YtDlpError("yt-dlp completed but did not produce a valid info JSON")
 
 
-def download_video(
-    source: SourceInput | str,
-    output_dir: Path,
-    *,
-    runner: Runner = subprocess.run,
-    timeout_seconds: float = 3600.0,
-    cancel_event: Event | None = None,
-) -> YtDlpDownload:
-    """Download one YouTube video and return the path yt-dlp actually wrote."""
-
-    normalized = _coerce_youtube(source)
-    output_dir = Path(output_dir).expanduser()
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_dir = output_dir.resolve(strict=True)
-    if cancel_event is not None and cancel_event.is_set():
-        raise YtDlpCancelled("yt-dlp download cancelled before start")
-    before = _snapshot_media(output_dir)
-    command = build_download_command(normalized.normalized_value, output_dir)
+def _run_download(
+    command: list[str],
+    runner: Runner,
+    timeout_seconds: float,
+    cancel_event: Event | None,
+) -> tuple[str, str]:
     try:
         if runner is subprocess.run:
             completed = run_process(
@@ -249,12 +239,97 @@ def download_video(
     if returncode != 0:
         detail = (stderr or stdout or "unknown yt-dlp failure").strip()
         raise YtDlpError(f"yt-dlp failed: {detail}")
+    return stdout, stderr
+
+
+def _download_captions(
+    media_path: Path,
+    info_path: Path,
+    runner: Runner,
+    timeout_seconds: float,
+    cancel_event: Event | None,
+) -> None:
+    """Select a single manual/automatic VTT or SRT from the saved video listing."""
+    record_path = media_path.with_suffix(".captions.json")
+    record_path.unlink(missing_ok=True)
+    info = json.loads(info_path.read_text(encoding="utf-8"))
+    language = str(info.get("language") or "")
+    if not language:
+        language = next((lang.removesuffix("-orig") for lang in sorted(info.get("automatic_captions") or {})
+                         if lang.endswith("-orig")), "")
+    preferred = [language, language.split("-")[0], f"{language}-orig", "ja", "ja-orig", "en"]
+    for key, origin, flag in (
+        ("subtitles", "manual-caption", "--write-subs"),
+        ("automatic_captions", "auto-caption", "--write-auto-subs"),
+    ):
+        tracks = info.get(key) or {}
+        for lang in dict.fromkeys([*preferred, *sorted(tracks)]):
+            if not re.fullmatch(r"[a-zA-Z]{2,3}(?:-[a-zA-Z0-9]+)*", lang):
+                continue
+            formats = tracks.get(lang) or []
+            ext = next((ext for ext in ("vtt", "srt") if any(f.get("ext") == ext for f in formats)), None)
+            if ext is None:
+                continue
+            caption_path = media_path.with_suffix(f".{lang}.{ext}")
+            command = [
+                "yt-dlp", "--ignore-config", "--no-playlist", "--skip-download",
+                "--load-info-json", str(info_path), flag, "--sub-langs", lang,
+                "--sub-format", ext, "--force-overwrites", "--output",
+                str(media_path.with_suffix("")).replace("%", "%%") + ".%(ext)s",
+            ]
+            _run_download(command, runner, timeout_seconds, cancel_event)
+            if not caption_path.is_file() or not caption_path.stat().st_size:
+                raise YtDlpError(f"yt-dlp did not write selected caption: {lang}")
+            record_path.write_text(json.dumps({
+                "filename": caption_path.name, "language": lang.removesuffix("-orig"),
+                "origin": origin,
+            }), encoding="utf-8")
+            return
+
+
+def downloaded_subtitle(media_path: Path) -> SubtitleTrack | None:
+    """Read the persisted caption selection, including its original provenance."""
+    media_path = Path(media_path)
+    record_path = media_path.with_suffix(".captions.json")
+    if not record_path.is_file():
+        return None
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    path = (media_path.parent / record["filename"]).resolve()
+    if not path.is_relative_to(media_path.parent.resolve()):
+        raise YtDlpError("selected caption escapes media directory")
+    if record["origin"] not in {"manual-caption", "auto-caption"}:
+        raise YtDlpError("invalid selected caption origin")
+    if not path.is_file() or not path.stat().st_size:
+        raise YtDlpError("selected caption is missing or empty")
+    return SubtitleTrack(path, language=record["language"], origin=record["origin"])
+
+
+def download_video(
+    source: SourceInput | str,
+    output_dir: Path,
+    *,
+    runner: Runner = subprocess.run,
+    timeout_seconds: float = 3600.0,
+    cancel_event: Event | None = None,
+) -> YtDlpDownload:
+    """Download one YouTube video and return the path yt-dlp actually wrote."""
+
+    normalized = _coerce_youtube(source)
+    output_dir = Path(output_dir).expanduser()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = output_dir.resolve(strict=True)
+    if cancel_event is not None and cancel_event.is_set():
+        raise YtDlpCancelled("yt-dlp download cancelled before start")
+    before = _snapshot_media(output_dir)
+    command = build_download_command(normalized.normalized_value, output_dir)
+    stdout, stderr = _run_download(command, runner, timeout_seconds, cancel_event)
     media_path = _printed_media_path(stdout, output_dir, before) or _discover_media_path(
         output_dir, before
     )
     if media_path is None:
         raise YtDlpError("yt-dlp completed but did not produce a media file")
     info_path = _locate_info_path(media_path, output_dir, before, normalized.video_id)
+    _download_captions(media_path, info_path, runner, timeout_seconds, cancel_event)
     return YtDlpDownload(
         media_path=media_path,
         stdout=stdout,
@@ -270,4 +345,5 @@ __all__ = [
     "YtDlpTimeout",
     "build_download_command",
     "download_video",
+    "downloaded_subtitle",
 ]

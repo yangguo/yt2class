@@ -7,6 +7,7 @@ from pathlib import Path
 from threading import Event
 from typing import Any
 
+from yt2class.adapters.ytdlp import downloaded_subtitle
 from yt2class.adapters.providers.base import Provider
 from yt2class.adapters.providers.synthetic import fake_course_provider
 from yt2class.config import BuildSource, CourseConfig, write_desensitized_snapshot
@@ -257,6 +258,10 @@ def _extract_input_hashes(ctx: RunContext, source: SourceManifest) -> list[str]:
         record = load_run_request(ctx.workspace.root)
         if record and record.subtitles_sha256:
             sub = record.subtitles_sha256
+    if sub == "no-subtitles" and source.kind == "youtube":
+        track = downloaded_subtitle(ctx.workspace.safe_path(source.media_path))
+        if track is not None:
+            sub = digest_parts(subtitles_digest(track.path) or "", track.language, track.origin)
     return [source.sha256, sub]
 
 

@@ -140,3 +140,22 @@ def test_human_edit_survives_resume_with_revision_zero(tmp_path: Path, monkeypat
     assert calls["plan_deck"] == 0
     reloaded = EditorialPlan.model_validate_json(editorial.read_text(encoding="utf-8"))
     assert any(page.title == "人工修订标题" for page in reloaded.pages)
+
+
+def test_downloaded_caption_change_invalidates_extract_inputs(tmp_path):
+    import json
+    from types import SimpleNamespace
+    from yt2class.orchestration.pipeline import _extract_input_hashes
+
+    workspace, bundle = build_evidence_bundle(tmp_path)
+    source = bundle.source.model_copy(update={"kind": "youtube"})
+    media = workspace.safe_path(source.media_path)
+    caption = media.with_suffix(".ja.vtt")
+    media.with_suffix(".captions.json").write_text(json.dumps({
+        "filename": caption.name, "language": "ja", "origin": "auto-caption",
+    }))
+    ctx = SimpleNamespace(workspace=workspace, build=None)
+    caption.write_text("first caption")
+    first = _extract_input_hashes(ctx, source)
+    caption.write_text("changed caption")
+    assert _extract_input_hashes(ctx, source) != first

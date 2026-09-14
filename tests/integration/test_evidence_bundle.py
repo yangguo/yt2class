@@ -427,3 +427,43 @@ def test_extract_evidence_rejects_workspace_evidence_symlink_escape(tmp_path: Pa
             ocr_engine="none",
         )
     assert not list(outside.glob("*.json"))
+
+
+def test_youtube_ingest_auto_caption_reaches_evidence_without_sidecar(tmp_path):
+    from types import SimpleNamespace
+    from yt2class.adapters.ytdlp import download_video
+    from yt2class.stages.ingest import ingest_source
+
+    original, _ = make_media(tmp_path)
+    workspace = Workspace.create(tmp_path / "runs", run_id="auto-captions")
+    media = workspace.media_dir / "lesson [fixture-id].mp4"
+
+    def runner(command, **kwargs):
+        if "--skip-download" in command:
+            assert command[command.index("--sub-langs") + 1] == "ja"
+            shutil.copyfile(write_subtitles(tmp_path), media.with_suffix(".ja.vtt"))
+        else:
+            shutil.copyfile(original, media)
+            media.with_suffix(".info.json").write_text(json.dumps({
+                "id": "fixture-id", "title": "Japanese lesson", "language": "ja",
+                "automatic_captions": {"ja": [{"ext": "vtt"}]}, "subtitles": {},
+            }))
+        return SimpleNamespace(returncode=0, stdout=str(media), stderr="")
+
+    result = ingest_source("https://youtu.be/fixture-id", workspace,
+                          downloader=lambda source, directory: download_video(source, directory, runner=runner))
+    bundle = extract_evidence(result.manifest, workspace=workspace, profile="content",
+                              detector=lambda path, **kwargs: [(0.0, result.manifest.duration_seconds)],
+                              ocr_engine="none")
+    assert bundle.transcript.segments
+    assert bundle.transcript.language == "ja"
+    assert all(segment.origin == "auto-caption" for segment in bundle.transcript.segments)
+    assert not any(gap.reason == "no subtitle or ASR evidence" for gap in bundle.gaps)
+
+    # An explicit sidecar remains authoritative even if a downloaded caption was removed.
+    media.with_suffix(".ja.vtt").unlink()
+    override = extract_evidence(result.manifest, workspace=workspace, sidecar=write_subtitles(tmp_path),
+                                profile="content", detector=lambda path, **kwargs: [(0.0, result.manifest.duration_seconds)],
+                                ocr_engine="none")
+    assert override.transcript.segments
+    assert all(segment.origin == "sidecar" for segment in override.transcript.segments)
