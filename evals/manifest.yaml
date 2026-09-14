@@ -1,0 +1,96 @@
+# Annotated evaluation manifest (M7). No copyrighted media in git.
+# Fill `media_slot` locally per docs/examples/eval-media-authorization.md
+version: "1.0"
+design_reference: docs/plans/2026-08-11-youtube-to-ppt-design.md#15
+
+authorization:
+  policy: >-
+    Licensed or self-produced media only. Record title, license, and acquisition
+    date in a private store; never commit cookies, API keys, or raw YouTube downloads.
+  how_to_add_real_media: docs/examples/eval-media-authorization.md
+
+comparison_modes:
+  - equal-interval
+  - visual-dedupe
+  - transcript-only
+  - frames-multimodal
+  - hybrid
+
+categories:
+  - id: static_slides
+    label: Static slide / board capture
+    segments:
+      - id: syn-static-01
+        duration_seconds: 180
+        fixture: tests/fixtures/contracts/evidence_bundle.valid.json
+        media_slot: uncommitted
+        notes: Synthetic contract bundle; swap for licensed lecture capture locally.
+      - id: syn-static-02
+        duration_seconds: 240
+        fixture: tests/fixtures/contracts/visual_catalogue.valid.json
+        media_slot: uncommitted
+
+  - id: screen_recording
+    label: Software / UI walkthrough
+    segments:
+      - id: syn-screen-01
+        duration_seconds: 300
+        fixture: tests/fixtures/contracts/transcript.valid.json
+        media_slot: uncommitted
+      - id: syn-screen-02
+        duration_seconds: 420
+        fixture: tests/fixtures/contracts/knowledge.valid.json
+        media_slot: uncommitted
+
+  - id: talking_head
+    label: Presenter-focused with sparse visuals
+    segments:
+      - id: syn-talk-01
+        duration_seconds: 150
+        fixture: tests/fixtures/contracts/course_map.valid.json
+        media_slot: uncommitted
+      - id: syn-talk-02
+        duration_seconds: 210
+        fixture: tests/fixtures/contracts/segment_manifest.valid.json
+        media_slot: uncommitted
+
+  - id: dynamic_demo
+    label: Motion / process (hybrid candidate)
+    segments:
+      - id: syn-dynamic-01
+        duration_seconds: 360
+        fixture: tests/fixtures/contracts/evidence_bundle.valid.json
+        media_slot: uncommitted
+        hybrid_relevant: true
+      - id: syn-dynamic-02
+        duration_seconds: 480
+        fixture: tests/fixtures/live/annotations.placeholder.json
+        media_slot: uncommitted
+        hybrid_relevant: true
+
+  - id: mixed_language
+    label: Multilingual captions / code switching
+    segments:
+      - id: syn-mixed-01
+        duration_seconds: 200
+        fixture: tests/fixtures/contracts/transcript.valid.json
+        media_slot: uncommitted
+      - id: syn-mixed-02
+        duration_seconds: 260
+        fixture: tests/fixtures/contracts/editorial_plan.valid.json
+        media_slot: uncommitted
+
+long_course:
+  - id: syn-long-course-01
+    duration_seconds: 5400
+    target_minutes: 90
+    fixture: tests/fixtures/contracts/run_manifest.valid.json
+    media_slot: uncommitted
+    notes: >-
+      Placeholder slot for a 60–90 minute licensed course. CI uses synthetic
+      duration scaling only (see evals/performance.py).
+
+live_rows:
+  - id: live-youtube-smoke
+    marker: pytest.mark.live
+    description: Optional YouTube ingest + provider smoke; not part of default CI.

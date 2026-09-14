@@ -13,6 +13,24 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 
 
+def _install_wheel_to_target(wheel: Path, target: Path) -> None:
+    uv = shutil.which("uv")
+    if uv:
+        subprocess.run(
+            [uv, "pip", "install", str(wheel), "--target", str(target)],
+            check=True,
+        )
+        return
+    try:
+        import pip  # noqa: F401
+    except ImportError:
+        pytest.skip("neither uv nor pip available to install wheel into isolated target")
+    subprocess.run(
+        [sys.executable, "-m", "pip", "install", str(wheel), "--target", str(target)],
+        check=True,
+    )
+
+
 @pytest.mark.skipif(shutil.which("npm") is None, reason="npm required to build renderer bundle")
 def test_wheel_bundles_renderer_and_resolves_from_clean_venv(tmp_path: Path):
     dist = REPO / "dist"
@@ -22,10 +40,7 @@ def test_wheel_bundles_renderer_and_resolves_from_clean_venv(tmp_path: Path):
     wheels = list(dist.glob("*.whl"))
     assert wheels
     target = tmp_path / "site-packages"
-    subprocess.run(
-        [sys.executable, "-m", "pip", "install", str(wheels[0]), "--target", str(target)],
-        check=True,
-    )
+    _install_wheel_to_target(wheels[0], target)
     env = os.environ.copy()
     env["PYTHONPATH"] = str(target)
     script = (
