@@ -9,20 +9,9 @@ import pytest
 from PIL import Image
 
 from yt2class.domain.editorial import EditorialPlan, PageIntent
-from yt2class.domain.slide_spec_v3 import SlideSpecV3
-from yt2class.orchestration.workspace import Workspace
+from yt2class.domain.source import SourceManifest
 from yt2class.stages.bind_spec import BindError, bind_editorial_plan, validate_bound_assets
 from tests.helpers.m4 import seed_lecture_run
-
-
-def _minimal_plan(**pages: PageIntent) -> EditorialPlan:
-    return EditorialPlan(
-        schema_version="1.0",
-        source_id="src-demo",
-        target_pages=4,
-        max_pages=20,
-        pages=list(pages.values()) if pages else [],
-    )
 
 
 def test_bind_emits_physical_pages_for_all_layouts(tmp_path: Path):
@@ -48,6 +37,107 @@ def test_bind_emits_physical_pages_for_all_layouts(tmp_path: Path):
     assert any(slide.type == "summary" for slide in bound.spec.slides)
     assert len(bound.spec.slides) >= len(outcome.plan.pages)
     validate_bound_assets(bound.spec, workspace.root)
+
+
+def test_content_claims_paginate_without_dropping_ids(tmp_path: Path):
+    workspace, outcome, source, transcript, visual, _ = seed_lecture_run(tmp_path)
+    claim_ids = [f"extra-claim-{i}" for i in range(6)]
+    from yt2class.domain.knowledge import KnowledgeClaim
+
+    extra_claims = [
+        KnowledgeClaim(
+            id=cid,
+            text=f"point {i}",
+            evidence_ids=["cap-001", "frame-001"],
+            status="draft",
+            provenance="source",
+        )
+        for i, cid in enumerate(claim_ids)
+    ]
+    unit = outcome.knowledge.units[0].model_copy(update={"claims": extra_claims})
+    knowledge = outcome.knowledge.model_copy(update={"units": [unit, *outcome.knowledge.units[1:]]})
+    page = PageIntent(
+        id="intent-text-many",
+        type="content",
+        layout="text",
+        title="多点分页",
+        claim_ids=claim_ids,
+        frame_ids=[],
+        notes="",
+        selection_reason="pagination fixture",
+        quality_label="draft",
+    )
+    plan = outcome.plan.model_copy(update={"pages": [outcome.plan.pages[0], page]})
+    bound = bind_editorial_plan(
+        plan=plan,
+        knowledge=knowledge,
+        report=outcome.report,
+        source=source,
+        transcript=transcript,
+        visual=visual,
+        workspace=workspace,
+    )
+    text_slides = [s for s in bound.spec.slides if s.id == page.id or s.id.startswith(f"{page.id}-cont")]
+    assert len(text_slides) == 2
+    assert text_slides[1].continuation_of == page.id
+    bound_ids = [cid for s in text_slides for cid in s.point_claim_ids]
+    assert bound_ids == claim_ids
+
+
+def test_quiz_claims_paginate_with_continuation(tmp_path: Path):
+    workspace, outcome, source, transcript, visual, _ = seed_lecture_run(tmp_path)
+    from yt2class.domain.knowledge import KnowledgeClaim
+
+    claims = [
+        KnowledgeClaim(
+            id=f"quiz-{i}",
+            text=f"Q{i}",
+            evidence_ids=["cap-001"],
+            status="draft",
+            provenance="generated-practice",
+        )
+        for i in range(5)
+    ]
+    unit = outcome.knowledge.units[0].model_copy(update={"claims": claims})
+    knowledge = outcome.knowledge.model_copy(update={"units": [unit, *outcome.knowledge.units[1:]]})
+    quiz_page = PageIntent(
+        id="intent-quiz-big",
+        type="quiz",
+        title="练习",
+        claim_ids=[c.id for c in claims],
+        frame_ids=[],
+        notes="",
+        selection_reason="quiz fixture",
+        quality_label="draft",
+    )
+    plan = outcome.plan.model_copy(update={"pages": [outcome.plan.pages[0], quiz_page]})
+    bound = bind_editorial_plan(
+        plan=plan,
+        knowledge=knowledge,
+        report=outcome.report,
+        source=source,
+        transcript=transcript,
+        visual=visual,
+        workspace=workspace,
+    )
+    quiz_slides = [s for s in bound.spec.slides if s.type == "quiz"]
+    assert len(quiz_slides) == 2
+    assert sum(len(s.questions) for s in quiz_slides) == 5
+
+
+def test_bind_rejects_exceeding_editorial_max_pages(tmp_path: Path):
+    workspace, outcome, source, transcript, visual, _ = seed_lecture_run(tmp_path)
+    plan = outcome.plan.model_copy(update={"max_pages": 4, "target_pages": 4})
+    with pytest.raises(BindError, match="max_pages"):
+        bind_editorial_plan(
+            plan=plan,
+            knowledge=outcome.knowledge,
+            report=outcome.report,
+            source=source,
+            transcript=transcript,
+            visual=visual,
+            workspace=workspace,
+        )
 
 
 def test_bind_rejects_symlink_escape(tmp_path: Path):
@@ -131,21 +221,3 @@ def test_strict_verified_quality_requires_supported_claims(tmp_path: Path):
     )
     assert bound.spec.quality_status == "verified"
     assert all(claim.verdict == "supported" for claim in bound.spec.claims)
-
-
-def test_page_count_matches_editorial_without_hidden_pages(tmp_path: Path):
-    workspace, outcome, source, transcript, visual, _ = seed_lecture_run(tmp_path)
-    bound = bind_editorial_plan(
-        plan=outcome.plan,
-        knowledge=outcome.knowledge,
-        report=outcome.report,
-        source=source,
-        transcript=transcript,
-        visual=visual,
-        workspace=workspace,
-    )
-    assert bound.spec.slides
-    assert bound.spec.slides[0].type == "cover"
-    assert "quiz" not in {slide.type for slide in bound.spec.slides} or any(
-        page.type == "quiz" for page in outcome.plan.pages
-    )

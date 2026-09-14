@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 from yt2class.domain.render_report import PageMapEntry
 from yt2class.domain.slide_spec_v3 import (
     FrameEvidence,
+    SlideAsset,
     SlideClaim,
     SlidePage,
     SlideSpecV3,
@@ -68,6 +69,23 @@ def precise_time_note(seconds: float) -> str:
     return f"source_time={seconds:.3f}s"
 
 
+def _timestamp_for_asset(
+    asset_id: str,
+    assets_by_id: dict[str, SlideAsset],
+    evidence_by_id: dict[str, Any],
+) -> float:
+    asset = assets_by_id.get(asset_id)
+    if asset is None or asset.role != "frame":
+        raise ValueError(f"asset {asset_id!r} is not a frame")
+    stamp = asset.timestamp_seconds
+    if stamp is None:
+        raise ValueError(f"frame asset {asset_id!r} missing timestamp_seconds")
+    for item in evidence_by_id.values():
+        if isinstance(item, FrameEvidence) and item.asset_id == asset_id:
+            return float(item.timestamp_seconds)
+    raise ValueError(f"no frame evidence for visible asset {asset_id!r}")
+
+
 def _claim_intervals(
     claim: SlideClaim,
     evidence_by_id: dict[str, Any],
@@ -97,11 +115,22 @@ def _claim_intervals(
     return rows
 
 
+def _visible_asset_ids(page: SlidePage) -> list[str]:
+    if page.type == "content" and page.layout == "sequence":
+        return [step.asset_id for step in page.steps]
+    if page.type == "content" and page.layout in {"comparison", "image-text"}:
+        return list(page.frame_asset_ids)
+    if page.type == "cover" and page.hero_asset_id:
+        return [page.hero_asset_id]
+    return []
+
+
 def _page_citations(
     page: SlidePage,
     *,
     claims: dict[str, SlideClaim],
     evidence_by_id: dict[str, Any],
+    assets_by_id: dict[str, SlideAsset],
     source_url: str | None,
     source_kind: Literal["youtube", "local"],
     media_name: str,
@@ -120,30 +149,22 @@ def _page_citations(
         claim_ids = list(page.point_claim_ids or page.claim_ids)
 
     citations: list[dict[str, Any]] = []
-    if page.type == "content" and page.layout in {"comparison", "image-text", "sequence"}:
-        frame_ids = list(page.frame_asset_ids)
-        if page.layout == "sequence":
-            frame_ids = [step.asset_id for step in page.steps]
-        for index, asset_id in enumerate(frame_ids):
-            stamp = 0.0
-            for evidence_id in page.citation_ids:
-                item = evidence_by_id.get(evidence_id)
-                if isinstance(item, FrameEvidence) and item.asset_id == asset_id:
-                    stamp = item.timestamp_seconds
-                    break
-            entry: dict[str, Any] = {
-                "asset_id": asset_id,
-                "index": index,
-                "intervals": [],
-            }
-            if source_kind == "youtube":
-                entry["seek_url"] = canonical_youtube_seek(source_url, stamp)
-                entry["precise"] = precise_time_note(stamp)
-            else:
-                entry["media"] = media_name
-                entry["sha256"] = source_hash
-                entry["seek"] = precise_time_note(stamp)
-            citations.append(entry)
+    for index, asset_id in enumerate(_visible_asset_ids(page)):
+        stamp = _timestamp_for_asset(asset_id, assets_by_id, evidence_by_id)
+        entry: dict[str, Any] = {
+            "asset_id": asset_id,
+            "index": index,
+            "intervals": [],
+            "seconds": stamp,
+        }
+        if source_kind == "youtube":
+            entry["seek_url"] = canonical_youtube_seek(source_url, stamp)
+            entry["precise"] = precise_time_note(stamp)
+        else:
+            entry["media"] = media_name
+            entry["sha256"] = source_hash
+            entry["seek"] = precise_time_note(stamp)
+        citations.append(entry)
 
     aggregate: list[dict[str, Any]] = []
     for claim_id in claim_ids:
@@ -160,8 +181,8 @@ def _page_citations(
                     )
         aggregate.append(row)
     if page.type in {"summary", "quiz"}:
-        citations = aggregate
-    elif aggregate:
+        return aggregate if aggregate else citations
+    if aggregate:
         citations.extend(aggregate)
     return citations
 
@@ -175,6 +196,7 @@ def build_provenance(
 ) -> ProvenanceResult:
     claims = {claim.id: claim for claim in spec.claims}
     evidence_by_id = {item.id: item for item in spec.evidence}
+    assets_by_id = {item.id: item for item in spec.assets}
     media_name = Path(spec.source.media_path).name
     pages_payload: list[dict[str, Any]] = []
     built_map = page_map or [
@@ -196,6 +218,7 @@ def build_provenance(
                     slide,
                     claims=claims,
                     evidence_by_id=evidence_by_id,
+                    assets_by_id=assets_by_id,
                     source_url=spec.source.url,
                     source_kind=spec.source.kind,
                     media_name=media_name,

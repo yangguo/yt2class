@@ -18,8 +18,12 @@ from yt2class.domain.render_report import PageMapEntry, RenderReport
 from yt2class.domain.slide_spec_v3 import SlideSpecV3
 from yt2class.stages.bind_spec import validate_bound_assets
 
+RENDER_REPORT_REL = "delivery/render-report.json"
+
 
 def renderer_root() -> Path:
+    """Prefer wheel-bundled renderer; fall back to repo ``renderer/`` in dev checkouts."""
+
     env = os.getenv("YT2CLASS_RENDERER_ROOT")
     if env:
         candidate = Path(env).expanduser()
@@ -51,8 +55,20 @@ def _digest_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def validate_pptx_package(path: Path, *, spec: SlideSpecV3) -> list[str]:
-    issues: list[str] = []
+def _pptx_has_hyperlinks(archive: ZipFile, *, youtube: bool) -> bool:
+    if not youtube:
+        return True
+    for name in archive.namelist():
+        if "/slides/_rels/" in name and name.endswith(".xml.rels"):
+            body = archive.read(name).decode("utf-8", errors="ignore")
+            if "hyperlink" in body.lower() or "youtube.com" in body:
+                return True
+    return False
+
+
+def validate_pptx_package(path: Path, *, spec: SlideSpecV3) -> None:
+    """Raise when the PPTX package fails structural delivery checks."""
+
     if not path.is_file() or path.stat().st_size == 0:
         raise RenderError(f"PPTX output is missing or empty: {path}")
     try:
@@ -61,17 +77,31 @@ def validate_pptx_package(path: Path, *, spec: SlideSpecV3) -> list[str]:
             required = {"[Content_Types].xml", "ppt/presentation.xml"}
             if not required.issubset(names):
                 raise RenderError(f"output is not a PPTX ZIP: {path}")
-            slide_xml = [name for name in names if name.startswith("ppt/slides/slide") and name.endswith(".xml")]
+            slide_xml = [
+                name for name in names if name.startswith("ppt/slides/slide") and name.endswith(".xml")
+            ]
             if len(slide_xml) != len(spec.slides):
-                issues.append(
+                raise RenderError(
                     f"slide count mismatch: pptx={len(slide_xml)} spec={len(spec.slides)}"
                 )
-            notes = [name for name in names if name.startswith("ppt/notesSlides/")]
-            if any(slide.notes for slide in spec.slides) and not notes:
-                issues.append("expected speaker notes parts in PPTX package")
+            if any(slide.notes for slide in spec.slides) and not any(
+                name.startswith("ppt/notesSlides/") for name in names
+            ):
+                raise RenderError("expected speaker notes parts in PPTX package")
+            youtube = spec.source.kind == "youtube" and bool(spec.source.url)
+            if youtube and not _pptx_has_hyperlinks(archive, youtube=True):
+                raise RenderError("PPTX is missing hyperlink relationships for YouTube seek links")
     except BadZipFile as error:
         raise RenderError(f"output is not a PPTX ZIP: {path}") from error
-    return issues
+
+
+def persist_render_report(run_root: Path, report: RenderReport, *, relative_path: str = RENDER_REPORT_REL) -> Path:
+    dest = run_root / relative_path
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(dest.suffix + ".partial")
+    tmp.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    tmp.replace(dest)
+    return dest
 
 
 class PptxGenJsRenderer(Renderer):
@@ -87,7 +117,9 @@ class PptxGenJsRenderer(Renderer):
 
         output = run_root / request.output_path
         output.parent.mkdir(parents=True, exist_ok=True)
-        tmp = Path(tempfile.mkstemp(suffix=".pptx", dir=output.parent)[1])
+        fd, tmp_name = tempfile.mkstemp(suffix=".pptx", dir=output.parent)
+        os.close(fd)
+        tmp = Path(tmp_name)
         report_json = output.parent / f".{output.name}.render.json"
 
         root = renderer_root()
@@ -108,9 +140,9 @@ class PptxGenJsRenderer(Renderer):
             str(report_json),
         ]
         env = os.environ.copy()
-        node_path = root / "node_modules"
-        if node_path.is_dir():
-            env["NODE_PATH"] = str(node_path)
+        node_modules = root / "node_modules"
+        if node_modules.is_dir():
+            env["NODE_PATH"] = str(node_modules)
         completed = subprocess.run(
             cmd,
             cwd=str(root),
@@ -121,11 +153,26 @@ class PptxGenJsRenderer(Renderer):
         )
         if completed.returncode != 0:
             detail = (completed.stderr or completed.stdout or "").strip()
-            if tmp.exists():
-                tmp.unlink(missing_ok=True)
+            tmp.unlink(missing_ok=True)
             raise RenderError(f"PptxGenJS renderer failed: {detail}")
 
-        package_issues = validate_pptx_package(tmp, spec=spec)
+        try:
+            validate_pptx_package(tmp, spec=spec)
+            qa = run_visual_qa(
+                tmp,
+                spec=spec,
+                preview_policy=request.preview_policy,
+                run_root=run_root,
+            )
+            if request.preview_policy == "required" and qa.visual_qa != "passed":
+                raise RenderError(
+                    f"preview_policy=required but visual QA is {qa.visual_qa!r}: "
+                    + "; ".join(qa.layout_issues)
+                )
+        except RenderError:
+            tmp.unlink(missing_ok=True)
+            raise
+
         tmp.replace(output)
         pptx_hash = _digest_file(output)
 
@@ -151,24 +198,26 @@ class PptxGenJsRenderer(Renderer):
                 for index, slide in enumerate(spec.slides)
             ]
 
-        qa = run_visual_qa(
-            output,
-            spec=spec,
-            preview_policy=request.preview_policy,
-            run_root=run_root,
-        )
-        layout_issues = list(package_issues) + list(qa.layout_issues)
-        return RenderReport(
+        render_complete = qa.visual_qa in {"passed", "unavailable"}
+        report = RenderReport(
             schema_version="1.0",
             spec_revision=spec.spec_revision,
             request_id=request.request_id,
             pptx_path=request.output_path,
             pptx_sha256=pptx_hash,
             page_map=page_map,
-            render_complete=True,
+            render_complete=render_complete,
             visual_qa=qa.visual_qa,
-            layout_issues=layout_issues,
+            layout_issues=list(qa.layout_issues),
         )
+        persist_render_report(run_root, report)
+        return report
 
 
-__all__ = ["PptxGenJsRenderer", "renderer_root", "validate_pptx_package"]
+__all__ = [
+    "PptxGenJsRenderer",
+    "RENDER_REPORT_REL",
+    "persist_render_report",
+    "renderer_root",
+    "validate_pptx_package",
+]

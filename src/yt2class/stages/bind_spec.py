@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import mimetypes
+import re
 from hashlib import sha256
 from pathlib import Path
 from typing import Iterable, Literal
@@ -40,6 +41,9 @@ from yt2class.orchestration.workspace import Workspace, WorkspacePathError
 from yt2class.stages.verify_claims import _is_practice
 
 PRODUCER_VERSION = "yt2class-bind-1.0"
+MAX_POINT_CLAIMS_PER_PAGE = 4
+MAX_QUIZ_QUESTIONS_PER_PAGE = 3
+MAX_SEQUENCE_STEPS = 3
 DEFAULT_THEME = Theme(name="course-white-blue", font_family="Noto Sans CJK SC")
 DEFAULT_RENDER_POLICY = RenderPolicy(
     max_pages=20,
@@ -308,19 +312,55 @@ def _bind_cover(page: PageIntent, *, source_id: str, hero_asset_id: str | None) 
     )
 
 
-def _bind_content(
+def _frame_evidence_id(asset_id: str, evidence: dict[str, object]) -> str:
+    for item in evidence.values():
+        if isinstance(item, FrameEvidence) and item.asset_id == asset_id:
+            return item.id
+    raise BindError(f"visible frame asset {asset_id!r} has no frame evidence")
+
+
+def _citations_for_page(
+    page: PageIntent,
+    *,
+    slide_claims: dict[str, SlideClaim],
+    evidence: dict[str, object],
+    frame_assets: dict[str, SlideAsset],
+) -> list[str]:
+    cited = {
+        ev
+        for cid in page.claim_ids
+        for ev in slide_claims[cid].evidence_ids
+        if ev in evidence
+    }
+    if page.type == "content" and page.layout == "sequence":
+        for frame_id in page.frame_ids[:MAX_SEQUENCE_STEPS]:
+            asset = frame_assets.get(f"asset-{frame_id}")
+            if asset is not None:
+                cited.add(_frame_evidence_id(asset.id, evidence))
+    elif page.type == "content" and page.layout in {"image-text", "comparison"}:
+        for frame_id in page.frame_ids:
+            asset = frame_assets.get(f"asset-{frame_id}")
+            if asset is not None:
+                cited.add(_frame_evidence_id(asset.id, evidence))
+    return sorted(cited)
+
+
+def _bind_content_pages(
     page: PageIntent,
     *,
     claims: dict[str, SlideClaim],
     frame_assets: dict[str, SlideAsset],
-    citations: list[str],
-) -> SlidePage:
+    evidence: dict[str, object],
+) -> list[SlidePage]:
     layout = page.layout or "text"
-    point_ids = page.claim_ids[:4]
     if layout == "sequence":
+        if len(page.claim_ids) > MAX_SEQUENCE_STEPS:
+            raise BindError("sequence layout supports at most 3 claims without continuation")
+        if len(page.frame_ids) > MAX_SEQUENCE_STEPS:
+            raise BindError("sequence layout supports at most 3 frames")
         steps: list[SequenceStep] = []
-        for index, frame_id in enumerate(page.frame_ids[:3]):
-            claim_id = point_ids[index] if index < len(point_ids) else point_ids[0]
+        for index, frame_id in enumerate(page.frame_ids):
+            claim_id = page.claim_ids[index] if index < len(page.claim_ids) else page.claim_ids[0]
             asset = frame_assets.get(f"asset-{frame_id}")
             if asset is None:
                 raise BindError(f"sequence step missing asset for {frame_id!r}")
@@ -328,41 +368,77 @@ def _bind_content(
             steps.append(
                 SequenceStep(asset_id=asset.id, claim_ids=[claim_id], caption=caption)
             )
-        if not 2 <= len(steps) <= 3:
+        if not 2 <= len(steps) <= MAX_SEQUENCE_STEPS:
             raise BindError("sequence layout requires 2-3 steps after binding")
-        return SlidePage(
-            id=page.id,
-            type="content",
-            layout="sequence",
-            title=page.title,
-            steps=steps,
-            citation_ids=citations,
-            notes_claim_ids=point_ids,
-            notes=_page_notes(page),
+        citations = _citations_for_page(
+            page, slide_claims=claims, evidence=evidence, frame_assets=frame_assets
         )
-    frame_asset_ids = [frame_assets[f"asset-{fid}"].id for fid in page.frame_ids]
-    captions = page.body_points[: len(frame_asset_ids)] if layout == "comparison" else []
-    if layout == "comparison":
-        while len(captions) < 2:
-            base = (
-                claims[point_ids[0]].text[:160]
-                if point_ids
-                else (page.title[:160] or "对照")
+        return [
+            SlidePage(
+                id=page.id,
+                type="content",
+                layout="sequence",
+                title=page.title,
+                steps=steps,
+                citation_ids=citations,
+                notes_claim_ids=page.claim_ids,
+                notes=_page_notes(page),
             )
-            captions.append(f"{len(captions) + 1}. {base}"[:160])
-        captions = captions[:2]
-    return SlidePage(
-        id=page.id,
-        type="content",
-        layout=layout,
-        title=page.title,
-        point_claim_ids=point_ids,
-        frame_asset_ids=frame_asset_ids,
-        captions=captions,
-        citation_ids=citations,
-        notes_claim_ids=point_ids,
-        notes=_page_notes(page),
-    )
+        ]
+
+    if layout == "comparison":
+        if len(page.frame_ids) != 2:
+            raise BindError("comparison layout requires exactly 2 frames")
+
+    def comparison_captions(chunk_claim_ids: list[str]) -> list[str]:
+        if layout != "comparison":
+            return []
+        if len(page.body_points) >= 2:
+            return page.body_points[:2]
+        if len(chunk_claim_ids) >= 2:
+            return [claims[cid].text[:160] for cid in chunk_claim_ids[:2]]
+        if chunk_claim_ids:
+            text = claims[chunk_claim_ids[0]].text
+            split = re.split(r"(?i)\s+(?:versus|vs\.?)\s+", text, maxsplit=1)
+            if len(split) == 2:
+                return [split[0][:160], split[1][:160]]
+        raise BindError("comparison layout requires 2 captions in body_points or splittable claim text")
+
+    point_chunks = [
+        page.claim_ids[i : i + MAX_POINT_CLAIMS_PER_PAGE]
+        for i in range(0, len(page.claim_ids), MAX_POINT_CLAIMS_PER_PAGE)
+    ] or [[]]
+    pages: list[SlidePage] = []
+    for index, chunk in enumerate(point_chunks):
+        slide_id = page.id if index == 0 else f"{page.id}-cont-{index + 1}"
+        effective_layout = layout
+        frame_ids = page.frame_ids
+        captions = comparison_captions(chunk) if layout == "comparison" else []
+        if index > 0:
+            effective_layout = "text"
+            frame_ids = []
+            captions = []
+        frame_asset_ids = [frame_assets[f"asset-{fid}"].id for fid in frame_ids]
+        sub_page = page.model_copy(update={"claim_ids": chunk})
+        citations = _citations_for_page(
+            sub_page, slide_claims=claims, evidence=evidence, frame_assets=frame_assets
+        )
+        pages.append(
+            SlidePage(
+                id=slide_id,
+                type="content",
+                layout=effective_layout,
+                title=page.title if index == 0 else f"{page.title} ({index + 1})",
+                point_claim_ids=chunk,
+                frame_asset_ids=frame_asset_ids,
+                captions=captions,
+                citation_ids=citations,
+                notes_claim_ids=chunk,
+                notes=_page_notes(page),
+                continuation_of=page.id if index > 0 else None,
+            )
+        )
+    return pages
 
 
 def _bind_summary(page: PageIntent, *, claims: dict[str, SlideClaim]) -> list[SlidePage]:
@@ -384,26 +460,50 @@ def _bind_summary(page: PageIntent, *, claims: dict[str, SlideClaim]) -> list[Sl
     return pages
 
 
-def _bind_quiz(page: PageIntent, *, claims: dict[str, SlideClaim]) -> SlidePage:
-    questions: list[QuizQuestion] = []
-    for claim_id in page.claim_ids[:3]:
-        claim = claims[claim_id]
-        questions.append(
-            QuizQuestion(
-                prompt=claim.text[:240],
-                kind="generated-practice" if claim.provenance == "generated-practice" else "source-question",
-                answer_claim_ids=[claim_id],
+def _bind_quiz_pages(
+    page: PageIntent,
+    *,
+    claims: dict[str, SlideClaim],
+    evidence: dict[str, object],
+    frame_assets: dict[str, SlideAsset],
+) -> list[SlidePage]:
+    chunks = [
+        page.claim_ids[i : i + MAX_QUIZ_QUESTIONS_PER_PAGE]
+        for i in range(0, len(page.claim_ids), MAX_QUIZ_QUESTIONS_PER_PAGE)
+    ] or [[]]
+    pages: list[SlidePage] = []
+    for index, chunk in enumerate(chunks):
+        questions: list[QuizQuestion] = []
+        for claim_id in chunk:
+            claim = claims[claim_id]
+            questions.append(
+                QuizQuestion(
+                    prompt=claim.text[:240],
+                    kind=(
+                        "generated-practice"
+                        if claim.provenance == "generated-practice"
+                        else "source-question"
+                    ),
+                    answer_claim_ids=[claim_id],
+                )
+            )
+        sub_page = page.model_copy(update={"claim_ids": chunk})
+        citations = _citations_for_page(
+            sub_page, slide_claims=claims, evidence=evidence, frame_assets=frame_assets
+        )
+        pages.append(
+            SlidePage(
+                id=page.id if index == 0 else f"{page.id}-cont-{index + 1}",
+                type="quiz",
+                title=page.title if index == 0 else f"{page.title} ({index + 1})",
+                questions=questions,
+                citation_ids=citations,
+                notes_claim_ids=chunk,
+                notes=_page_notes(page),
+                continuation_of=page.id if index > 0 else None,
             )
         )
-    return SlidePage(
-        id=page.id,
-        type="quiz",
-        title=page.title,
-        questions=questions,
-        citation_ids=[ev for cid in page.claim_ids for ev in claims[cid].evidence_ids],
-        notes_claim_ids=page.claim_ids,
-        notes=_page_notes(page),
-    )
+    return pages
 
 
 def bind_editorial_plan(
@@ -494,14 +594,6 @@ def bind_editorial_plan(
 
     bound_pages: list[SlidePage] = []
     for page in plan.pages:
-        citations = sorted(
-            {
-                ev
-                for cid in page.claim_ids
-                for ev in slide_claims[cid].evidence_ids
-                if ev in evidence
-            }
-        )
         if page.type == "cover":
             hero = (
                 frame_assets[f"asset-{page.frame_ids[0]}"].id if page.frame_ids else None
@@ -510,18 +602,28 @@ def bind_editorial_plan(
         elif page.type == "summary":
             bound_pages.extend(_bind_summary(page, claims=slide_claims))
         elif page.type == "quiz" or _is_practice(knowledge, page.claim_ids):
-            bound_pages.append(_bind_quiz(page, claims=slide_claims))
+            bound_pages.extend(
+                _bind_quiz_pages(
+                    page,
+                    claims=slide_claims,
+                    evidence=evidence,
+                    frame_assets=frame_assets,
+                )
+            )
         else:
-            bound_pages.append(
-                _bind_content(
+            bound_pages.extend(
+                _bind_content_pages(
                     page,
                     claims=slide_claims,
                     frame_assets=frame_assets,
-                    citations=citations,
+                    evidence=evidence,
                 )
             )
 
-    policy = render_policy or DEFAULT_RENDER_POLICY
+    base_policy = render_policy or DEFAULT_RENDER_POLICY
+    policy = base_policy.model_copy(update={"max_pages": min(base_policy.max_pages, plan.max_pages)})
+    if len(bound_pages) > plan.max_pages:
+        raise BindError("bound slides exceed editorial plan max_pages")
     if len(bound_pages) > policy.max_pages:
         raise BindError("bound slides exceed render_policy.max_pages")
 

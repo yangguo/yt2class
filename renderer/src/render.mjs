@@ -9,7 +9,7 @@ import { renderSequence } from "./layouts/sequence.mjs";
 import { renderSummary } from "./layouts/summary.mjs";
 import { renderQuiz } from "./layouts/quiz.mjs";
 import { detectCjkFont, resolveFont } from "./layouts/theme.mjs";
-import { SLIDE } from "./layouts/common.mjs";
+import { buildSeekLink, primarySeekSeconds } from "./layouts/links.mjs";
 
 function parseArgs(argv) {
   const args = {};
@@ -34,7 +34,12 @@ export async function renderSpec(spec, runRoot, outputPath) {
   const fontFace = resolveFont(spec.theme?.font_family, detectCjkFont());
   const claims = Object.fromEntries((spec.claims || []).map((c) => [c.id, c.text]));
   const assets = Object.fromEntries((spec.assets || []).map((a) => [a.id, a]));
+  const frameEvidence = {};
+  for (const item of spec.evidence || []) {
+    if (item.kind === "frame") frameEvidence[item.asset_id] = item;
+  }
   const ctx = {
+    spec,
     fontFace,
     claimTexts(ids) {
       return (ids || []).map((id) => claims[id] || id);
@@ -43,6 +48,15 @@ export async function renderSpec(spec, runRoot, outputPath) {
       const asset = assets[assetId];
       if (!asset) return null;
       return path.resolve(runRoot, asset.path);
+    },
+    assetTimestamp(assetId) {
+      const asset = assets[assetId];
+      if (asset?.timestamp_seconds != null) return asset.timestamp_seconds;
+      const ev = frameEvidence[assetId];
+      return ev?.timestamp_seconds ?? 0;
+    },
+    seekLinkForPage(page) {
+      return buildSeekLink(spec, page, assets, frameEvidence);
     },
   };
   const pageMap = [];

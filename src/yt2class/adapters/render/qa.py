@@ -45,6 +45,8 @@ def run_visual_qa(
     preview_policy: PreviewPolicy,
     run_root: Path,
 ) -> QaOutcome:
+    if preview_policy == "off":
+        return QaOutcome(visual_qa="unavailable", layout_issues=[])
     preview_dir = run_root / "delivery" / "preview"
     preview = convert_pptx_to_pngs(pptx_path, preview_dir)
     if not preview.available:

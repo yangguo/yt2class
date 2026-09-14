@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 import json
-import os
 import shutil
 from pathlib import Path
 from zipfile import ZipFile
 
 import pytest
 
-from yt2class.adapters.render.pptxgenjs import PptxGenJsRenderer, renderer_root
+from yt2class.adapters.render.base import RenderError, RenderRequest
+from yt2class.adapters.render.pptxgenjs import (
+    PptxGenJsRenderer,
+    RENDER_REPORT_REL,
+    renderer_root,
+    validate_pptx_package,
+)
 from yt2class.stages.bind_spec import bind_editorial_plan
-from yt2class.stages.render import render_bound_spec
+from yt2class.stages.render import render_bound_spec, spec_digest
 from tests.helpers.m4 import seed_lecture_run
 
 pytestmark = pytest.mark.skipif(
@@ -29,6 +34,15 @@ def _pptx_text(archive: ZipFile) -> str:
     return "\n".join(chunks)
 
 
+def _has_hyperlink_rels(archive: ZipFile) -> bool:
+    for name in archive.namelist():
+        if "/slides/_rels/" in name and name.endswith(".xml.rels"):
+            body = archive.read(name).decode("utf-8", errors="ignore")
+            if "hyperlink" in body.lower() or "youtube.com" in body:
+                return True
+    return False
+
+
 def test_renderer_resolves_bundled_package_without_repo_root():
     root = renderer_root()
     assert (root / "package.json").is_file()
@@ -37,11 +51,18 @@ def test_renderer_resolves_bundled_package_without_repo_root():
 
 def test_end_to_end_bind_render_sources(tmp_path: Path):
     workspace, outcome, source, transcript, visual, _ = seed_lecture_run(tmp_path)
+    youtube = source.model_copy(
+        update={
+            "kind": "youtube",
+            "url": "https://www.youtube.com/watch?v=abc123_",
+            "video_id": "abc123_",
+        }
+    )
     bound = bind_editorial_plan(
         plan=outcome.plan,
         knowledge=outcome.knowledge,
         report=outcome.report,
-        source=source,
+        source=youtube,
         transcript=transcript,
         visual=visual,
         workspace=workspace,
@@ -52,14 +73,16 @@ def test_end_to_end_bind_render_sources(tmp_path: Path):
     with ZipFile(pptx) as archive:
         blob = _pptx_text(archive)
         assert bound.spec.slides[0].title in blob
-        assert any(name.startswith("ppt/notesSlides/") for name in archive.namelist())
+        assert _has_hyperlink_rels(archive)
     sources = workspace.safe_path(stage.provenance.sources_path)
     payload = json.loads(sources.read_text(encoding="utf-8"))
     assert len(payload["pages"]) == len(bound.spec.slides)
     assert stage.report.render_complete is True
+    report_path = workspace.safe_path(RENDER_REPORT_REL)
+    assert report_path.is_file()
 
 
-def test_fixture_spec_renders_all_layouts(tmp_path: Path):
+def test_preview_required_without_libreoffice_fails_closed(tmp_path: Path):
     workspace, outcome, source, transcript, visual, _ = seed_lecture_run(tmp_path)
     bound = bind_editorial_plan(
         plan=outcome.plan,
@@ -71,23 +94,21 @@ def test_fixture_spec_renders_all_layouts(tmp_path: Path):
         workspace=workspace,
     )
     renderer = PptxGenJsRenderer()
-    from yt2class.stages.render import spec_digest
-    from yt2class.adapters.render.base import RenderRequest
-
+    dest = workspace.safe_path("delivery/required.pptx")
     request = RenderRequest(
-        request_id="render-layouts",
+        request_id="render-required",
         spec_path=bound.spec_path,
         spec_digest=spec_digest(workspace.safe_path(bound.spec_path)),
         run_root=str(workspace.root),
-        output_path="delivery/layouts.pptx",
-        preview_policy="off",
+        output_path="delivery/required.pptx",
+        preview_policy="required",
     )
-    report = renderer.render(request)
-    assert report.page_map
-    assert report.visual_qa in {"passed", "unavailable", "failed"}
+    with pytest.raises(RenderError, match="preview_policy=required"):
+        renderer.render(request)
+    assert not dest.exists()
 
 
-def test_atomic_write_failure_surfaces(tmp_path: Path, monkeypatch):
+def test_package_validation_failure_leaves_destination_absent(tmp_path: Path, monkeypatch):
     workspace, outcome, source, transcript, visual, _ = seed_lecture_run(tmp_path)
     bound = bind_editorial_plan(
         plan=outcome.plan,
@@ -99,14 +120,46 @@ def test_atomic_write_failure_surfaces(tmp_path: Path, monkeypatch):
         workspace=workspace,
     )
     renderer = PptxGenJsRenderer()
+    dest = workspace.safe_path("delivery/bad.pptx")
+
+    def boom(_path, *, spec):
+        raise RenderError("injected package failure")
+
+    monkeypatch.setattr(
+        "yt2class.adapters.render.pptxgenjs.validate_pptx_package",
+        boom,
+    )
+    request = RenderRequest(
+        request_id="render-bad-package",
+        spec_path=bound.spec_path,
+        spec_digest=spec_digest(workspace.safe_path(bound.spec_path)),
+        run_root=str(workspace.root),
+        output_path="delivery/bad.pptx",
+        preview_policy="off",
+    )
+    with pytest.raises(RenderError, match="injected package failure"):
+        renderer.render(request)
+    assert not dest.exists()
+
+
+def test_atomic_write_failure_leaves_destination_absent(tmp_path: Path, monkeypatch):
+    workspace, outcome, source, transcript, visual, _ = seed_lecture_run(tmp_path)
+    bound = bind_editorial_plan(
+        plan=outcome.plan,
+        knowledge=outcome.knowledge,
+        report=outcome.report,
+        source=source,
+        transcript=transcript,
+        visual=visual,
+        workspace=workspace,
+    )
+    renderer = PptxGenJsRenderer()
+    dest = workspace.safe_path("delivery/fail.pptx")
 
     def boom(*_args, **_kwargs):
         raise OSError("disk full")
 
     monkeypatch.setattr(Path, "replace", boom)
-    from yt2class.stages.render import spec_digest
-    from yt2class.adapters.render.base import RenderRequest
-
     request = RenderRequest(
         request_id="render-fail",
         spec_path=bound.spec_path,
@@ -115,5 +168,6 @@ def test_atomic_write_failure_surfaces(tmp_path: Path, monkeypatch):
         output_path="delivery/fail.pptx",
         preview_policy="off",
     )
-    with pytest.raises(Exception):
+    with pytest.raises(OSError, match="disk full"):
         renderer.render(request)
+    assert not dest.exists()

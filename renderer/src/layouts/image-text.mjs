@@ -1,4 +1,4 @@
-import { addBullets, addImageContain, addNotes, addTitle } from "./common.mjs";
+import { addBullets, addImageContain, addNotes, addSourceFooter, addTitle } from "./common.mjs";
 
 export function renderImageText(slide, page, ctx) {
   addTitle(slide, page.title, { fontFace: ctx.fontFace });
@@ -9,4 +9,5 @@ export function renderImageText(slide, page, ctx) {
   const lines = ctx.claimTexts(page.point_claim_ids);
   addBullets(slide, lines, { x: 5.0, y: 1.4, w: 4.4 });
   addNotes(slide, page.notes);
+  addSourceFooter(slide, page, ctx);
 }

@@ -185,7 +185,7 @@ uv run yt2class review \
 `verified` 标签，并退出码 2；draft / evidence-only 会在页面 notes 和 `review.html` 里留下
 可见标记，不会伪装成已核验。审阅文件只允许改文案、选择 allowed frame、删页、锁定和排序；
 过期 revision 或 baseline hash 会被拒绝。修改后只重跑受影响 claim 的 verifier。
-SlideSpec 3.0 绑定与 PptxGenJS 渲染在 M4 实现（`stages/bind_spec.py`、`adapters/render/pptxgenjs.py`）；review 默认仍使用 stub，完整交付请调用 bind/render 阶段。
+SlideSpec 3.0 绑定与 PptxGenJS 渲染在 M4 实现（`stages/bind_spec.py`、`adapters/render/pptxgenjs.py`）；review 默认仍使用 stub，完整交付请调用 bind/render 阶段。构建 wheel 前在 `renderer/` 运行 `npm ci`（`scripts/prepare_renderer_bundle.sh` 或 hatch 自定义 hook 会自动执行）。
 
 
 ## 完整目标设计

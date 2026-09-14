@@ -1,4 +1,5 @@
-import { addImageContain, addNotes, addTitle } from "./common.mjs";
+import { addImageContain, addNotes, addSourceFooter, addTitle } from "./common.mjs";
+import { floorYoutubeSeek } from "./links.mjs";
 
 export function renderComparison(slide, page, ctx) {
   addTitle(slide, page.title, { fontFace: ctx.fontFace });
@@ -12,16 +13,24 @@ export function renderComparison(slide, page, ctx) {
     const path = ctx.assetPath(assetId);
     if (path) addImageContain(slide, path, boxes[index]);
     const caption = captions[index] || "";
+    const stamp = ctx.assetTimestamp(assetId);
+    const link =
+      ctx.spec?.source?.kind === "youtube" && ctx.spec?.source?.url
+        ? floorYoutubeSeek(ctx.spec.source.url, stamp)
+        : null;
     if (caption) {
-      slide.addText(caption, {
+      const opts = {
         x: boxes[index].x,
         y: 4.5,
         w: boxes[index].w,
         h: 0.4,
         fontSize: 14,
         fontFace: ctx.fontFace,
-      });
+      };
+      if (link) opts.hyperlink = { url: link, tooltip: caption };
+      slide.addText(caption, opts);
     }
   });
   addNotes(slide, page.notes);
+  addSourceFooter(slide, page, ctx);
 }

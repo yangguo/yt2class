@@ -1,4 +1,4 @@
-import { addImageContain, addNotes, addTitle, SLIDE } from "./common.mjs";
+import { addImageContain, addNotes, addSourceFooter, addTitle } from "./common.mjs";
 
 export function renderCover(slide, page, ctx) {
   addTitle(slide, page.title, { fontFace: ctx.fontFace, y: 1.2, fontSize: 36 });
@@ -22,4 +22,5 @@ export function renderCover(slide, page, ctx) {
     });
   }
   addNotes(slide, page.notes);
+  addSourceFooter(slide, page, ctx);
 }

@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from yt2class.provenance import canonical_youtube_seek, precise_time_note
-from yt2class.provenance import build_provenance
+from yt2class.domain.source import SourceManifest
+from yt2class.provenance import build_provenance, canonical_youtube_seek, precise_time_note
 from yt2class.stages.bind_spec import bind_editorial_plan
 from tests.helpers.m4 import seed_lecture_run
 
@@ -27,20 +27,31 @@ def test_precise_time_note_keeps_fractional_seconds():
     assert precise_time_note(12.345) == "source_time=12.345s"
 
 
-def test_build_provenance_writes_sources_json(tmp_path: Path):
+def test_build_provenance_frame_seek_uses_asset_timestamps(tmp_path: Path):
     workspace, outcome, source, transcript, visual, _ = seed_lecture_run(tmp_path)
+    youtube = source.model_copy(
+        update={
+            "kind": "youtube",
+            "url": "https://www.youtube.com/watch?v=abc123_",
+            "video_id": "abc123_",
+        }
+    )
     bound = bind_editorial_plan(
         plan=outcome.plan,
         knowledge=outcome.knowledge,
         report=outcome.report,
-        source=source,
+        source=youtube,
         transcript=transcript,
         visual=visual,
         workspace=workspace,
     )
     result = build_provenance(bound.spec, workspace=workspace)
-    path = workspace.safe_path(result.sources_path)
-    assert path.is_file()
-    assert result.payload["pages"]
-    local = next(page for page in result.payload["pages"] if page["citations"])
-    assert any("sha256" in str(row) or "seek_url" in str(row) for row in local["citations"])
+    image_slide = next(
+        s for s in bound.spec.slides if s.type == "content" and s.layout == "image-text"
+    )
+    asset_id = image_slide.frame_asset_ids[0]
+    expected_ts = next(a.timestamp_seconds for a in bound.spec.assets if a.id == asset_id)
+    page_row = next(p for p in result.payload["pages"] if p["page_id"] == image_slide.id)
+    frame_citation = next(c for c in page_row["citations"] if c.get("asset_id") == asset_id)
+    assert f"t={int(expected_ts)}s" in frame_citation["seek_url"]
+    assert frame_citation["seconds"] == expected_ts

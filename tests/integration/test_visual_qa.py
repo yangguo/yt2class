@@ -40,6 +40,7 @@ def test_visual_qa_unavailable_when_libreoffice_missing(tmp_path: Path):
     )
     report = renderer.render(request)
     assert report.visual_qa == "unavailable"
+    assert report.render_complete is True
     outcome = run_visual_qa(
         workspace.safe_path(report.pptx_path),
         spec=bound.spec,

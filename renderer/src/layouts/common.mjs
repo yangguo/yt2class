@@ -30,7 +30,7 @@ export function addBullets(slide, lines, opts = {}) {
   });
 }
 
-export function addImageContain(slide, imagePath, box) {
+export function addImageContain(slide, imagePath, box, extra = {}) {
   slide.addImage({
     path: imagePath,
     x: box.x,
@@ -38,6 +38,7 @@ export function addImageContain(slide, imagePath, box) {
     w: box.w,
     h: box.h,
     sizing: { type: "contain", w: box.w, h: box.h },
+    ...extra,
   });
 }
 
@@ -45,4 +46,22 @@ export function addNotes(slide, text) {
   if (text) {
     slide.addNotes(text);
   }
+}
+
+export function addSourceFooter(slide, page, ctx) {
+  const link = ctx.seekLinkForPage(page);
+  if (!link) return;
+  const options = {
+    x: 0.6,
+    y: 5.15,
+    w: 8.8,
+    h: 0.35,
+    fontSize: 10,
+    color: "666666",
+    fontFace: ctx.fontFace,
+  };
+  if (link.url) {
+    options.hyperlink = { url: link.url, tooltip: link.label };
+  }
+  slide.addText(link.label, options);
 }

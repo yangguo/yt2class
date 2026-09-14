@@ -1,4 +1,4 @@
-import { addNotes, addTitle } from "./common.mjs";
+import { addNotes, addSourceFooter, addTitle } from "./common.mjs";
 
 export function renderQuiz(slide, page, ctx) {
   addTitle(slide, page.title, { fontFace: ctx.fontFace });
@@ -19,4 +19,5 @@ export function renderQuiz(slide, page, ctx) {
     .filter(Boolean)
     .join("\n");
   addNotes(slide, [page.notes, answers ? `Answers:\n${answers}` : ""].filter(Boolean).join("\n\n"));
+  addSourceFooter(slide, page, ctx);
 }
