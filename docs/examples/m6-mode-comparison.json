@@ -1,0 +1,26 @@
+{
+  "sample": "dynamic-lecture-fixture",
+  "rows": [
+    {
+      "mode": "frames",
+      "claims": 6,
+      "uploads": 0,
+      "video_seconds": 0,
+      "coverage_complete": true
+    },
+    {
+      "mode": "native-video",
+      "claims": 5,
+      "uploads": 10,
+      "video_seconds": 1200.0,
+      "coverage_complete": true
+    },
+    {
+      "mode": "hybrid",
+      "claims": 6,
+      "uploads": 0,
+      "video_seconds": 0,
+      "coverage_complete": true
+    }
+  ]
+}

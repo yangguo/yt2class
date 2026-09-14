@@ -1,12 +1,9 @@
-"""Run-scoped orchestration helpers."""
+"""Run-scoped orchestration helpers.
 
-from yt2class.orchestration.analyze import (
-    AnalysisResult,
-    analyze_course,
-    analyze_evidence_bundle,
-    default_capabilities,
-    write_analysis_artifacts,
-)
+Heavy stage wiring (``analyze``, ``edit``) is imported from submodules directly so
+``stages.ingest`` can load ``workspace`` without pulling in provider adapters.
+"""
+
 from yt2class.orchestration.scheduler import (
     SchedulerConfig,
     SchedulerError,
@@ -21,17 +18,12 @@ from yt2class.orchestration.workspace import (
 )
 
 __all__ = [
-    "AnalysisResult",
     "SchedulerConfig",
     "SchedulerError",
     "Workspace",
     "WorkspaceBusy",
     "WorkspaceError",
     "WorkspacePathError",
-    "analyze_course",
-    "analyze_evidence_bundle",
-    "default_capabilities",
     "schedule_windows",
     "set_window_status",
-    "write_analysis_artifacts",
 ]

@@ -148,6 +148,24 @@ opt-in 活测，见 [tests/live/README.md](tests/live/README.md)；不要提交�
 uv run pytest tests/unit tests/contract tests/integration -q
 ```
 
+## M6 原生视频与 hybrid（opt-in）
+
+默认分析模式仍是 **frames**（不上传远程视频）。`native-video` 与 `hybrid` 为质量增强路径，
+需显式开启；CI 使用 `FakeNativeVideoBackend`，不调用真实供应商。
+
+```bash
+uv run yt2class analyze \
+  --evidence output/runs/<lesson-id>/evidence/evidence-bundle.json \
+  --output output/runs/<lesson-id>/analysis \
+  --provider fake \
+  --mode frames   # 默认；可选 native-video | hybrid
+```
+
+分析产物除 CourseMap / SegmentManifest / KnowledgeDocument 外，还会写入
+`analysis/media-privacy-audit.json`（上传范围、保留策略、用量与补证据预算快照）。
+离线 `review.html` 在 bundle 携带 `media_privacy` 时展示相同摘要。合成对照见
+[docs/examples/m6-mode-comparison.json](docs/examples/m6-mode-comparison.json)。
+
 ## M3 全局编辑、核验与人工审阅
 
 M3 在 KnowledgeDocument 之上做页数约束下的 EditorialPlan、逐条 claim 核验和离线审阅包。

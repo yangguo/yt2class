@@ -24,6 +24,7 @@
   <h1>离线审阅 / review</h1>
   <p class="warn">Draft / evidence-only 材料有可见标识，不能伪装成已核验结论。模型互审不是通过依据。</p>
   <div id="banner"></div>
+  <section id="privacy"></section>
   <section id="omissions"></section>
   <section id="pages"></section>
   <script id="review-bundle" type="application/json">__REVIEW_BUNDLE_JSON__</script>
@@ -53,6 +54,22 @@
     banner.className = "banner " + mode;
     banner.textContent = "quality_mode=" + mode + " revision=" + bundle.revision +
       (bundle.report && bundle.report.human_sampling_required ? " · 需要人工抽样核验" : "");
+    const privacy = document.getElementById("privacy");
+    if (bundle.media_privacy) {
+      addText(privacy, "h2", "媒体上传与隐私");
+      const mp = bundle.media_privacy;
+      addText(privacy, "p", mp.summary || "");
+      addText(privacy, "p", "media_uploaded=" + String(mp.media_uploaded) + " mode=" + mp.analysis_mode);
+      const uploadList = document.createElement("ul");
+      (mp.uploads || []).forEach((row) => {
+        const range = row.source_range || {};
+        const text = (row.upload_id || "") + " " + (row.state || "") + " [" +
+          range.start_seconds + "s," + range.end_seconds + "s] retention=" +
+          (row.retention_policy || "") + " video_s=" + (row.usage_video_seconds || 0);
+        addText(uploadList, "li", text);
+      });
+      privacy.appendChild(uploadList);
+    }
     const omit = document.getElementById("omissions");
     addText(omit, "h2", "遗漏主题");
     const omitList = document.createElement("ul");

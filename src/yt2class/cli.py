@@ -13,6 +13,7 @@ from yt2class.domain.knowledge import KnowledgeDocument
 from yt2class.domain.review import ReviewEdits
 from yt2class.domain.transcript import TranscriptDocument
 from yt2class.domain.verification import QualityMode, StrictClosureError, VerificationReport
+from yt2class.domain.slide_spec_v3 import AnalysisMode
 from yt2class.domain.visual import VisualCatalogue
 from yt2class.inputs import read_urls
 from yt2class.orchestration.analyze import analyze_evidence_bundle, write_analysis_artifacts
@@ -141,6 +142,11 @@ def analyze(
         "--provider",
         help="Only the tested FakeProvider path is available ('fake').",
     ),
+    mode: AnalysisMode = typer.Option(
+        "frames",
+        "--mode",
+        help="Analysis input mode. Default frames; native-video and hybrid are opt-in.",
+    ),
 ) -> None:
     """Analyze an EvidenceBundle with FakeProvider. Not a live LLM."""
 
@@ -152,7 +158,17 @@ def analyze(
         raise typer.Exit(code=2)
     try:
         bundle = EvidenceBundle.model_validate_json(evidence.read_text(encoding="utf-8"))
-        result = analyze_evidence_bundle(bundle, output_dir=output)
+        native_adapter = None
+        if mode in {"native-video", "hybrid"}:
+            from yt2class.adapters.providers.native_video import fake_native_adapter
+
+            native_adapter = fake_native_adapter()
+        result = analyze_evidence_bundle(
+            bundle,
+            output_dir=output,
+            analysis_mode=mode,
+            native_adapter=native_adapter,
+        )
         paths = write_analysis_artifacts(result, output)
     except (OSError, ValueError) as error:
         typer.echo(f"Analyze failed: {error}", err=True)
@@ -160,7 +176,8 @@ def analyze(
     typer.echo(
         f"OK fake analysis -> {paths['knowledge']} "
         f"(coverage={'complete' if result.coverage_complete else 'gaps'}; "
-        f"topics={len(result.course_map.topics)}; claims={len(result.knowledge.iter_claims())})"
+        f"topics={len(result.course_map.topics)}; claims={len(result.knowledge.iter_claims())}; "
+        f"mode={mode})"
     )
 
 

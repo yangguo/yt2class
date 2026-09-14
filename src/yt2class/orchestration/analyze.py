@@ -12,7 +12,10 @@ from threading import Event
 from typing import Any
 
 from yt2class.adapters.providers.base import Provider, ProviderCapabilities
+from yt2class.adapters.providers.native_video import NativeVideoAdapter
 from yt2class.adapters.providers.synthetic import fake_course_provider
+from yt2class.domain.media_audit import MediaPrivacyAudit
+from yt2class.domain.slide_spec_v3 import AnalysisMode
 from yt2class.domain.course_map import CourseMap
 from yt2class.domain.evidence import EvidenceBundle
 from yt2class.domain.knowledge import KnowledgeDocument
@@ -49,6 +52,7 @@ class AnalysisResult:
     outcomes: list[SegmentAnalysisOutcome]
     coverage_complete: bool
     gap_reasons: list[str]
+    media_audit: MediaPrivacyAudit | None = None
 
     def m2_gate_ok(self) -> bool:
         if not self.coverage_complete:
@@ -73,6 +77,9 @@ def analyze_course(
     output_dir: Path | None = None,
     frame_extractor: Any = None,
     clip_extractor: Any = None,
+    analysis_mode: AnalysisMode = "frames",
+    native_adapter: NativeVideoAdapter | None = None,
+    media_path: Path | None = None,
 ) -> AnalysisResult:
     """Run the M2 understanding loop. ``page_budget`` is accepted and ignored."""
 
@@ -104,6 +111,7 @@ def analyze_course(
         course_map=course_map,
         provider=active,
         cancel_event=cancel_event,
+        analysis_mode=analysis_mode,
     )
     budget = RefinementBudget()
     current_visual = visual
@@ -137,7 +145,34 @@ def analyze_course(
     if not refined_units:
         refined_units = units
 
+    from yt2class.orchestration.hybrid_analysis import (
+        apply_hybrid_native_pass,
+        build_media_privacy_audit,
+    )
+
+    refined_outcomes, budget = apply_hybrid_native_pass(
+        refined_outcomes,
+        analysis_mode=analysis_mode,
+        transcript=transcript,
+        visual=current_visual,
+        course_map=course_map,
+        capabilities=caps,
+        duration_seconds=duration_seconds,
+        native_adapter=native_adapter,
+        media_path=media_path,
+        budget=budget,
+        cancel_event=cancel_event,
+    )
+    if refined_outcomes:
+        refined_units = [unit for outcome in refined_outcomes for unit in outcome.units]
+
     knowledge = reduce_knowledge(refined_units, source_id=source_id, course_map=course_map)
+    media_audit = build_media_privacy_audit(
+        source_id=source_id,
+        analysis_mode=analysis_mode,
+        adapter=native_adapter,
+        budget=budget,
+    )
     gap_reasons = [
         window.failure_reason or window.status
         for window in segments.windows
@@ -158,6 +193,7 @@ def analyze_course(
         outcomes=refined_outcomes,
         coverage_complete=coverage,
         gap_reasons=gap_reasons,
+        media_audit=media_audit,
     )
 
 
@@ -171,7 +207,14 @@ def analyze_evidence_bundle(
     cancel_event: Event | None = None,
     frame_extractor: Any = None,
     clip_extractor: Any = None,
+    analysis_mode: AnalysisMode = "frames",
+    native_adapter: NativeVideoAdapter | None = None,
 ) -> AnalysisResult:
+    media_path = None
+    if bundle.source.media_path:
+        candidate = Path(bundle.source.media_path)
+        if candidate.is_file():
+            media_path = candidate
     return analyze_course(
         source_id=bundle.source_id,
         duration_seconds=bundle.duration_seconds,
@@ -184,6 +227,9 @@ def analyze_evidence_bundle(
         cancel_event=cancel_event,
         frame_extractor=frame_extractor,
         clip_extractor=clip_extractor,
+        analysis_mode=analysis_mode,
+        native_adapter=native_adapter,
+        media_path=media_path,
     )
 
 
@@ -199,4 +245,8 @@ def write_analysis_artifacts(result: AnalysisResult, output_dir: Path) -> dict[s
     )
     paths["segments"].write_text(result.segments.model_dump_json(indent=2), encoding="utf-8")
     paths["knowledge"].write_text(result.knowledge.model_dump_json(indent=2), encoding="utf-8")
+    if result.media_audit is not None:
+        audit_path = output_dir / "media-privacy-audit.json"
+        audit_path.write_text(result.media_audit.model_dump_json(indent=2), encoding="utf-8")
+        paths["media_audit"] = audit_path
     return paths
