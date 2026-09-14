@@ -2,16 +2,16 @@
 
 Turn course videos into source-faithful PPTX lecture notes: transcript and visual evidence, full-timeline LLM understanding, claim verification, human review, and SlideSpec 3.0 rendering via PptxGenJS.
 
-**Shipped (M0–M6):** versioned contracts, evidence extraction, analysis, editorial/verify/review, bind/render, `build-run` / `batch` / `resume` / `doctor`, and opt-in `native-video` / `hybrid` analysis.  
-**M7 (this milestone):** evaluation harness, fixture scorecards, performance/recoverability tests, release checklist — not a claim that annotated live eval gates are met (see [docs/examples/m7-known-limits.md](docs/examples/m7-known-limits.md)).
+**Shipped (M0–M6):** versioned contracts, evidence extraction, analysis, editorial/verify/review, bind/render, `build-run` / `batch` / `resume` / `doctor`, and opt-in `native-video` / `hybrid` analysis modes (with **fake** transports in CI).  
+**M7:** evaluation harness, fixture scorecards, release checklist — annotated live quality gates are **not** claimed met ([docs/examples/m7-known-limits.md](docs/examples/m7-known-limits.md)).
 
-**Roadmap:** dated live YouTube/provider eval rows, additional vendor adapters — see [implementation plan](docs/plans/2026-08-11-youtube-to-ppt-implementation.md).
+**Roadmap:** wire real HTTP vision providers on the M5 path, dated live evals, vendor adapters — see [implementation plan](docs/plans/2026-08-11-youtube-to-ppt-implementation.md).
 
 ```text
 ingest → evidence → analyze → plan → verify → review → bind → render
 ```
 
-Default analysis mode is **frames** (no remote video upload). Hybrid and native-video are **opt-in**.
+Default analysis mode is **frames**. Hybrid and native-video are **opt-in**; offline CLI uses `FakeProvider` / `FakeNativeVideoBackend` unless you run `@pytest.mark.live` tests.
 
 ## Requirements
 
@@ -26,15 +26,13 @@ uv sync
 uv run yt2class doctor
 ```
 
-Build the bundled renderer before packaging wheels (handled automatically by the hatch build hook when `npm` is available):
-
-```bash
-./scripts/prepare_renderer_bundle.sh
-```
+Build the bundled renderer before packaging wheels (hatch build hook or `scripts/prepare_renderer_bundle.sh`).
 
 ## Quick start (M5 product CLI)
 
-Example config (JSON): [docs/examples/course.fixture.json](docs/examples/course.fixture.json).
+The product path (`build-run`, `batch`, `resume`, and stage commands below) currently wires **`analysis.provider: fake` only**. Requests for any other provider fail closed with `PipelineError` until real adapters are integrated on this path. Use `tests/live/` for opt-in real-model runs.
+
+Example config: [docs/examples/course.fixture.json](docs/examples/course.fixture.json) (keep `"provider": "fake"` for offline/CI).
 
 **Local video + subtitles**
 
@@ -46,7 +44,7 @@ uv run yt2class build-run \
   --output runs
 ```
 
-**YouTube URL**
+**YouTube URL** (needs `yt-dlp`; still uses fake analysis unless you extend the pipeline)
 
 ```bash
 uv run yt2class build-run \
@@ -55,13 +53,13 @@ uv run yt2class build-run \
   --output runs
 ```
 
-**Resume after interrupt or budget pause** (exit code `2`)
+**Resume** after interrupt or budget pause (exit code `2`)
 
 ```bash
 uv run yt2class resume --run runs/<run-id>
 ```
 
-**Batch** (one URL or local path per line; exit code `3` on partial failure)
+**Batch** (exit code `3` on partial failure)
 
 ```bash
 uv run yt2class batch --inputs courses.txt --output runs --config docs/examples/course.fixture.json
@@ -69,9 +67,7 @@ uv run yt2class batch --inputs courses.txt --output runs --config docs/examples/
 
 Exit codes: `0` success, `1` failure, `2` review/budget pause, `3` batch partial failure.
 
-### Stage-level commands
-
-Useful for debugging or partial reruns (offline tests use `--provider fake`):
+### Stage-level commands (fake provider)
 
 ```bash
 uv run yt2class analyze \
@@ -87,11 +83,11 @@ uv run yt2class review --knowledge ... --plan ... --report ... --transcript ... 
 uv run yt2class render --run runs/<run-id>
 ```
 
-Analysis modes: `frames` (default), `native-video`, `hybrid`. Privacy summary: `analysis/media-privacy-audit.json` and review HTML when enabled. See [docs/examples/m6-mode-comparison.json](docs/examples/m6-mode-comparison.json).
+**Analysis modes:** `frames` (default), `native-video`, `hybrid`. In the shipped CLI, native/hybrid use the **fake** native video backend when `provider` is `fake`; no real vendor upload occurs. A `media-privacy-audit.json` is still written for mode auditing. Fixture-only mode comparison numbers: [docs/examples/m6-mode-comparison.json](docs/examples/m6-mode-comparison.json) (not measured hybrid gain).
 
 ## Copyright-safe fixtures
 
-CI and docs use synthetic JSON under `tests/fixtures/contracts/` and helpers in `tests/helpers/`. Do not commit licensed course video, cookies, or API keys. For eval slots see [evals/manifest.yaml](evals/manifest.yaml) and [docs/examples/eval-media-authorization.md](docs/examples/eval-media-authorization.md).
+Synthetic JSON under `tests/fixtures/contracts/` and helpers in `tests/helpers/`. No licensed video, cookies, or API keys in git. Eval slots: [evals/manifest.yaml](evals/manifest.yaml), [docs/examples/eval-media-authorization.md](docs/examples/eval-media-authorization.md).
 
 ## Run layout
 
@@ -107,11 +103,13 @@ runs/<run-id>/
   previews/
 ```
 
-`doctor --json` reports ffmpeg, yt-dlp, Node, renderer bundle, fonts, and preview backend without printing secrets.
+`doctor --json` checks tools and renderer bundle without printing secrets.
 
-## Provider configuration
+## Legacy prototype: `build --links`
 
-Configure a vision-capable HTTP endpoint (or use `fake` in tests). Keys via environment variables only — never in git.
+The original YouTube batch prototype uses a separate code path (`llm.py`) and **does not** run the M5 stage DAG or SlideSpec 3.0 product pipeline.
+
+Optional vision HTTP for that legacy path only (not `build-run`):
 
 ```bash
 export YT2CLASS_MODEL_URL="https://your-endpoint/v1/chat/completions"
@@ -119,11 +117,7 @@ export YT2CLASS_MODEL_KEY="..."
 export YT2CLASS_MODEL="your-vision-model"
 ```
 
-Frames mode sends images to the configured provider; native/hybrid may upload capped video clips when explicitly enabled. Review `media-privacy-audit.json` before enabling uploads.
-
-## Legacy prototype: `build --links`
-
-The original YouTube batch prototype remains for compatibility. It does **not** run the full M5 stage DAG or SlideSpec 3.0 product path.
+Also supported on the legacy path: `OPENAI_API_KEY` (optional `OPENAI_BASE_URL`) and Anthropic-compatible variables. DeepSeek routes are treated as text-only with offline fallback.
 
 ```bash
 uv run yt2class build --links links.txt --output output --max-slides 12 --preview
@@ -138,12 +132,12 @@ uv run pytest -q
 uv run pytest tests/contract/test_eval_contract.py -q
 ```
 
-Live network tests: `tests/live/` (`@pytest.mark.live`). M5 scenario matrix: [docs/examples/m5-mvp-matrix.md](docs/examples/m5-mvp-matrix.md).
+Live: `tests/live/` (`@pytest.mark.live`). M5 matrix: [docs/examples/m5-mvp-matrix.md](docs/examples/m5-mvp-matrix.md). Recoverability coverage is split across `tests/integration/test_resume.py`, `tests/integration/test_render_cache_validation.py`, `tests/unit/test_runtime_policy.py`, and incremental checks in `tests/integration/test_m7_recoverability.py`.
 
 ## M7 evaluation
 
-- Manifest: [evals/manifest.yaml](evals/manifest.yaml)
-- Scoring: [evals/scoring.py](evals/scoring.py)
+- Manifest: [evals/manifest.yaml](evals/manifest.yaml) (10 short segments + 1 long-course slot)
+- Scoring: [evals/scoring.py](evals/scoring.py) — `evals/comparison.py` scores are **fixture projections**
 - Example scorecard: [evals/reports/scorecard.fixture.json](evals/reports/scorecard.fixture.json)
 - Release gate: [docs/release-checklist.md](docs/release-checklist.md)
 
