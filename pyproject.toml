@@ -28,6 +28,7 @@ path = "hatch_build.py"
 dev = [
   "pytest>=8.3",
   "hatchling>=1.25",
+  "pyyaml>=6.0",
 ]
 
 [tool.pytest.ini_options]

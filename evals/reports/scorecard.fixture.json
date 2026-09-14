@@ -1,0 +1,55 @@
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-09-14T00:00:00Z",
+  "manifest_version": "1.0",
+  "mode": "frames-multimodal",
+  "limits_acknowledged": [
+    "Annotated human eval set not yet run on licensed media (fixture projection only).",
+    "Design target ≥90% must-surface knowledge not verified in CI.",
+    "Hybrid default remains opt-in; frames is default analysis mode."
+  ],
+  "segments": [
+    {
+      "segment_id": "syn-static-01",
+      "mode": "frames-multimodal",
+      "agreement": 0.98,
+      "adjudication_notes": "Dual-rater fixture example for contract tests.",
+      "rater_a": {
+        "rater_id": "rater-alpha",
+        "scores": {
+          "coverage": 0.84,
+          "factual_error_rate": 0.04,
+          "screenshot_readability": 0.9,
+          "layout_quality": 0.88,
+          "estimated_cost_usd": 0.18,
+          "wall_clock_seconds": 420.0,
+          "model_calls": 24,
+          "image_count": 48
+        }
+      },
+      "rater_b": {
+        "rater_id": "rater-beta",
+        "scores": {
+          "coverage": 0.82,
+          "factual_error_rate": 0.05,
+          "screenshot_readability": 0.88,
+          "layout_quality": 0.86,
+          "estimated_cost_usd": 0.19,
+          "wall_clock_seconds": 435.0,
+          "model_calls": 24,
+          "image_count": 48
+        }
+      },
+      "merged": {
+        "coverage": 0.83,
+        "factual_error_rate": 0.045,
+        "screenshot_readability": 0.89,
+        "layout_quality": 0.87,
+        "estimated_cost_usd": 0.185,
+        "wall_clock_seconds": 427.5,
+        "model_calls": 24,
+        "image_count": 48
+      }
+    }
+  ]
+}
