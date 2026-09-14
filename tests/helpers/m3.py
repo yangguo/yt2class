@@ -221,3 +221,22 @@ def lecture_knowledge() -> tuple[KnowledgeDocument, CourseMap, TranscriptDocumen
         ),
     )
     return doc, topics, transcript, visual
+
+
+def grounding_provider(*, verdict="supported", copy_verdict="supported"):
+    """Scripted verdicts for pipeline tests, not an entailment implementation."""
+    from yt2class.adapters.providers.base import FakeProvider
+    from tests.helpers.m2 import frames_caps
+
+    def respond(provider, request):
+        payload = provider.last_payload or {}
+        rows = []
+        for claim in payload.get("claims", []):
+            chosen = copy_verdict if claim["id"] == "copy" else verdict
+            ids = [key for key, text in payload.get("evidence", {}).items() if text.strip()]
+            rows.append(dict(claim_id=claim["id"], verdict=chosen,
+                             supporting_ids=ids if chosen == "supported" else [],
+                             contradicting_ids=ids if chosen == "contradicted" else [],
+                             reason="scripted fixture verdict"))
+        return {"verdicts": rows}
+    return FakeProvider(frames_caps(), responder=respond)

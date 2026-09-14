@@ -11,7 +11,7 @@ from yt2class.stages.edit_deck import (
     select_candidates,
 )
 from tests.helpers.m2 import frames_caps, make_transcript, make_visual
-from tests.helpers.m3 import concept_unit, course_map, knowledge, lecture_knowledge
+from tests.helpers.m3 import grounding_provider, concept_unit, course_map, knowledge, lecture_knowledge
 
 
 def _provider(structured=None, **kwargs) -> FakeProvider:
@@ -540,7 +540,7 @@ def test_injected_editor_title_cannot_become_strict_verified():
         plan=plan,
         transcript=transcript,
         visual=visual,
-        provider=FakeProvider(frames_caps()),
+        provider=grounding_provider(copy_verdict="insufficient"),
         quality_mode="strict",
     )
     injected = [page for page in outcome.plan.pages if page.title == "服用 500 毫克"]

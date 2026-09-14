@@ -24,12 +24,12 @@ from yt2class.stages.review import (
 )
 from yt2class.stages.verify_claims import page_copy_grounded, verify_claims
 from tests.helpers.m2 import DIGEST_A, frames_caps, make_transcript, make_visual
-from tests.helpers.m3 import concept_unit, course_map, knowledge, lecture_knowledge
+from tests.helpers.m3 import grounding_provider, concept_unit, course_map, knowledge, lecture_knowledge
 
 
 def _verified_bundle():
     doc, topics, transcript, visual = lecture_knowledge()
-    provider = FakeProvider(frames_caps())
+    provider = grounding_provider()
     plan = edit_deck(
         doc,
         course_map=topics,
@@ -52,7 +52,7 @@ def _verified_bundle():
 
 def test_review_bundle_shows_frames_claims_transcript_time_links_and_omissions():
     doc, topics, transcript, visual = lecture_knowledge()
-    provider = FakeProvider(frames_caps())
+    provider = grounding_provider()
     plan = edit_deck(
         doc,
         course_map=topics,
@@ -98,7 +98,7 @@ def test_review_html_marks_draft_and_evidence_only():
         course_map=topics,
         transcript=transcript,
         visual=visual,
-        provider=FakeProvider(frames_caps()),
+        provider=grounding_provider(),
         target_pages=8,
         max_pages=10,
     )
@@ -107,7 +107,7 @@ def test_review_html_marks_draft_and_evidence_only():
         plan=plan,
         transcript=transcript,
         visual=visual,
-        provider=FakeProvider(frames_caps()),
+        provider=grounding_provider(),
         quality_mode="draft",
     )
     evidence = verify_claims(
@@ -115,7 +115,7 @@ def test_review_html_marks_draft_and_evidence_only():
         plan=plan,
         transcript=transcript,
         visual=visual,
-        provider=FakeProvider(frames_caps()),
+        provider=grounding_provider(),
         quality_mode="evidence-only",
     )
     draft_html = render_review_html(
@@ -169,7 +169,7 @@ def test_allowed_ops_and_rejected_unknown_ops():
         knowledge=outcome.knowledge,
         transcript=transcript,
         visual=visual,
-        provider=FakeProvider(frames_caps()),
+        provider=grounding_provider(),
     )
     changed = next(page for page in updated.plan.pages if page.id == content.id)
     assert changed.title == "改写后的标题"
@@ -188,12 +188,13 @@ def test_allowed_ops_and_rejected_unknown_ops():
             knowledge=outcome.knowledge,
             transcript=transcript,
             visual=visual,
-            provider=FakeProvider(frames_caps()),
+            provider=grounding_provider(),
             allowed_ops=(),
         )
 
 
-def test_false_edit_copy_cannot_remain_verified():
+@pytest.mark.parametrize("copy_verdict", ["supported", "contradicted", "insufficient"])
+def test_edit_copy_requires_provider_grounding(copy_verdict):
     unit = concept_unit(
         "unit-ok",
         "claim-ok",
@@ -211,7 +212,7 @@ def test_false_edit_copy_cannot_remain_verified():
         duration=10.0,
         ocr=[("ocr-ok", "frame-ok", "自动词 ではない")],
     )
-    provider = FakeProvider(frames_caps())
+    provider = grounding_provider()
     plan = edit_deck(
         doc,
         course_map=topics,
@@ -226,7 +227,7 @@ def test_false_edit_copy_cannot_remain_verified():
         plan=plan,
         transcript=transcript,
         visual=visual,
-        provider=FakeProvider(frames_caps()),
+        provider=grounding_provider(),
         quality_mode="strict",
     )
     assert any(page.quality_label == "verified" and page.type == "content" for page in outcome.plan.pages)
@@ -248,346 +249,21 @@ def test_false_edit_copy_cannot_remain_verified():
                 {
                     "op": "edit_copy",
                     "page_id": target.id,
-                    "title": "水在 100 度沸腾。",
-                    "notes": "地球是平的。",
-                    "body_points": ["板书写了公式。"],
+                    "title": "El flujo aumenta.",
+                    "notes": "El caudal se incrementa.",
+                    "body_points": ["El flujo aumenta."],
                 }
             ],
         ),
         knowledge=outcome.knowledge,
         transcript=transcript,
         visual=visual,
-        provider=FakeProvider(frames_caps()),
+        provider=grounding_provider(copy_verdict=copy_verdict),
         quality_mode="strict",
     )
     changed = next(page for page in updated.plan.pages if page.id == target.id)
-    assert changed.title == "水在 100 度沸腾。"
-    assert changed.quality_label != "verified"
-    assert changed.quality_label == "draft"
-    assert "[DRAFT]" in changed.notes
-
-
-def test_contradictory_edit_copy_cannot_stay_verified():
-    unit = concept_unit(
-        "unit-flow",
-        "claim-flow",
-        "阀门打开后水流增加",
-        ["cap-flow"],
-        start=0.0,
-        end=10.0,
-        modality="audio",
-    )
-    doc = knowledge(unit)
-    topics = course_map([("topic-1", "水流", 0.0, 10.0)])
-    transcript = make_transcript([("cap-flow", 0.0, 10.0, "阀门打开后水流增加")], duration=10.0)
-    visual = make_visual([], duration=10.0)
-    provider = FakeProvider(frames_caps())
-    plan = edit_deck(
-        doc,
-        course_map=topics,
-        transcript=transcript,
-        visual=visual,
-        provider=provider,
-        target_pages=4,
-        max_pages=6,
-    )
-    outcome = verify_claims(
-        doc,
-        plan=plan,
-        transcript=transcript,
-        visual=visual,
-        provider=FakeProvider(frames_caps()),
-        quality_mode="strict",
-    )
-    assert any(page.quality_label == "verified" and "claim-flow" in page.claim_ids for page in outcome.plan.pages)
-    bundle = build_review_bundle(
-        knowledge=outcome.knowledge,
-        plan=outcome.plan,
-        report=outcome.report,
-        transcript=transcript,
-        visual=visual,
-        course_map=topics,
-    )
-    target = next(page for page in bundle.plan.pages if "claim-flow" in page.claim_ids)
-    updated = apply_review_edits(
-        bundle,
-        ReviewEdits(
-            revision=bundle.revision,
-            baseline_hashes=bundle.baseline_hashes,
-            ops=[
-                {
-                    "op": "edit_copy",
-                    "page_id": target.id,
-                    "title": "阀门打开后水流减少",
-                    "notes": "阀门打开后水流减少",
-                    "body_points": ["阀门打开后水流减少"],
-                }
-            ],
-        ),
-        knowledge=outcome.knowledge,
-        transcript=transcript,
-        visual=visual,
-        provider=FakeProvider(frames_caps()),
-        quality_mode="strict",
-    )
-    changed = next(page for page in updated.plan.pages if page.id == target.id)
-    assert changed.title == "阀门打开后水流减少"
-    assert changed.quality_label != "verified"
-    assert changed.quality_label == "draft"
-    assert page_copy_grounded(
-        changed, knowledge=updated.knowledge, transcript=transcript, visual=visual
-    ) is False
-
-
-def test_unlisted_opposite_edit_copy_cannot_stay_verified():
-    unit = concept_unit(
-        "unit-flow",
-        "claim-flow",
-        "阀门打开后水流变多",
-        ["cap-flow"],
-        start=0.0,
-        end=10.0,
-        modality="audio",
-    )
-    doc = knowledge(unit)
-    topics = course_map([("topic-1", "水流", 0.0, 10.0)])
-    transcript = make_transcript([("cap-flow", 0.0, 10.0, "阀门打开后水流变多")], duration=10.0)
-    visual = make_visual([], duration=10.0)
-    plan = edit_deck(
-        doc,
-        course_map=topics,
-        transcript=transcript,
-        visual=visual,
-        provider=FakeProvider(frames_caps()),
-        target_pages=4,
-        max_pages=6,
-    )
-    outcome = verify_claims(
-        doc,
-        plan=plan,
-        transcript=transcript,
-        visual=visual,
-        provider=FakeProvider(frames_caps()),
-        quality_mode="strict",
-    )
-    assert any(
-        page.quality_label == "verified" and "claim-flow" in page.claim_ids
-        for page in outcome.plan.pages
-    )
-    bundle = build_review_bundle(
-        knowledge=outcome.knowledge,
-        plan=outcome.plan,
-        report=outcome.report,
-        transcript=transcript,
-        visual=visual,
-        course_map=topics,
-    )
-    target = next(page for page in bundle.plan.pages if "claim-flow" in page.claim_ids)
-    updated = apply_review_edits(
-        bundle,
-        ReviewEdits(
-            revision=bundle.revision,
-            baseline_hashes=bundle.baseline_hashes,
-            ops=[
-                {
-                    "op": "edit_copy",
-                    "page_id": target.id,
-                    "title": "阀门打开后水流变少",
-                    "notes": "阀门打开后水流变少",
-                    "body_points": ["阀门打开后水流变少"],
-                }
-            ],
-        ),
-        knowledge=outcome.knowledge,
-        transcript=transcript,
-        visual=visual,
-        provider=FakeProvider(frames_caps()),
-        quality_mode="strict",
-    )
-    changed = next(page for page in updated.plan.pages if page.id == target.id)
-    assert changed.title == "阀门打开后水流变少"
-    assert changed.quality_label == "draft"
-    assert page_copy_grounded(
-        changed, knowledge=updated.knowledge, transcript=transcript, visual=visual
-    ) is False
-
-
-def test_measure_form_edit_copy_cannot_stay_verified():
-    """Evidence saying 变多少 (how much it changed) cannot back copy asserting 变多."""
-
-    measured = "阀门打开后水流变多少取决于阀门开度"
-    unit = concept_unit(
-        "unit-flow",
-        "claim-flow",
-        measured,
-        ["cap-flow"],
-        start=0.0,
-        end=10.0,
-        modality="audio",
-    )
-    doc = knowledge(unit)
-    topics = course_map([("topic-1", "水流", 0.0, 10.0)])
-    transcript = make_transcript([("cap-flow", 0.0, 10.0, measured)], duration=10.0)
-    visual = make_visual([], duration=10.0)
-    plan = edit_deck(
-        doc,
-        course_map=topics,
-        transcript=transcript,
-        visual=visual,
-        provider=FakeProvider(frames_caps()),
-        target_pages=4,
-        max_pages=6,
-    )
-    outcome = verify_claims(
-        doc,
-        plan=plan,
-        transcript=transcript,
-        visual=visual,
-        provider=FakeProvider(frames_caps()),
-        quality_mode="strict",
-    )
-    assert any(
-        page.quality_label == "verified" and "claim-flow" in page.claim_ids
-        for page in outcome.plan.pages
-    )
-    bundle = build_review_bundle(
-        knowledge=outcome.knowledge,
-        plan=outcome.plan,
-        report=outcome.report,
-        transcript=transcript,
-        visual=visual,
-        course_map=topics,
-    )
-    target = next(page for page in bundle.plan.pages if "claim-flow" in page.claim_ids)
-    updated = apply_review_edits(
-        bundle,
-        ReviewEdits(
-            revision=bundle.revision,
-            baseline_hashes=bundle.baseline_hashes,
-            ops=[
-                {
-                    "op": "edit_copy",
-                    "page_id": target.id,
-                    "title": "阀门打开后水流变多",
-                    "notes": "阀门打开后水流变多",
-                    "body_points": ["阀门打开后水流变多"],
-                }
-            ],
-        ),
-        knowledge=outcome.knowledge,
-        transcript=transcript,
-        visual=visual,
-        provider=FakeProvider(frames_caps()),
-        quality_mode="strict",
-    )
-    changed = next(page for page in updated.plan.pages if page.id == target.id)
-    assert changed.title == "阀门打开后水流变多"
-    assert changed.quality_label == "draft"
-    assert page_copy_grounded(
-        changed, knowledge=updated.knowledge, transcript=transcript, visual=visual
-    ) is False
-
-
-@pytest.mark.parametrize(
-    ("copy", "measured"),
-    [
-        ("水流变多", "水流变多。温度保持不变。然后下降了"),
-        ("阀门打开后水流变多", "阀门打开后水流变多。记录温度。然后它下降了"),
-        ("the flow increases", "the flow increases. temperature is constant. Later it drops"),
-        ("the flow increases", "the flow increases at speed. Later it drops"),
-        ("水压升高", "水压升高然后压力降低"),
-        ("水面升高", "水面升高随后水位降低"),
-        ("液面升高", "液面升高随后液位降低"),
-        ("水流变多", "水流变多却下降了"),
-        ("水流变多", "水流变多，随后下降了"),
-        ("the flow increases", "the flow increases and then it decreases"),
-        ("the flow increases", "the flow increases. Later it drops"),
-        ("水流变多", "水流变多，然后它下降了"),
-        ("水流变多", "水流变多然后流量下降了"),
-        ("水位升高", "水位升高随后液位降低"),
-        ("压力升高", "压力升高然后压强降低"),
-        ("prices increase", "prices increase. they decrease afterwards"),
-        ("变多", "变多却下降了"),
-        ("阀门打开后水流变多", "阀门打开后水流变多却下降了"),
-        ("阀门打开后水流变多", "阀门打开后水流变多然后下降了"),
-        ("阀门打开后水流变多", "阀门打开后水流变多不变少"),
-    ],
-)
-@pytest.mark.parametrize("prefix", ["", "本节课程讨论实验背景和观察方法。" * 30])
-def test_unsettled_evidence_edit_copy_cannot_stay_verified(copy, measured, prefix):
-    """One-sided copy cannot ride evidence that carries both polarities."""
-
-    measured = prefix + measured
-    unit = concept_unit(
-        "unit-flow",
-        "claim-flow",
-        measured,
-        ["cap-flow"],
-        start=0.0,
-        end=10.0,
-        modality="audio",
-    )
-    doc = knowledge(unit)
-    topics = course_map([("topic-1", "水流", 0.0, 10.0)])
-    transcript = make_transcript([("cap-flow", 0.0, 10.0, measured)], duration=10.0)
-    visual = make_visual([], duration=10.0)
-    plan = edit_deck(
-        doc,
-        course_map=topics,
-        transcript=transcript,
-        visual=visual,
-        provider=FakeProvider(frames_caps()),
-        target_pages=4,
-        max_pages=6,
-    )
-    outcome = verify_claims(
-        doc,
-        plan=plan,
-        transcript=transcript,
-        visual=visual,
-        provider=FakeProvider(frames_caps()),
-        quality_mode="strict",
-    )
-    assert any(
-        page.quality_label == "verified" and "claim-flow" in page.claim_ids
-        for page in outcome.plan.pages
-    )
-    bundle = build_review_bundle(
-        knowledge=outcome.knowledge,
-        plan=outcome.plan,
-        report=outcome.report,
-        transcript=transcript,
-        visual=visual,
-        course_map=topics,
-    )
-    target = next(page for page in bundle.plan.pages if "claim-flow" in page.claim_ids)
-    updated = apply_review_edits(
-        bundle,
-        ReviewEdits(
-            revision=bundle.revision,
-            baseline_hashes=bundle.baseline_hashes,
-            ops=[
-                {
-                    "op": "edit_copy",
-                    "page_id": target.id,
-                    "title": copy,
-                    "notes": copy,
-                    "body_points": [copy],
-                }
-            ],
-        ),
-        knowledge=outcome.knowledge,
-        transcript=transcript,
-        visual=visual,
-        provider=FakeProvider(frames_caps()),
-        quality_mode="strict",
-    )
-    changed = next(page for page in updated.plan.pages if page.id == target.id)
-    assert changed.title == copy
-    assert changed.quality_label == "draft"
-    assert page_copy_grounded(
-        changed, knowledge=updated.knowledge, transcript=transcript, visual=visual
-    ) is False
+    assert changed.title == "El flujo aumenta."
+    assert changed.quality_label == ("verified" if copy_verdict == "supported" else "draft")
 
 
 def _forged_strict_report(claim_ids, *, source_id="src-demo"):
@@ -614,7 +290,7 @@ def test_partial_strict_report_cannot_render_verified_review_pages():
         course_map=topics,
         transcript=transcript,
         visual=visual,
-        provider=FakeProvider(frames_caps()),
+        provider=grounding_provider(),
         target_pages=10,
         max_pages=12,
     )
@@ -800,7 +476,7 @@ def test_rejected_or_unrelated_pick_asset_is_rejected():
         course_map=topics,
         transcript=transcript,
         visual=visual,
-        provider=FakeProvider(frames_caps()),
+        provider=grounding_provider(),
         target_pages=4,
         max_pages=6,
     )
@@ -809,7 +485,7 @@ def test_rejected_or_unrelated_pick_asset_is_rejected():
         plan=plan,
         transcript=transcript,
         visual=visual,
-        provider=FakeProvider(frames_caps()),
+        provider=grounding_provider(),
         quality_mode="draft",
     )
     bundle = build_review_bundle(
@@ -833,7 +509,7 @@ def test_rejected_or_unrelated_pick_asset_is_rejected():
             knowledge=outcome.knowledge,
             transcript=transcript,
             visual=visual,
-            provider=FakeProvider(frames_caps()),
+            provider=grounding_provider(),
         )
     with pytest.raises(IllegalReviewOpError, match="rejected|unrelated|allowed"):
         apply_review_edits(
@@ -846,7 +522,7 @@ def test_rejected_or_unrelated_pick_asset_is_rejected():
             knowledge=outcome.knowledge,
             transcript=transcript,
             visual=visual,
-            provider=FakeProvider(frames_caps()),
+            provider=grounding_provider(),
         )
 
 
@@ -917,7 +593,7 @@ def test_two_review_rounds_repair_a_claim_only_once():
         course_map=topics,
         transcript=transcript,
         visual=visual,
-        provider=FakeProvider(frames_caps()),
+        provider=grounding_provider(),
         target_pages=4,
         max_pages=6,
     )
@@ -929,7 +605,7 @@ def test_two_review_rounds_repair_a_claim_only_once():
         provider=provider,
         quality_mode="draft",
     )
-    assert repairs == ["verifier:repair:claim-r"]
+    assert len(repairs) == 1 and repairs[0].startswith("verifier:repair:claim-r:")
     # Keep the pre-formal page that still cites the failing claim so the
     # second review round re-enters the verifier for that lifetime.
     bundle = build_review_bundle(
@@ -963,7 +639,7 @@ def test_two_review_rounds_repair_a_claim_only_once():
         existing=first.report,
         only_claim_ids={"claim-r"},
     )
-    assert repairs == ["verifier:repair:claim-r"]
+    assert len(repairs) == 1 and repairs[0].startswith("verifier:repair:claim-r:")
     assert "claim-r" in second.report.repaired_claim_ids
 
 
@@ -996,7 +672,7 @@ def test_pick_asset_delete_and_reorder():
         knowledge=outcome.knowledge,
         transcript=transcript,
         visual=visual,
-        provider=FakeProvider(frames_caps()),
+        provider=grounding_provider(),
     )
     assert victim.id not in {page.id for page in updated.plan.pages}
     assert [page.id for page in updated.plan.pages] == order
@@ -1024,7 +700,7 @@ def test_stale_revision_and_hash_are_rejected():
             knowledge=outcome.knowledge,
             transcript=transcript,
             visual=visual,
-            provider=FakeProvider(frames_caps()),
+            provider=grounding_provider(),
         )
     stale_hashes = dict(bundle.baseline_hashes)
     stale_hashes["knowledge"] = DIGEST_A
@@ -1039,7 +715,7 @@ def test_stale_revision_and_hash_are_rejected():
             knowledge=outcome.knowledge,
             transcript=transcript,
             visual=visual,
-            provider=FakeProvider(frames_caps()),
+            provider=grounding_provider(),
         )
     assert "verification" in bundle.baseline_hashes
     stale_report = dict(bundle.baseline_hashes)
@@ -1055,7 +731,7 @@ def test_stale_revision_and_hash_are_rejected():
             knowledge=outcome.knowledge,
             transcript=transcript,
             visual=visual,
-            provider=FakeProvider(frames_caps()),
+            provider=grounding_provider(),
         )
 
 
@@ -1090,7 +766,7 @@ def test_after_edits_only_affected_claims_are_reverified():
         duration=20.0,
         ocr=[("ocr-a", "frame-a", "自动词 ではない")],
     )
-    provider = FakeProvider(frames_caps())
+    provider = grounding_provider()
     plan = edit_deck(
         doc,
         course_map=topics,
@@ -1159,7 +835,7 @@ def test_binder_and_renderer_remain_m4_stubs():
         knowledge=outcome.knowledge,
         transcript=transcript,
         visual=visual,
-        provider=FakeProvider(frames_caps()),
+        provider=grounding_provider(),
         binder=stub_binder,
         renderer=stub_renderer,
     )
@@ -1281,7 +957,13 @@ def test_two_cli_review_rounds_preserve_revision_and_block_second_repair(tmp_pat
     def wrapped(self, request, *, cancel_event=None):
         if request.role == "verifier" and "repair" in request.request_id:
             repairs.append(request.request_id)
-        return original(self, request, cancel_event=cancel_event)
+        saved_responder = self._responder
+        if request.role == "verifier" and "ground" in request.request_id:
+            self._responder = grounding_provider()._responder
+        try:
+            return original(self, request, cancel_event=cancel_event)
+        finally:
+            self._responder = saved_responder
 
     monkeypatch.setattr(FakeProvider, "complete", wrapped)
 
@@ -1355,7 +1037,7 @@ def test_two_cli_review_rounds_preserve_revision_and_block_second_repair(tmp_pat
         (output / "verification-report.json").read_text(encoding="utf-8")
     )
     assert "claim-r" in first_report.repaired_claim_ids
-    assert repairs == ["verifier:repair:claim-r"]
+    assert len(repairs) == 1 and repairs[0].startswith("verifier:repair:claim-r:")
     reviewed = runner.invoke(
         app,
         [
@@ -1452,7 +1134,7 @@ def test_two_cli_review_rounds_preserve_revision_and_block_second_repair(tmp_pat
     assert second_apply.exit_code == 0, second_apply.stdout + second_apply.stderr
     after_second = ReviewBundle.model_validate_json((output / "review.json").read_text(encoding="utf-8"))
     assert after_second.revision == 3
-    assert repairs == ["verifier:repair:claim-r"]
+    assert len(repairs) == 1 and repairs[0].startswith("verifier:repair:claim-r:")
     second_report = VerificationReport.model_validate_json(
         (output / "verification-report.json").read_text(encoding="utf-8")
     )
@@ -1463,7 +1145,7 @@ def test_two_cli_review_rounds_preserve_revision_and_block_second_repair(tmp_pat
 
 def test_fake_provider_demonstrates_m3_gate(tmp_path):
     doc, topics, transcript, visual = lecture_knowledge()
-    provider = FakeProvider(frames_caps())
+    provider = grounding_provider()
     plan = edit_deck(
         doc,
         course_map=topics,
@@ -1519,7 +1201,7 @@ def test_fake_provider_demonstrates_m3_gate(tmp_path):
         course_map=ok_topics,
         transcript=ok_transcript,
         visual=ok_visual,
-        provider=FakeProvider(frames_caps()),
+        provider=grounding_provider(),
         target_pages=4,
         max_pages=6,
     )
@@ -1528,7 +1210,7 @@ def test_fake_provider_demonstrates_m3_gate(tmp_path):
         plan=ok_plan,
         transcript=ok_transcript,
         visual=ok_visual,
-        provider=FakeProvider(frames_caps()),
+        provider=grounding_provider(),
         quality_mode="strict",
     )
     assert strict.report.quality_mode == "strict"

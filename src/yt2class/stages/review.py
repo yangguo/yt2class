@@ -387,7 +387,7 @@ def apply_review_edits(
                 affected.update(page.claim_ids)
             if op.op == "edit_copy" and page is not None:
                 if not page_copy_grounded(
-                    page, knowledge=knowledge, transcript=transcript, visual=visual
+                    page, knowledge=knowledge, transcript=transcript, visual=visual, provider=provider
                 ):
                     force_draft.add(page.id)
     outcome = None
