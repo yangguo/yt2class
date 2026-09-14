@@ -50,6 +50,51 @@
       ],
       "title": "ClaimVerdict",
       "type": "object"
+    },
+    "HumanSample": {
+      "additionalProperties": false,
+      "description": "A claim reserved for human sampling. Model agreement is never sufficient.",
+      "properties": {
+        "claim_id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Claim Id",
+          "type": "string"
+        },
+        "reason": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        },
+        "check_kinds": {
+          "items": {
+            "enum": [
+              "number",
+              "negation",
+              "condition",
+              "proper_name",
+              "translation",
+              "step",
+              "image_text",
+              "generated_practice",
+              "unknown_ref",
+              "contradiction",
+              "grounding"
+            ],
+            "type": "string"
+          },
+          "maxItems": 12,
+          "title": "Check Kinds",
+          "type": "array"
+        }
+      },
+      "required": [
+        "claim_id",
+        "reason"
+      ],
+      "title": "HumanSample",
+      "type": "object"
     }
   },
   "additionalProperties": false,
@@ -103,6 +148,36 @@
       },
       "title": "Coverage Gaps",
       "type": "array"
+    },
+    "repaired_claim_ids": {
+      "items": {
+        "maxLength": 100,
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Repaired Claim Ids",
+      "type": "array"
+    },
+    "removed_from_formal": {
+      "items": {
+        "maxLength": 100,
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Removed From Formal",
+      "type": "array"
+    },
+    "human_samples": {
+      "items": {
+        "$ref": "#/$defs/HumanSample"
+      },
+      "title": "Human Samples",
+      "type": "array"
+    },
+    "human_sampling_required": {
+      "default": false,
+      "title": "Human Sampling Required",
+      "type": "boolean"
     }
   },
   "required": [

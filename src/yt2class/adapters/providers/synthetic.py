@@ -222,12 +222,75 @@ def synthetic_segment_from_payload(payload: dict[str, Any] | None) -> dict[str, 
     }
 
 
+def synthetic_editor_from_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
+    payload = payload or {}
+    selected = list(payload.get("selected") or payload.get("candidates") or [])
+    title = str(payload.get("course_title") or "课程讲义")[:80]
+    pages = [
+        {
+            "id": "intent-cover",
+            "type": "cover",
+            "layout": None,
+            "title": title,
+            "claim_ids": [],
+            "frame_ids": [],
+            "notes": "",
+            "selection_reason": "封面",
+            "quality_label": "draft",
+            "body_points": [],
+        }
+    ]
+    for item in selected:
+        pages.append(
+            {
+                "id": item.get("id") or f"intent-{len(pages):03d}",
+                "type": "quiz" if item.get("kind") == "quiz" else "content",
+                "layout": item.get("layout") or "text",
+                "title": str(item.get("title") or "要点")[:80],
+                "claim_ids": list(item.get("claim_ids") or []),
+                "frame_ids": list(item.get("frame_ids") or []),
+                "notes": item.get("notes") or "",
+                "selection_reason": item.get("selection_reason") or "候选",
+                "quality_label": "draft",
+                "body_points": list(item.get("body_points") or []),
+            }
+        )
+    pages.append(
+        {
+            "id": "intent-summary",
+            "type": "summary",
+            "layout": None,
+            "title": "本课总结",
+            "claim_ids": [claim_id for item in selected for claim_id in item.get("claim_ids") or []][:8],
+            "frame_ids": [],
+            "notes": "总结复用已选 claim。",
+            "selection_reason": "总结",
+            "quality_label": "draft",
+            "body_points": [str(item.get("title") or "")[:200] for item in selected[:4] if item.get("title")],
+        }
+    )
+    return {"pages": pages, "omissions": list(payload.get("omissions") or [])}
+
+
+def synthetic_verifier_from_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
+    payload = payload or {}
+    if payload.get("claim"):
+        claim = payload["claim"]
+        evidence = str(payload.get("evidence_text") or "")
+        return {"text": evidence[:400] or claim.get("text"), "evidence_ids": claim.get("evidence_ids") or []}
+    return {"verdicts": list(payload.get("draft_verdicts") or [])}
+
+
 def course_responder(provider: FakeProvider, request: ModelRequest) -> dict[str, Any]:
     payload = provider.last_payload
     if request.role == "outline":
         return synthetic_outline_from_payload(payload)
     if request.role == "segment":
         return synthetic_segment_from_payload(payload)
+    if request.role == "editor":
+        return synthetic_editor_from_payload(payload)
+    if request.role == "verifier":
+        return synthetic_verifier_from_payload(payload)
     return {"ok": True}
 
 

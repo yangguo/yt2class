@@ -302,6 +302,16 @@ def resolve_reference_closure(bundle: DocumentBundle) -> None:
     pending = set(bundle.verification.pending_review) - set(claims) - units
     if pending:
         raise ClosureError(f"verification pending_review cites unknown ids {sorted(pending)}")
+    extra_removed = set(bundle.verification.removed_from_formal) - set(claims)
+    if extra_removed:
+        raise ClosureError(
+            f"verification removed_from_formal cites unknown claims {sorted(extra_removed)}"
+        )
+    extra_repaired = set(bundle.verification.repaired_claim_ids) - set(claims)
+    if extra_repaired:
+        raise ClosureError(
+            f"verification repaired_claim_ids cites unknown claims {sorted(extra_repaired)}"
+        )
 
     verification_by_claim = {
         verdict.claim_id: verdict for verdict in bundle.verification.verdicts

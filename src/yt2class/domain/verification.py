@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal, Self
+from typing import Iterable, Literal, Self
 
 from pydantic import Field, model_validator
 
@@ -10,6 +10,19 @@ from yt2class.domain.common import Identifier, StrictModel, unique_ids
 
 Verdict = Literal["supported", "contradicted", "insufficient"]
 QualityMode = Literal["strict", "draft", "evidence-only"]
+CheckKind = Literal[
+    "number",
+    "negation",
+    "condition",
+    "proper_name",
+    "translation",
+    "step",
+    "image_text",
+    "generated_practice",
+    "unknown_ref",
+    "contradiction",
+    "grounding",
+]
 
 
 class ClaimVerdict(StrictModel):
@@ -18,6 +31,20 @@ class ClaimVerdict(StrictModel):
     supporting_ids: list[Identifier] = Field(default_factory=list)
     contradicting_ids: list[Identifier] = Field(default_factory=list)
     reason: str = Field(min_length=1, max_length=400)
+
+    @model_validator(mode="after")
+    def supported_requires_evidence(self) -> Self:
+        if self.verdict == "supported" and not self.supporting_ids:
+            raise ValueError("supported verdict requires supporting evidence ids")
+        return self
+
+
+class HumanSample(StrictModel):
+    """A claim reserved for human sampling. Model agreement is never sufficient."""
+
+    claim_id: Identifier
+    reason: str = Field(min_length=1, max_length=240)
+    check_kinds: list[CheckKind] = Field(default_factory=list, max_length=12)
 
 
 class VerificationReport(StrictModel):
@@ -28,11 +55,28 @@ class VerificationReport(StrictModel):
     structural_errors: list[str] = Field(default_factory=list)
     pending_review: list[Identifier] = Field(default_factory=list)
     coverage_gaps: list[str] = Field(default_factory=list)
+    repaired_claim_ids: list[Identifier] = Field(default_factory=list)
+    removed_from_formal: list[Identifier] = Field(default_factory=list)
+    human_samples: list[HumanSample] = Field(default_factory=list)
+    # Model-vs-model agreement is never a pass criterion; this is always True
+    # when any source claim remains for a human to sample.
+    human_sampling_required: bool = False
 
     @model_validator(mode="after")
     def check_verdicts(self) -> Self:
         unique_ids(self.verdicts, attr="claim_id", label="verdict claim")
+        unique_ids(self.human_samples, attr="claim_id", label="human sample")
+        verdict_ids = {item.claim_id for item in self.verdicts}
+        for sample in self.human_samples:
+            if sample.claim_id not in verdict_ids:
+                raise ValueError(f"human sample cites unknown claim {sample.claim_id!r}")
+        if self.quality_mode == "evidence-only" and any(
+            item.verdict == "supported" for item in self.verdicts
+        ):
+            raise ValueError("evidence-only verification cannot contain supported claims")
         if self.quality_mode == "strict":
+            if not self.verdicts:
+                raise ValueError("strict verification requires a closed non-empty claim set")
             unresolved = [
                 item.claim_id
                 for item in self.verdicts
@@ -44,3 +88,51 @@ class VerificationReport(StrictModel):
                     "pending review items, or structural errors"
                 )
         return self
+
+
+class StrictClosureError(ValueError):
+    """A strict report was used against a claim set it does not close over."""
+
+
+def strict_closure_errors(
+    report: VerificationReport,
+    *,
+    claim_ids: Iterable[str],
+) -> list[str]:
+    """Reasons ``report`` cannot stand as a strict verdict set for ``claim_ids``."""
+
+    expected = set(claim_ids)
+    verdict_ids = {item.claim_id for item in report.verdicts}
+    problems: list[str] = []
+    if not expected:
+        problems.append("no claims to verify")
+    if missing := sorted(expected - verdict_ids):
+        problems.append(f"missing verdicts for {missing}")
+    if unknown := sorted(verdict_ids - expected):
+        problems.append(f"verdicts cite unknown claims {unknown}")
+    if unresolved := sorted(item.claim_id for item in report.verdicts if item.verdict != "supported"):
+        problems.append(f"unresolved claims {unresolved}")
+    if ungrounded := sorted(item.claim_id for item in report.verdicts if not item.supporting_ids):
+        problems.append(f"claims without supporting evidence {ungrounded}")
+    if report.pending_review:
+        problems.append(f"pending review {sorted(report.pending_review)}")
+    if report.structural_errors:
+        problems.append("structural errors present")
+    return problems
+
+
+def require_strict_closure(
+    report: VerificationReport,
+    *,
+    claim_ids: Iterable[str],
+    label: str,
+) -> None:
+    """Refuse ``label`` unless ``report`` is strict and closes over ``claim_ids`` exactly."""
+
+    if report.quality_mode != "strict":
+        raise StrictClosureError(
+            f"{label} requires a strict verification report, got {report.quality_mode!r}"
+        )
+    problems = strict_closure_errors(report, claim_ids=claim_ids)
+    if problems:
+        raise StrictClosureError(f"{label} rejected an unclosed strict verdict set: {'; '.join(problems)}")

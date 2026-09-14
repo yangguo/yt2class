@@ -16,6 +16,9 @@ from yt2class.stages.outline import outline_course, partition_transcript, reduce
 from yt2class.stages.analyze_segments import analyze_segments, analyze_window
 from yt2class.stages.evidence_refinement import refine_window
 from yt2class.stages.reduce_knowledge import reduce_knowledge
+from yt2class.stages.edit_deck import edit_deck
+from yt2class.stages.verify_claims import verify_claims
+from yt2class.stages.review import apply_review_edits, build_review_bundle
 
 __all__ = [
     "IngestError",
@@ -33,4 +36,8 @@ __all__ = [
     "analyze_window",
     "refine_window",
     "reduce_knowledge",
+    "edit_deck",
+    "verify_claims",
+    "apply_review_edits",
+    "build_review_bundle",
 ]
