@@ -39,6 +39,7 @@ PreviewPolicy = Literal["off", "optional", "required"]
 class AnalysisConfig(BaseModel):
     mode: AnalysisMode = "frames"
     model_profile: str = "vision-primary"
+    model: str | None = None
     segment_seconds: float = 120.0
     overlap_seconds: float = 10.0
     max_images_per_batch: int = 8

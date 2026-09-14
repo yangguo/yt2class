@@ -30,11 +30,31 @@ Build the bundled renderer before packaging wheels (hatch build hook or `scripts
 
 ## Quick start (M5 product CLI)
 
-The product path (`build-run`, `batch`, `resume`, and stage commands below) currently wires **`analysis.provider: fake` only**. Requests for any other provider fail closed with `PipelineError` until real adapters are integrated on this path. Use `tests/live/` for opt-in real-model runs.
+The product path (`build-run`, `batch`, `resume`, and stage commands below) supports **`analysis.provider: fake`** (default, offline/CI) and **`analysis.provider: openrouter`** for live vision models via [OpenRouter](https://openrouter.ai/). Other provider names fail closed. Opt-in real-model experiments also live under `tests/live/`.
 
-Example config: [docs/examples/course.fixture.json](docs/examples/course.fixture.json) (keep `"provider": "fake"` for offline/CI).
+Example configs:
 
-**Local video + subtitles**
+- Offline/CI: [docs/examples/course.fixture.json](docs/examples/course.fixture.json) (`"provider": "fake"`)
+- OpenRouter frames mode: [docs/examples/course.openrouter.json](docs/examples/course.openrouter.json) (requires `OPENROUTER_API_KEY` in the environment; no secrets in git)
+
+**OpenRouter (frames mode)**
+
+```bash
+export OPENROUTER_API_KEY="sk-or-..."
+# optional overrides:
+# export YT2CLASS_OPENROUTER_MODEL="google/gemma-4-31b-it:free"
+# export OPENROUTER_MODEL="google/gemma-4-31b-it:free"
+
+uv run yt2class build-run \
+  --video path/to/lesson.mp4 \
+  --subtitles path/to/lesson.vtt \
+  --config docs/examples/course.openrouter.json \
+  --output runs
+```
+
+Default model is **`google/gemma-4-31b-it:free`** (free-tier vision on OpenRouter). Billing and rate limits are controlled by your OpenRouter account and chosen model; yt2class does not cap spend beyond the run `budget` section in config.
+
+**Local video + subtitles (fake / CI)**
 
 ```bash
 uv run yt2class build-run \
@@ -44,7 +64,7 @@ uv run yt2class build-run \
   --output runs
 ```
 
-**YouTube URL** (needs `yt-dlp`; still uses fake analysis unless you extend the pipeline)
+**YouTube URL** (needs `yt-dlp`; use fake config for offline runs or OpenRouter config above for live analysis)
 
 ```bash
 uv run yt2class build-run \
@@ -86,7 +106,9 @@ uv run yt2class batch --inputs courses.txt --output runs --config docs/examples/
 
 Exit codes: `0` success, `1` failure, `2` review/budget pause, `3` batch partial failure.
 
-### Stage-level commands (fake provider)
+### Stage-level commands (fake or openrouter)
+
+Set `OPENROUTER_API_KEY` when using `--provider openrouter` or `analysis.provider: openrouter` in config.
 
 ```bash
 uv run yt2class analyze \

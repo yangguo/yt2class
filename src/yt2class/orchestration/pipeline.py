@@ -9,7 +9,11 @@ from typing import Any
 
 from yt2class.adapters.ytdlp import downloaded_subtitle
 from yt2class.adapters.providers.base import Provider
-from yt2class.adapters.providers.synthetic import fake_course_provider
+from yt2class.adapters.providers.factory import (
+    UnsupportedAnalysisProvider,
+    resolve_course_provider,
+)
+from yt2class.adapters.providers.openrouter import OpenRouterProvider
 from yt2class.config import BuildSource, CourseConfig, write_desensitized_snapshot
 from yt2class.domain.evidence import EvidenceBundle
 from yt2class.domain.run_manifest import RunManifest, StageName
@@ -20,7 +24,6 @@ from yt2class.orchestration.analyze import (
     AnalysisResult,
     analyze_evidence_bundle,
     resolve_native_adapter,
-    default_capabilities,
     write_analysis_artifacts,
 )
 from yt2class.orchestration.budget import BudgetExceeded, RunBudget
@@ -127,12 +130,24 @@ class RunContext:
 def _provider(ctx: RunContext) -> Provider:
     if ctx.provider is not None:
         inner = ctx.provider
-    elif ctx.config.analysis.provider != "fake":
-        raise PipelineError(
-            "only fake provider is wired in the MVP CLI; use tests/live for real models"
-        )
     else:
-        inner = fake_course_provider(default_capabilities())
+        visual = ctx.evidence.visual if ctx.evidence is not None else None
+        if ctx.analysis is not None:
+            visual = ctx.analysis.visual
+        try:
+            inner = resolve_course_provider(
+                ctx.config.analysis.provider,
+                ctx.config.analysis,
+                run_root=ctx.workspace.root,
+                visual=visual,
+            )
+        except UnsupportedAnalysisProvider as error:
+            raise PipelineError(str(error)) from error
+    if isinstance(inner, OpenRouterProvider):
+        visual = ctx.evidence.visual if ctx.evidence is not None else None
+        if ctx.analysis is not None:
+            visual = ctx.analysis.visual
+        inner.bind_run_context(ctx.workspace.root, visual=visual)
     retry_policy = None if ctx.config.analysis.provider == "fake" else RetryPolicy()
     return wrap_provider(
         inner,

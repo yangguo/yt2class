@@ -33,7 +33,7 @@ def test_execute_run_rejects_non_fake_provider(tmp_path: Path):
     cfg = CourseConfig().model_copy(
         update={"analysis": CourseConfig().analysis.model_copy(update={"provider": "openai"})}
     )
-    with pytest.raises(PipelineError, match="only fake provider"):
+    with pytest.raises(PipelineError, match="unsupported analysis provider"):
         execute_run(
             tmp_path,
             build=BuildSource(source_id=bundle.source_id),
