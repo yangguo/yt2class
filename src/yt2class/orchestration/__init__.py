@@ -57,4 +57,5 @@ __all__ = [
     "set_window_status",
     "verify_plan",
     "write_analysis_artifacts",
+    "resolve_native_adapter",
 ]
