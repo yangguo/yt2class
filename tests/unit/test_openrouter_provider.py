@@ -90,6 +90,35 @@ def test_openrouter_bad_json_raises_missing_structured():
 
 
 @respx.mock
+def test_openrouter_error_includes_metadata_raw():
+    payload = {
+        "prompt": "outline",
+        "block": {"id": "block-0001"},
+        "transcript": [],
+        "visual_overview": [],
+        "allowed_evidence_ids": [],
+        "constraints": {},
+    }
+    provider, request = _outline_request(payload)
+    respx.post(ENDPOINT).mock(
+        return_value=httpx.Response(
+            429,
+            json={
+                "error": {
+                    "message": "Provider returned error",
+                    "code": 429,
+                    "metadata": {"raw": "rate limited on free tier", "provider_name": "Google"},
+                }
+            },
+        )
+    )
+    provider._client = httpx.Client()
+    with pytest.raises(RetryableError, match="metadata.raw=rate limited on free tier") as info:
+        provider.complete(request)
+    assert "Provider returned error" in str(info.value)
+
+
+@respx.mock
 def test_openrouter_http_401_is_non_retryable():
     payload = {
         "prompt": "outline",

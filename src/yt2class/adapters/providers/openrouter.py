@@ -232,6 +232,30 @@ class OpenRouterProvider(Provider):
             video_seconds=request.video_seconds,
         )
 
+    @staticmethod
+    def _error_detail(body: dict[str, Any]) -> str:
+        error = body.get("error")
+        if isinstance(error, str) and error.strip():
+            return error.strip()
+        if not isinstance(error, dict):
+            return "OpenRouter request failed"
+        parts: list[str] = []
+        message = error.get("message")
+        if message:
+            parts.append(str(message))
+        metadata = error.get("metadata")
+        if isinstance(metadata, dict):
+            raw = metadata.get("raw")
+            if raw is not None and str(raw).strip():
+                parts.append(f"metadata.raw={raw}")
+            provider_name = metadata.get("provider_name") or metadata.get("provider")
+            if provider_name:
+                parts.append(f"provider={provider_name}")
+        code = error.get("code")
+        if code is not None:
+            parts.append(f"code={code}")
+        return "; ".join(parts) if parts else "OpenRouter request failed"
+
     def _raise_for_status(self, response: httpx.Response) -> None:
         if response.status_code < 400:
             return
@@ -239,11 +263,7 @@ class OpenRouterProvider(Provider):
         try:
             body = response.json()
             if isinstance(body, dict):
-                error = body.get("error")
-                if isinstance(error, dict) and error.get("message"):
-                    detail = str(error["message"])
-                elif isinstance(error, str):
-                    detail = error
+                detail = self._error_detail(body)
         except ValueError:
             detail = response.text[:240] or detail
         if response.status_code in {401, 403}:
