@@ -448,6 +448,28 @@ def _scalar_entities(text: str) -> set[int]:
     }
 
 
+def _local_scalar_entities(slot: str) -> set[int]:
+    """Only an entity immediately before the predicate establishes a subject.
+
+    Earlier mentions may be background or objects of intervening sentences.
+    Requiring adjacency deliberately leaves pronouns and unknown subjects to
+    inherit, rather than using those mentions to discard a correction.
+    """
+
+    return {
+        index
+        for index, aliases in enumerate(SCALAR_ENTITIES)
+        if any(
+            re.search(
+                (r"\b" if alias.isascii() else "") + re.escape(alias) + r"\s*$",
+                slot,
+                flags=re.I,
+            )
+            for alias in aliases
+        )
+    }
+
+
 def _subjects_about_claim(
     claim_text: str, evidence_text: str, terms: list[ScalarTerm]
 ) -> Iterable[tuple[ScalarTerm, bool]]:
@@ -463,11 +485,9 @@ def _subjects_about_claim(
     about_claim = not claim_skeleton
     for term in terms:
         slot = evidence_text[previous_end:term.start]
-        entities = _scalar_entities(slot)
-        if entities:
-            about_claim = not claim_skeleton or bool(entities & claim_entities)
-            if not claim_entities:
-                about_claim = not claim_skeleton or bool(content_tokens(slot) & claim_skeleton)
+        entities = _local_scalar_entities(slot)
+        if entities and claim_entities:
+            about_claim = bool(entities & claim_entities)
         elif content_tokens(slot) & claim_skeleton:
             about_claim = True
         # Otherwise inherit: no identifiable new subject was introduced.

@@ -969,6 +969,13 @@ def test_successful_strict_path_has_no_unresolved_critical_claims():
 @pytest.mark.parametrize(
     ("claim_text", "continuation"),
     [
+        ("水流变多", "水流变多。温度保持不变。然后下降了"),
+        ("阀门打开后水流变多", "阀门打开后水流变多。记录温度。然后它下降了"),
+        ("the flow increases", "the flow increases. temperature is constant. Later it drops"),
+        ("the flow increases", "the flow increases at speed. Later it drops"),
+        ("水压升高", "水压升高然后压力降低"),
+        ("水面升高", "水面升高随后水位降低"),
+        ("液面升高", "液面升高随后液位降低"),
         ("水流变多", "水流变多却下降了"),
         ("水流变多", "水流变多，随后下降了"),
         ("the flow increases", "the flow increases and then it decreases"),
