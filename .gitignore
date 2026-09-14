@@ -23,3 +23,7 @@ test-output/
 # Local input lists may contain private URLs.
 links.txt
 test-links.txt
+
+# Node renderer installs (copy into src/yt2class/_renderer after npm ci)
+renderer/node_modules/
+src/yt2class/_renderer/node_modules/

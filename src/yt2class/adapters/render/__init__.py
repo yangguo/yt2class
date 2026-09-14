@@ -7,10 +7,12 @@ from yt2class.adapters.render.base import (
     Renderer,
     RequestFingerprintConflict,
 )
+from yt2class.adapters.render.pptxgenjs import PptxGenJsRenderer
 from yt2class.domain.render_report import RenderReport
 
 __all__ = [
     "FakeRenderer",
+    "PptxGenJsRenderer",
     "RenderError",
     "RenderRequest",
     "RenderReport",

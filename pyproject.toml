@@ -21,6 +21,9 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/yt2class"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"src/yt2class/_renderer" = "yt2class/_renderer"
+
 [dependency-groups]
 dev = [
   "pytest>=8.3",
