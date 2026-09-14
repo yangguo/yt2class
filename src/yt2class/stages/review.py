@@ -426,14 +426,20 @@ def apply_review_edits(
         source_url=source_url,
         revision=bundle.revision + 1,
     )
-    bind = binder or stub_binder
-    render = renderer or stub_renderer
+    if binder is not None:
+        binder_status = binder(planned)
+    else:
+        binder_status = stub_binder(planned)
+    if renderer is not None:
+        renderer_status = renderer(planned)
+    else:
+        renderer_status = stub_renderer(planned)
     return ReviewApplyResult(
         bundle=updated,
         plan=planned,
         report=report,
         knowledge=current_knowledge,
         outcome=outcome,
-        binder_status=bind(planned),
-        renderer_status=render(planned),
+        binder_status=binder_status,
+        renderer_status=renderer_status,
     )
