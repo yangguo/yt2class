@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Event
@@ -60,6 +60,7 @@ def run_batch(
     shared_cancel = cancel_event or Event()
     results: list[BatchItemResult] = []
     lock = threading.Lock()
+    futures_map: dict = {}
 
     def _run_one(item: BatchItem) -> BatchItemResult:
         if shared_cancel.is_set():
@@ -89,18 +90,25 @@ def run_batch(
             return BatchItemResult(label=item.label, ok=False, run_id=run_id, error=str(error))
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(_run_one, item): item for item in items}
-        for future in as_completed(futures):
-            result = future.result()
+        futures_map = {pool.submit(_run_one, item): item for item in items}
+        for future in as_completed(futures_map):
+            item = futures_map[future]
+            try:
+                result = future.result()
+            except CancelledError:
+                result = BatchItemResult(label=item.label, ok=False, error="cancelled")
             with lock:
                 results.append(result)
             if not result.ok and not continue_on_error:
                 shared_cancel.set()
-                for pending in futures:
+                for pending in futures_map:
                     pending.cancel()
 
-    # Preserve input order for stable reports.
     order = {item.label: index for index, item in enumerate(items)}
+    reported = {row.label for row in results}
+    for item in items:
+        if item.label not in reported:
+            results.append(BatchItemResult(label=item.label, ok=False, error="cancelled"))
     results.sort(key=lambda row: order.get(row.label, 0))
     return BatchReport(results=results)
 

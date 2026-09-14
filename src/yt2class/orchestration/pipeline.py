@@ -40,6 +40,7 @@ from yt2class.orchestration.cache_policy import (
     validated_cache_hit,
 )
 from yt2class.orchestration.provider_gate import wrap_provider
+from yt2class.orchestration.retry import RetryPolicy
 from yt2class.orchestration.run_request import (
     load_run_request,
     merge_build_for_resume,
@@ -130,7 +131,13 @@ def _provider(ctx: RunContext) -> Provider:
         )
     else:
         inner = fake_course_provider(default_capabilities())
-    return wrap_provider(inner, ctx.budget, cancel_event=ctx.cancel_event)
+    retry_policy = None if ctx.config.analysis.provider == "fake" else RetryPolicy()
+    return wrap_provider(
+        inner,
+        ctx.budget,
+        cancel_event=ctx.cancel_event,
+        retry_policy=retry_policy,
+    )
 
 
 def _invalidate_from(ctx: RunContext, stage: StageName) -> None:
@@ -463,8 +470,9 @@ def run_editorial_stages(ctx: RunContext, analysis: AnalysisResult, bundle: Evid
     else:
         ctx.manifest = set_stage_status(ctx.manifest, "edit_deck", "running")
         _persist(ctx)
-        if on_disk_plan is not None and revision > 0:
+        if on_disk_plan is not None:
             plan = on_disk_plan
+            plan_regenerated = False
         else:
             try:
                 plan = plan_deck(
@@ -479,9 +487,9 @@ def run_editorial_stages(ctx: RunContext, analysis: AnalysisResult, bundle: Evid
                 )
             except BudgetExceeded as error:
                 raise PipelinePaused(str(error), reason=error.kind) from error
+            plan_regenerated = True
         atomic_write_json(plan_path, plan.model_dump(mode="json"))
         _complete_stage(ctx, "edit_deck", plan_key)
-        plan_regenerated = True
 
     verify_key = compute_cache_key(
         "verify_claims",
@@ -526,7 +534,10 @@ def run_editorial_stages(ctx: RunContext, analysis: AnalysisResult, bundle: Evid
         atomic_write_json(report_path, outcome.report.model_dump(mode="json"))
         _complete_stage(ctx, "verify_claims", verify_key)
         report = outcome.report
-        outcome_plan = on_disk_plan if revision > 0 and on_disk_plan is not None else outcome.plan
+        if on_disk_plan is not None and model_digest(on_disk_plan) != model_digest(outcome.plan):
+            outcome_plan = on_disk_plan
+        else:
+            outcome_plan = outcome.plan
         outcome_knowledge = outcome.knowledge
 
     editorial_dir = ctx.workspace.root / "editorial"
@@ -542,7 +553,7 @@ def run_editorial_stages(ctx: RunContext, analysis: AnalysisResult, bundle: Evid
                 report = on_disk_report
         except ValueError:
             pass
-    should_write_editorial = plan_regenerated or revision == 0 or on_disk_plan is None
+    should_write_editorial = plan_regenerated
     if should_write_editorial:
         write_editorial_artifacts(
             outcome_plan,
@@ -743,24 +754,6 @@ def execute_run(
     return RunOutcome(manifest=ctx.manifest, workspace=workspace, pptx_path=pptx)
 
 
-def load_persisted_evidence(workspace: Workspace) -> EvidenceBundle | None:
-    path = workspace.root / "evidence" / "evidence-bundle.json"
-    if not path.is_file():
-        cache_root = workspace.root / "cache" / "extract_evidence"
-        if cache_root.is_dir():
-            for key_dir in cache_root.iterdir():
-                candidate = key_dir / "evidence-bundle.json"
-                if candidate.is_file():
-                    path = candidate
-                    break
-    if not path.is_file():
-        return None
-    try:
-        return load_validated_json(path, EvidenceBundle)
-    except CacheCorrupt:
-        return None
-
-
 def seed_evidence_bundle(workspace: Workspace, bundle: EvidenceBundle) -> Path:
     """Test helper: publish a bundle and mark extract_evidence complete."""
 
@@ -784,7 +777,6 @@ __all__ = [
     "RunContext",
     "RunOutcome",
     "execute_run",
-    "load_persisted_evidence",
     "run_analysis_stages",
     "run_delivery_stages",
     "run_extract_evidence",

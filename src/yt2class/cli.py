@@ -34,7 +34,7 @@ from yt2class.orchestration.cancel import install_sigint_handler
 from yt2class.orchestration.cache_policy import invalidate_stage_tree
 from yt2class.orchestration.delivery import bind_plan_to_spec, render_spec, binder_status_dict, renderer_status_dict
 from yt2class.orchestration.pipeline import PipelineError, PipelinePaused, execute_run
-from yt2class.orchestration.run_request import bump_review_revision
+from yt2class.orchestration.run_request import bump_review_revision, discover_run_root
 from yt2class.orchestration.workspace import Workspace
 from yt2class.pipeline import PipelineError as LegacyPipelineError, build_batch
 from yt2class.stages.ingest import ingest_source
@@ -283,7 +283,7 @@ def review(
     ),
     provider_name: str = typer.Option("fake", "--provider"),
 ) -> None:
-    """Write offline review.html/json, or apply a controlled review edit file."""
+    """Write offline review.html/json, or apply review edits (--apply; use --run for M4 delivery)."""
 
     _reject_live_provider(provider_name, "review")
     try:
@@ -318,8 +318,13 @@ def review(
             edits = ReviewEdits.model_validate_json(apply.read_text(encoding="utf-8"))
             binder = None
             renderer = None
-            if run_dir is not None:
-                run_root = run_dir.resolve()
+            resolved_run = (
+                run_dir.resolve()
+                if run_dir is not None
+                else discover_run_root(output, plan_path.parent, Path.cwd())
+            )
+            if resolved_run is not None:
+                run_root = resolved_run
                 workspace = Workspace(
                     root=run_root,
                     media_dir=run_root / "media",
@@ -382,10 +387,10 @@ def review(
             planned = applied.plan
             report = applied.report
             doc = applied.knowledge
-            if run_dir is not None:
-                bump_review_revision(run_dir.resolve())
-                invalidate_stage_tree(run_dir.resolve(), "bind_spec")
-                output = run_dir.resolve() / "editorial"
+            if resolved_run is not None:
+                bump_review_revision(resolved_run)
+                invalidate_stage_tree(resolved_run, "bind_spec")
+                output = resolved_run / "editorial"
         paths = write_editorial_artifacts(
             planned, output, report=report, bundle=bundle, knowledge=doc
         )
@@ -455,7 +460,14 @@ def batch(
             items.append(BatchItem(label=line, build=BuildSource(url=line)))
         else:
             items.append(BatchItem(label=line, build=BuildSource(video=Path(line))))
-    report = run_product_batch(output, items, config=cfg, continue_on_error=continue_on_error)
+    cancel = install_sigint_handler()
+    report = run_product_batch(
+        output,
+        items,
+        config=cfg,
+        continue_on_error=continue_on_error,
+        cancel_event=cancel,
+    )
     for row in report.results:
         if row.ok:
             typer.echo(f"OK {row.label} -> run {row.run_id}")

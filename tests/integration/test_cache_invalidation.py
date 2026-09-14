@@ -100,3 +100,43 @@ def test_editorial_disk_wins_over_stale_edit_cache(tmp_path: Path, monkeypatch):
     assert calls["plan_deck"] == 0
     reloaded = EditorialPlan.model_validate_json(editorial.read_text(encoding="utf-8"))
     assert any(page.title == "人工修订标题" for page in reloaded.pages)
+
+
+def test_human_edit_survives_resume_with_revision_zero(tmp_path: Path, monkeypatch):
+    workspace, bundle = build_evidence_bundle(tmp_path)
+    cfg = CourseConfig()
+    build = BuildSource(source_id=bundle.source_id)
+    execute_run(
+        tmp_path,
+        build=build,
+        config=cfg,
+        run_id=workspace.root.name,
+        evidence_bundle=bundle,
+        stop_after="verify_claims",
+    )
+    editorial = workspace.root / "editorial" / "editorial-plan.json"
+    plan = EditorialPlan.model_validate_json(editorial.read_text(encoding="utf-8"))
+    edited = plan.model_copy(
+        update={"pages": [plan.pages[0].model_copy(update={"title": "人工修订标题"}), *plan.pages[1:]]}
+    )
+    editorial.write_text(edited.model_dump_json(indent=2), encoding="utf-8")
+    calls = {"plan_deck": 0}
+    real = orch_pipeline.plan_deck
+
+    def counting(*args, **kwargs):
+        calls["plan_deck"] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(orch_pipeline, "plan_deck", counting)
+    execute_run(
+        tmp_path,
+        build=BuildSource(source_id=bundle.source_id, run_id=workspace.root.name),
+        config=cfg,
+        run_id=workspace.root.name,
+        evidence_bundle=bundle,
+        resume=True,
+        stop_after="verify_claims",
+    )
+    assert calls["plan_deck"] == 0
+    reloaded = EditorialPlan.model_validate_json(editorial.read_text(encoding="utf-8"))
+    assert any(page.title == "人工修订标题" for page in reloaded.pages)

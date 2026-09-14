@@ -10,6 +10,6 @@ Offline CI covers fixture-backed rows. Live network rows stay under `tests/live`
 | 4 | YouTube auto subtitles only | — | same as row 3 without `--subtitles` |
 | 5 | Provider timeout / budget pause | `tests/unit/test_runtime_policy.py` | re-run with `yt2class resume --run runs/<id>` |
 | 6 | No model, evidence-only | `quality.mode: evidence-only` in config | — |
-| 7 | Human review → single-page re-render | `tests/integration/test_review_roundtrip.py` | `yt2class review --apply edits.json` then `yt2class resume --run ...` |
+| 7 | Human review → single-page re-render | `tests/integration/test_cache_invalidation.py` | `yt2class review --apply edits.json --run runs/<run-id>` (bumps revision + M4 bind/render), then `yt2class resume --run runs/<run-id>` |
 
 Exit codes: `0` success, `1` failure, `2` review/budget pause, `3` batch partial failure.

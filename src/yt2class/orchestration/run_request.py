@@ -45,6 +45,22 @@ def record_from_build(build: BuildSource, *, review_revision: int = 0) -> RunReq
     )
 
 
+def merge_build_sources(stored: RunRequestRecord | None, build: BuildSource) -> BuildSource:
+    if stored is None:
+        return build
+    return BuildSource(
+        url=build.url if build.url is not None else stored.url,
+        video=build.video
+        if build.video is not None
+        else (Path(stored.video_path) if stored.video_path else None),
+        subtitles=build.subtitles
+        if build.subtitles is not None
+        else (Path(stored.subtitles_path) if stored.subtitles_path else None),
+        run_id=build.run_id,
+        source_id=build.source_id or stored.source_id,
+    )
+
+
 def request_path(run_root: Path) -> Path:
     return run_root / "metadata" / "run-request.json"
 
@@ -70,31 +86,25 @@ def merge_build_for_resume(
     run_root: Path,
     build: BuildSource,
 ) -> tuple[BuildSource, RunRequestRecord, bool]:
-    """Return merged build, stored record, and whether subtitles (or source) changed."""
+    """Return merged build, effective record, and whether effective inputs changed."""
 
     stored = load_run_request(run_root)
-    incoming = record_from_build(build, review_revision=stored.review_revision if stored else 0)
+    merged = merge_build_sources(stored, build)
+    revision = stored.review_revision if stored is not None else 0
+    effective = record_from_build(merged, review_revision=revision)
+
     if stored is None:
-        save_run_request(run_root, incoming)
-        return build, incoming, False
+        save_run_request(run_root, effective)
+        return merged, effective, False
 
     changed = (
-        stored.subtitles_sha256 != incoming.subtitles_sha256
-        or stored.url != incoming.url
-        or stored.video_path != incoming.video_path
+        stored.subtitles_sha256 != effective.subtitles_sha256
+        or stored.url != effective.url
+        or stored.video_path != effective.video_path
     )
-    merged = BuildSource(
-        url=build.url or stored.url,
-        video=build.video or (Path(stored.video_path) if stored.video_path else None),
-        subtitles=build.subtitles
-        or (Path(stored.subtitles_path) if stored.subtitles_path else None),
-        run_id=build.run_id or stored.source_id,
-        source_id=build.source_id or stored.source_id,
-    )
-    record = record_from_build(merged, review_revision=stored.review_revision)
     if changed:
-        save_run_request(run_root, record)
-    return merged, record, changed
+        save_run_request(run_root, effective)
+    return merged, effective, changed
 
 
 def bump_review_revision(run_root: Path) -> int:
@@ -107,11 +117,23 @@ def bump_review_revision(run_root: Path) -> int:
     return updated.review_revision
 
 
+def discover_run_root(*candidates: Path | None) -> Path | None:
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        root = candidate.expanduser().resolve()
+        if (root / "manifest.json").is_file() or (root / "metadata" / "run-request.json").is_file():
+            return root
+    return None
+
+
 __all__ = [
     "RunRequestRecord",
     "bump_review_revision",
+    "discover_run_root",
     "load_run_request",
     "merge_build_for_resume",
+    "merge_build_sources",
     "record_from_build",
     "request_path",
     "save_run_request",
