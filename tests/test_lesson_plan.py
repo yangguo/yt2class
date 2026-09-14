@@ -50,6 +50,43 @@ def test_parse_model_json_accepts_markdown_fenced_json():
     }
 
 
+def test_parse_model_json_accepts_trailing_prose_after_complete_object():
+    payload = '{"title": "辞書形", "slides": []}\nHere is a brief explanation of the plan.'
+    assert llm.parse_model_json(payload) == {"title": "辞書形", "slides": []}
+
+
+def test_parse_model_json_accepts_extra_data_with_trailing_braces():
+    # json.loads on first-{ to last-} fails with Extra data because the prose
+    # contains "}" after a complete object (Ling edit_deck failure mode).
+    payload = '{"title": "辞書形"} thanks! see note } extra'
+    assert llm.parse_model_json(payload) == {"title": "辞書形"}
+
+
+def test_parse_model_json_accepts_concatenated_second_json_object():
+    payload = '{"title": "first", "n": 1}{"title": "second", "n": 2}'
+    assert llm.parse_model_json(payload) == {"title": "first", "n": 1}
+
+
+def test_parse_model_json_nested_object_is_not_truncated_at_inner_brace():
+    payload = '{"outer": {"inner": 1}, "keep": true} trailing }'
+    assert llm.parse_model_json(payload) == {"outer": {"inner": 1}, "keep": True}
+
+
+def test_parse_model_json_rejects_truncated_json():
+    with pytest.raises(llm.ModelError, match="valid JSON"):
+        llm.parse_model_json('{"title": "辞書形", "slides": [')
+
+
+def test_parse_model_json_rejects_truncated_json_even_with_later_brace():
+    with pytest.raises(llm.ModelError, match="valid JSON"):
+        llm.parse_model_json('{"title": "incomplete"\n\nI hope this helps}')
+
+
+def test_parse_model_json_rejects_missing_object():
+    with pytest.raises(llm.ModelError, match="did not contain a JSON object"):
+        llm.parse_model_json("not json at all")
+
+
 def test_offline_plan_stays_bound_to_known_frames(tmp_path: Path):
     assert hasattr(llm, "offline_plan")
     frame = scenes.FrameCandidate("known", 12.0, tmp_path / "frame.jpg")

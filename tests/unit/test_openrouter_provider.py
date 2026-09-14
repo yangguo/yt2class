@@ -180,6 +180,33 @@ def test_resolve_openrouter_json_mode_from_env(monkeypatch):
 
 
 @respx.mock
+def test_openrouter_trailing_extra_json_is_parsed():
+    """Ling edit_deck: complete JSON object plus trailing Extra data must parse."""
+    payload = {
+        "prompt": "editor",
+        "block": {"id": "block-0001"},
+        "transcript": [],
+        "visual_overview": [],
+        "allowed_evidence_ids": [],
+        "constraints": {},
+    }
+    provider, request = _outline_request(payload)
+    content = (
+        '{"topics": [], "relations": [], "unverified_guesses": []}'
+        '{"duplicate": true} trailing } prose'
+    )
+    respx.post(ENDPOINT).mock(
+        return_value=httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": content}}], "usage": {}},
+        )
+    )
+    provider._client = httpx.Client()
+    result = provider.complete(request)
+    assert result.structured == {"topics": [], "relations": [], "unverified_guesses": []}
+
+
+@respx.mock
 def test_openrouter_bad_json_raises_missing_structured():
     payload = {
         "prompt": "outline",
