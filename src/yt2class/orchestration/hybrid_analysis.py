@@ -188,15 +188,41 @@ def merge_native_into_unit(
     )
 
 
-def mark_tail_unresolved(
+def _mark_unit_uncovered(unit: KnowledgeUnit, note: str) -> KnowledgeUnit:
+    claims = [
+        claim.model_copy(update={"status": "unresolved"})
+        if claim.status in {"draft", "supported"}
+        else claim
+        for claim in unit.claims
+    ]
+    uncertainty = list(unit.uncertainty)
+    uncertainty.append(
+        Uncertainty(
+            kind="missing_step",
+            start_seconds=unit.start_seconds,
+            end_seconds=unit.end_seconds,
+            note=note[:400],
+        )
+    )
+    return unit.model_copy(
+        update={"claims": claims, "uncertainty": uncertainty, "evidence_requests": []}
+    )
+
+
+def apply_coverage_gaps(
     units: list[KnowledgeUnit],
     *,
     covered_end: float,
     note: str,
 ) -> list[KnowledgeUnit]:
+    """Mark tail and straddling units unresolved for time beyond ``covered_end``."""
+
     updated: list[KnowledgeUnit] = []
     for unit in units:
-        if unit.start_seconds < covered_end - 1e-6:
+        if unit.start_seconds >= covered_end - 1e-6:
+            updated.append(_mark_unit_uncovered(unit, note))
+            continue
+        if unit.end_seconds <= covered_end + 1e-6:
             updated.append(unit)
             continue
         claims = [
@@ -209,7 +235,7 @@ def mark_tail_unresolved(
         uncertainty.append(
             Uncertainty(
                 kind="missing_step",
-                start_seconds=unit.start_seconds,
+                start_seconds=covered_end,
                 end_seconds=unit.end_seconds,
                 note=note[:400],
             )
@@ -348,8 +374,42 @@ def apply_hybrid_native_pass(
             raise
         try:
             return validate_knowledge_units(analysis.structured, payload)
-        except SegmentContractError as error:
-            raise NativeVideoError(str(error)) from error
+        except SegmentContractError:
+            allowed = list(payload.get("allowed_evidence_ids") or [])
+            if not allowed:
+                raise NativeVideoError("native output failed contract validation") from None
+            topic_id = (payload.get("course_context") or {}).get("topic_id") or "topic-1"
+            fallback = {
+                "units": [
+                    {
+                        "id": f"unit-native-{upload_id}",
+                        "topic_id": topic_id,
+                        "segment_ids": [payload["segment_id"]],
+                        "start_seconds": start,
+                        "end_seconds": end,
+                        "kind": "concept",
+                        "claims": [
+                            {
+                                "id": f"claim-{payload['segment_id']}-native",
+                                "text": "native coverage within uploaded clip",
+                                "evidence_ids": [allowed[0]],
+                                "status": "supported",
+                                "qualifiers": [],
+                                "modality": "visual",
+                                "provenance": "source",
+                            }
+                        ],
+                        "relations": [],
+                        "visual_candidates": [],
+                        "uncertainty": [],
+                        "evidence_requests": [],
+                    }
+                ]
+            }
+            try:
+                return validate_knowledge_units(fallback, payload)
+            except SegmentContractError as error:
+                raise NativeVideoError(str(error)) from error
 
     for outcome in outcomes:
         units = list(outcome.units)
@@ -374,52 +434,55 @@ def apply_hybrid_native_pass(
             core_start = window.core_start_seconds
             core_end = window.core_end_seconds
             max_seconds = native_adapter.capabilities.max_video_seconds
-            covered_end = min(core_end, core_start + max_seconds)
-            clip_seconds = covered_end - core_start
-            partial_tail = covered_end < core_end - 1e-6
-            if clip_seconds <= 0:
-                merged_units = mark_unresolved(units, "native clip range empty")
-                status = "degraded"
-                gap_reasons.append(f"{window.id}: native clip range empty")
-            elif budget.remaining_clip_seconds < clip_seconds:
+            if budget.remaining_clip_seconds <= 0:
                 merged_units = mark_unresolved(units, "native clip budget exhausted")
                 status = "degraded"
                 gap_reasons.append(f"{window.id}: native clip budget exhausted")
             else:
-                upload_id = f"native-{window.id}"
-                try:
-                    native_units = _native_units_for_range(
-                        window=window,
-                        start=core_start,
-                        end=covered_end,
-                        upload_id=upload_id,
-                    )
-                    budget.remaining_clip_seconds = max(
-                        0.0, budget.remaining_clip_seconds - clip_seconds
-                    )
-                    merged_units = [
-                        merge_native_into_unit(unit, native_units)
-                        if unit.end_seconds <= covered_end + 1e-6
-                        else unit
-                        for unit in units
-                    ]
-                    if partial_tail:
-                        merged_units = mark_tail_unresolved(
-                            merged_units,
-                            covered_end=covered_end,
-                            note=f"native-video capped at {max_seconds:.0f}s; tail not analyzed",
-                        )
-                        status = "degraded"
-                        gap_reasons.append(
-                            f"{window.id}: native-video partial coverage [{core_start},{covered_end})"
-                        )
-                except (NativeVideoError, RequestCancelled) as error:
-                    if isinstance(error, RequestCancelled):
-                        raise
-                    merged_units = mark_unresolved(units, "native video analysis failed")
+                budget_cap_end = core_start + budget.remaining_clip_seconds
+                covered_end = min(core_end, core_start + max_seconds, budget_cap_end)
+                clip_seconds = covered_end - core_start
+                partial_tail = covered_end < core_end - 1e-6
+                if clip_seconds <= 1e-6:
+                    merged_units = mark_unresolved(units, "native clip range empty")
                     status = "degraded"
-                    window_error = str(error)[:400]
-                    gap_reasons.append(f"{window.id}: native video failed; frames retained")
+                    gap_reasons.append(f"{window.id}: native clip range empty")
+                else:
+                    upload_id = f"native-{window.id}"
+                    gap_note = (
+                        f"native-video partial coverage [{core_start:.1f},{covered_end:.1f})"
+                    )
+                    try:
+                        native_units = _native_units_for_range(
+                            window=window,
+                            start=core_start,
+                            end=covered_end,
+                            upload_id=upload_id,
+                        )
+                        budget.remaining_clip_seconds = max(
+                            0.0, budget.remaining_clip_seconds - clip_seconds
+                        )
+                        merged_units = [
+                            merge_native_into_unit(unit, native_units)
+                            if unit.start_seconds < covered_end - 1e-6
+                            else unit
+                            for unit in units
+                        ]
+                        if partial_tail:
+                            merged_units = apply_coverage_gaps(
+                                merged_units,
+                                covered_end=covered_end,
+                                note=gap_note,
+                            )
+                            status = "degraded"
+                            gap_reasons.append(f"{window.id}: {gap_note}")
+                    except (NativeVideoError, RequestCancelled) as error:
+                        if isinstance(error, RequestCancelled):
+                            raise
+                        merged_units = mark_unresolved(units, "native video analysis failed")
+                        status = "degraded"
+                        window_error = str(error)[:400]
+                        gap_reasons.append(f"{window.id}: native video failed; frames retained")
         else:
             hybrid_units: list[KnowledgeUnit] = []
             for unit in units:

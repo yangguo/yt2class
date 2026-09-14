@@ -12,7 +12,7 @@ from threading import Event
 from typing import Any
 
 from yt2class.adapters.providers.base import Provider, ProviderCapabilities
-from yt2class.adapters.providers.native_video import NativeVideoAdapter
+from yt2class.adapters.providers.native_video import NativeVideoAdapter, fake_native_adapter
 from yt2class.adapters.providers.synthetic import fake_course_provider
 from yt2class.domain.media_audit import MediaPrivacyAudit
 from yt2class.domain.slide_spec_v3 import AnalysisMode
@@ -207,6 +207,24 @@ def analyze_course(
         gap_reasons=gap_reasons,
         media_audit=media_audit,
     )
+
+
+def resolve_native_adapter(
+    *,
+    analysis_mode: AnalysisMode,
+    provider_name: str,
+    max_video_seconds: float = 120.0,
+) -> NativeVideoAdapter | None:
+    """Attach fake native video transport when config opts into native/hybrid modes."""
+
+    if analysis_mode == "frames":
+        return None
+    if provider_name not in {"fake", "fake-native"}:
+        return None
+    caps = default_capabilities().model_copy(
+        update={"supports_video": True, "max_video_seconds": max_video_seconds}
+    )
+    return fake_native_adapter(capabilities=caps)
 
 
 def analyze_evidence_bundle(

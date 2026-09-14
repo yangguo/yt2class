@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from yt2class.domain.knowledge import KnowledgeEvidenceRequest, Uncertainty
 from yt2class.domain.segment import AnalysisWindow
-from yt2class.orchestration.hybrid_analysis import merge_native_into_unit, minimal_clip_range
+from yt2class.orchestration.hybrid_analysis import (
+    apply_coverage_gaps,
+    merge_native_into_unit,
+    minimal_clip_range,
+)
 from tests.helpers.m2 import claim, unit
 
 
@@ -75,6 +79,18 @@ def test_merge_native_does_not_promote_unresolved_without_support():
     merged = merge_native_into_unit(frame, [native])
     assert merged.claims[0].status == "unresolved"
     assert merged.uncertainty
+
+
+def test_apply_coverage_gaps_marks_straddling_unit_unresolved():
+    frame = unit(
+        "u-span",
+        start=25.0,
+        end=45.0,
+        claims=[claim("claim-1", "步骤跨边界", ["cap-001"], status="draft")],
+    )
+    merged = apply_coverage_gaps([frame], covered_end=30.0, note="budget cap")
+    assert merged[0].claims[0].status == "unresolved"
+    assert any(item.start_seconds == 30.0 for item in merged[0].uncertainty)
 
 
 def test_merge_native_supports_matching_claim():

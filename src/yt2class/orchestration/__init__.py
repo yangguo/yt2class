@@ -23,6 +23,7 @@ _LAZY_EXPORTS = {
     "analyze_evidence_bundle": "yt2class.orchestration.analyze",
     "default_capabilities": "yt2class.orchestration.analyze",
     "write_analysis_artifacts": "yt2class.orchestration.analyze",
+    "resolve_native_adapter": "yt2class.orchestration.analyze",
     "build_review": "yt2class.orchestration.edit",
     "plan_deck": "yt2class.orchestration.edit",
     "verify_plan": "yt2class.orchestration.edit",

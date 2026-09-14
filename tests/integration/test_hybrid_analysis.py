@@ -190,6 +190,39 @@ def test_native_empty_units_keeps_frames_no_synthetic_claims(tmp_path: Path):
     assert not any("native-supported" in claim.text for claim in after.knowledge.iter_claims())
 
 
+def test_native_video_default_budget_uploads_capped_clip_on_long_lecture(tmp_path: Path):
+    """Grok repro: 300s lecture, 30s default clip budget, 120s max_video — must still upload."""
+
+    transcript, visual = lecture_fixture()
+    media = tmp_path / "source.mp4"
+    media.write_bytes(b"x" * 500_000)
+    backend = FakeNativeVideoBackend()
+    adapter = fake_native_adapter(
+        backend=backend,
+        capabilities=frames_caps(supports_video=True, max_video_seconds=120.0, max_input_tokens=32000),
+    )
+    result = analyze_course(
+        source_id="src-demo",
+        duration_seconds=300.0,
+        transcript=transcript,
+        visual=visual,
+        provider=fake_course_provider(frames_caps(max_input_tokens=32000)),
+        capabilities=frames_caps(max_input_tokens=32000),
+        analysis_mode="native-video",
+        native_adapter=adapter,
+        media_path=media,
+        output_dir=tmp_path,
+        clip_extractor=_sized_clip_extractor(media),
+    )
+    assert len(backend.uploads) >= 1
+    first = backend.uploads[0]
+    assert 29.0 <= first.duration_seconds <= 30.0
+    assert first.byte_length < media.stat().st_size / 10
+    assert result.coverage_complete is False
+    assert result.media_audit is not None
+    assert result.media_audit.media_uploaded is True
+
+
 def test_native_video_partial_window_marks_tail_and_coverage_incomplete(tmp_path: Path):
     transcript, visual = lecture_fixture()
     media = tmp_path / "source.mp4"
