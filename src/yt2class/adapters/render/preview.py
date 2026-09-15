@@ -41,7 +41,14 @@ def convert_pptx_to_pngs(pptx_path: Path, output_dir: Path) -> PreviewResult:
             tmp,
             str(pptx_path),
         ]
-        completed = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        completed = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
         if completed.returncode != 0:
             detail = (completed.stderr or completed.stdout or "").strip()
             return PreviewResult(

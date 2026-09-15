@@ -389,6 +389,7 @@ def run_asr(
                 command,
                 timeout_seconds=request.timeout_seconds,
                 cancel_event=cancel_event,
+                env={"PYTHONUTF8": "1"},
             )
         else:
             completed = runner(

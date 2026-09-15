@@ -626,19 +626,6 @@ def edit_deck(
             }
             for item in selected
         ],
-        "selected": [
-            {
-                "id": item.id,
-                "claim_ids": item.claim_ids,
-                "frame_ids": item.frame_ids,
-                "layout": item.layout,
-                "title": item.title,
-                "notes": item.notes,
-                "body_points": item.body_points,
-                "selection_reason": item.selection_reason,
-            }
-            for item in selected
-        ],
         "omissions": [item.model_dump(mode="json") for item in omissions],
         "allowed_claim_ids": sorted(allowed_claims),
         "allowed_frame_ids": sorted(allowed_frames),

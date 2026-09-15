@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -14,7 +15,7 @@ from yt2class.domain.visual import VisualCatalogue, is_accepted_visual_occurrenc
 
 PROMPT_DIR = Path(__file__).resolve().parents[1] / "prompts"
 CHARS_PER_TOKEN = 4
-IMAGE_TOKEN_ESTIMATE = 256
+IMAGE_TOKEN_ESTIMATE = 1500
 OUTPUT_RESERVE_TOKENS = 512
 PATH_HINT = (
     r"(?:^|[\s\"'])(?:(?:[A-Za-z]:\\|\\\\|/|\./|\.\./)[^\s\"']+\.(?:jpg|jpeg|png|webp|gif|mp4|mkv|mov|webm))"
@@ -48,6 +49,7 @@ UNIT_PATTERN_HINTS = (
 )
 
 
+@lru_cache(maxsize=32)
 def load_prompt(name: str) -> str:
     path = PROMPT_DIR / name
     return path.read_text(encoding="utf-8")
@@ -63,10 +65,25 @@ def payload_digest(payload: dict[str, Any]) -> str:
     return sha256(encoded).hexdigest()
 
 
-def estimate_tokens(text: str, *, image_count: int = 0) -> int:
-    return max(1, (len(text) + CHARS_PER_TOKEN - 1) // CHARS_PER_TOKEN) + (
-        max(0, image_count) * IMAGE_TOKEN_ESTIMATE
+def _is_cjk_codepoint(codepoint: int) -> bool:
+    return (
+        0x4E00 <= codepoint <= 0x9FFF
+        or 0x3400 <= codepoint <= 0x4DBF
+        or 0x3000 <= codepoint <= 0x303F
+        or 0xFF00 <= codepoint <= 0xFFEF
     )
+
+
+def estimate_tokens(text: str, *, image_count: int = 0) -> int:
+    cjk = 0
+    other = 0
+    for char in text:
+        if _is_cjk_codepoint(ord(char)):
+            cjk += 1
+        else:
+            other += 1
+    text_tokens = cjk + (other + CHARS_PER_TOKEN - 1) // CHARS_PER_TOKEN
+    return max(1, text_tokens) + max(0, image_count) * IMAGE_TOKEN_ESTIMATE
 
 
 def allowed_evidence_ids(

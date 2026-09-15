@@ -90,7 +90,7 @@ def test_frame_command_is_shell_free_and_keeps_requested_timestamp(tmp_path: Pat
     assert command[command.index("-ss") + 1] == "12.500000"
     assert "-copyts" in command
     assert "-start_at_zero" in command
-    assert command[command.index("-vf") + 1] == "showinfo"
+    assert command[command.index("-vf") + 1] == "scale='min(iw,1280)':-2,showinfo"
     assert "-frames:v" in command
     assert "--" not in command
 

@@ -12,7 +12,7 @@ from yt2class.domain.render_report import RenderReport
 from yt2class.domain.slide_spec_v3 import SlideSpecV3
 from yt2class.orchestration.workspace import Workspace
 from yt2class.provenance import ProvenanceResult, build_provenance
-from yt2class.stages.bind_spec import BindResult, validate_bound_assets
+from yt2class.stages.bind_spec import BindResult
 
 
 @dataclass(frozen=True)
@@ -40,7 +40,6 @@ def render_bound_spec(
     renderer: Renderer | None = None,
 ) -> RenderStageResult:
     spec_path = workspace.safe_path(bind.spec_path)
-    validate_bound_assets(bind.spec, workspace.root)
     request = RenderRequest(
         request_id=request_id,
         spec_path=bind.spec_path,

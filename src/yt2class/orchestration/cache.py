@@ -134,7 +134,7 @@ def atomic_write_bytes(path: Path, data: bytes, *, fsync: bool = True) -> Atomic
         finally:
             os.close(fd)
     partial.replace(path)
-    return AtomicWriteResult(path=path, sha256=file_sha256(path))
+    return AtomicWriteResult(path=path, sha256=hashlib.sha256(data).hexdigest())
 
 
 def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> AtomicWriteResult:
