@@ -31,6 +31,24 @@ def test_ocr_tsuki_corrects_asr_nigatsu_in_overlapping_segment():
     assert applied[0].visual_evidence_ids
 
 
+def test_ocr_tsuki_fragment_corrects_asr_nigatsu():
+    transcript = make_transcript(
+        [("cap-head", 0.0, 20.0, "今日は2月の文法を説明します。")],
+        duration=60.0,
+        language="ja",
+    )
+    transcript.segments[0] = transcript.segments[0].model_copy(update={"origin": "asr"})
+    visual = make_visual(
+        [("frame-board", 8.0, "scene-001")],
+        duration=60.0,
+        ocr=[("ocr-frag", "frame-board", "文法 つき")],
+    )
+    corrected, applied = correct_transcript_from_visual(transcript, visual)
+    assert applied
+    assert "2月" not in corrected.segments[0].text_original
+    assert "につき" in corrected.segments[0].text_original
+
+
 def test_without_ocr_headword_asr_surface_is_unchanged():
     transcript = make_transcript(
         [("cap-cal", 0.0, 20.0, "来月は2月です。")],

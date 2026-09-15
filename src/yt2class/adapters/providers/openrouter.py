@@ -25,7 +25,14 @@ from yt2class.adapters.providers.base import (
 from yt2class.config import AnalysisConfig
 from yt2class.domain.visual import VisualCatalogue
 from yt2class.llm import parse_model_json
-from yt2class.orchestration.retry import NonRetryableError, RetryableError, parse_retry_after
+from yt2class.orchestration.retry import (
+    InvalidJsonResponse,
+    NonRetryableError,
+    RetryableError,
+    parse_retry_after,
+)
+
+DEFAULT_MAX_TOKENS = 8192
 from yt2class.stages.llm_util import payload_digest
 from yt2class.stages.structured_coerce import ROLE_JSON_REMINDERS
 
@@ -342,6 +349,7 @@ class OpenRouterProvider(Provider):
         body: dict[str, Any] = {
             "model": self._model,
             "temperature": 0.1,
+            "max_tokens": DEFAULT_MAX_TOKENS,
             "messages": self._build_messages(request, payload),
         }
         if use_structured_output:
@@ -381,6 +389,11 @@ class OpenRouterProvider(Provider):
         try:
             structured = parse_model_json(text)
         except Exception as error:
+            message = str(error)
+            if "Unterminated" in message or "Expecting value" in message:
+                raise InvalidJsonResponse(
+                    f"OpenRouter returned truncated JSON for {request.request_id}: {error}"
+                ) from error
             raise MissingStructuredOutput(
                 f"OpenRouter returned invalid JSON for {request.request_id}: {error}"
             ) from error

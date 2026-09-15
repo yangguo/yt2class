@@ -11,10 +11,25 @@ from yt2class.domain.visual import FrameOccurrence, VisualCatalogue
 
 _VISUAL_CORRECTED_FLAG = "visual-asr-corrected"
 
+_TSUKI_FULL = re.compile(r"(～|〜)につき")
+_TSUKI_NI = re.compile(r"につき")
+_TSUKI_WAVE_ONLY = re.compile(r"(～|〜)つき")
+_TSUKI_FRAGMENT = re.compile(r"(?<![一-龥])つき(?![一-龥ぁ-ん])")
+_CALENDAR_MONTH = re.compile(r"\d+月")
+
+_TSUKI_ASR_VARIANTS: tuple[str, ...] = (
+    "2月",
+    "に月",
+    "兄月",
+    "ニ月",
+    "～2月",
+    "〜2月",
+)
+
 
 @dataclass(frozen=True)
 class HeadwordRule:
-    """OCR must match ocr_pattern; ASR variants may be replaced with the OCR span."""
+    """Optional generic rule hook (tsuki uses dedicated OCR logic)."""
 
     ocr_pattern: re.Pattern[str]
     asr_variants: tuple[str, ...]
@@ -39,7 +54,7 @@ class TranscriptVisualCorrection:
 _DEFAULT_RULES: tuple[HeadwordRule, ...] = (
     HeadwordRule(
         ocr_pattern=re.compile(r"～?につき"),
-        asr_variants=("2月", "に月", "兄月", "ニ月", "～2月", "〜2月"),
+        asr_variants=_TSUKI_ASR_VARIANTS,
     ),
 )
 
@@ -61,27 +76,64 @@ def _segments_overlap(
     return seg_end > win_start and seg_start < win_end
 
 
-def _collect_visual_headwords(
-    visual: VisualCatalogue,
-    rules: Iterable[HeadwordRule],
-) -> list[VisualHeadword]:
+def _ocr_has_tsuki_signal(ocr_text: str) -> bool:
+    return bool(
+        _TSUKI_FULL.search(ocr_text)
+        or _TSUKI_NI.search(ocr_text)
+        or _TSUKI_WAVE_ONLY.search(ocr_text)
+        or _TSUKI_FRAGMENT.search(ocr_text)
+    )
+
+
+def _ocr_blocks_tsuki_correction(ocr_text: str) -> bool:
+    """True when the board shows a calendar month, not a grammar につき headword."""
+
+    if _ocr_has_tsuki_signal(ocr_text):
+        return False
+    return bool(_CALENDAR_MONTH.search(ocr_text))
+
+
+def _best_tsuki_canonical(ocr_text: str) -> str | None:
+    """Pick the best grammar headword form supported by OCR (fragment-tolerant)."""
+
+    if _ocr_blocks_tsuki_correction(ocr_text):
+        return None
+    match = _TSUKI_FULL.search(ocr_text)
+    if match:
+        return match.group(0)
+    if _TSUKI_NI.search(ocr_text):
+        return "につき"
+    match = _TSUKI_WAVE_ONLY.search(ocr_text)
+    if match:
+        wave = match.group(1)
+        return f"{wave}につき"
+    if _TSUKI_FRAGMENT.search(ocr_text):
+        return "につき"
+    return None
+
+
+def _collect_tsuki_headwords(visual: VisualCatalogue) -> list[VisualHeadword]:
     occurrences = {item.id: item for item in visual.occurrences}
     found: list[VisualHeadword] = []
     for region in visual.ocr_regions:
+        canonical = _best_tsuki_canonical(region.text)
+        if canonical is None:
+            continue
         parent = occurrences.get(region.parent_occurrence_id)
         if parent is None:
             continue
-        center = _occurrence_seconds(parent)
-        for rule in rules:
-            for match in rule.ocr_pattern.finditer(region.text):
-                found.append(
-                    VisualHeadword(
-                        canonical=match.group(0),
-                        center_seconds=center,
-                        evidence_ids=(region.id, region.parent_occurrence_id),
-                    )
-                )
+        found.append(
+            VisualHeadword(
+                canonical=canonical,
+                center_seconds=_occurrence_seconds(parent),
+                evidence_ids=(region.id, region.parent_occurrence_id),
+            )
+        )
     return found
+
+
+def _collect_visual_headwords(visual: VisualCatalogue) -> list[VisualHeadword]:
+    return _collect_tsuki_headwords(visual)
 
 
 def _apply_variants(text: str, visual_form: str, variants: tuple[str, ...]) -> str:
@@ -101,8 +153,8 @@ def correct_transcript_from_visual(
 ) -> tuple[TranscriptDocument, list[TranscriptVisualCorrection]]:
     """Rewrite nearby transcript tokens when OCR shows a conflicting grammar headword."""
 
-    rules_tuple = tuple(rules)
-    headwords = _collect_visual_headwords(visual, rules_tuple)
+    del rules
+    headwords = _collect_visual_headwords(visual)
     if not headwords or not transcript.segments:
         return transcript, []
 
@@ -123,23 +175,20 @@ def correct_transcript_from_visual(
                 win_end,
             ):
                 continue
-            for rule in rules_tuple:
-                if not rule.ocr_pattern.search(headword.canonical):
-                    continue
-                replaced = _apply_variants(text, headword.canonical, rule.asr_variants)
-                if replaced != text:
-                    corrections.append(
-                        TranscriptVisualCorrection(
-                            segment_id=segment.id,
-                            before=text,
-                            after=replaced,
-                            visual_form=headword.canonical,
-                            visual_evidence_ids=list(headword.evidence_ids),
-                        )
+            replaced = _apply_variants(text, headword.canonical, _TSUKI_ASR_VARIANTS)
+            if replaced != text:
+                corrections.append(
+                    TranscriptVisualCorrection(
+                        segment_id=segment.id,
+                        before=text,
+                        after=replaced,
+                        visual_form=headword.canonical,
+                        visual_evidence_ids=list(headword.evidence_ids),
                     )
-                    text = replaced
-                    if _VISUAL_CORRECTED_FLAG not in flags:
-                        flags.append(_VISUAL_CORRECTED_FLAG)
+                )
+                text = replaced
+                if _VISUAL_CORRECTED_FLAG not in flags:
+                    flags.append(_VISUAL_CORRECTED_FLAG)
         if text == segment.text_original and flags == list(segment.quality_flags):
             updated_segments.append(segment)
         else:

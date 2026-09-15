@@ -13,7 +13,8 @@ from yt2class.adapters.providers.base import MissingStructuredOutput, ProviderEr
 from yt2class.adapters.providers.openrouter import OpenRouterProvider
 from yt2class.config import AnalysisConfig
 from yt2class.domain.visual import VisualCatalogue
-from yt2class.orchestration.retry import NonRetryableError, RetryableError
+from yt2class.adapters.providers.openrouter import DEFAULT_MAX_TOKENS
+from yt2class.orchestration.retry import InvalidJsonResponse, NonRetryableError, RetryableError
 from yt2class.stages.llm_util import model_request, payload_digest
 
 ENDPOINT = "https://openrouter.test/v1/chat/completions"
@@ -240,6 +241,63 @@ def test_openrouter_trailing_extra_json_is_parsed():
     provider._client = httpx.Client()
     result = provider.complete(request)
     assert result.structured == {"topics": [], "relations": [], "unverified_guesses": []}
+
+
+@respx.mock
+def test_openrouter_truncated_json_raises_retryable_invalid_json():
+    payload = {
+        "prompt": "outline",
+        "block": {"id": "block-0001"},
+        "transcript": [],
+        "visual_overview": [],
+        "allowed_evidence_ids": [],
+        "constraints": {},
+    }
+    provider, request = _outline_request(payload)
+    respx.post(ENDPOINT).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": '{"topics": [{"title": "unterminated'}}],
+                "usage": {},
+            },
+        )
+    )
+    provider._client = httpx.Client()
+    with pytest.raises(InvalidJsonResponse, match="truncated"):
+        provider.complete(request)
+
+
+@respx.mock
+def test_openrouter_request_sets_max_tokens():
+    payload = {
+        "prompt": "outline",
+        "block": {"id": "block-0001"},
+        "transcript": [],
+        "visual_overview": [],
+        "allowed_evidence_ids": [],
+        "constraints": {},
+    }
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": json.dumps({"topics": [], "relations": [], "unverified_guesses": []})}}
+                ],
+                "usage": {},
+            },
+            request=request,
+        )
+
+    provider = _provider(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    provider.last_payload = payload
+    request = model_request(request_id="outline:block-0001", role="outline", payload=payload)
+    provider.complete(request)
+    assert captured["body"]["max_tokens"] == DEFAULT_MAX_TOKENS
 
 
 @respx.mock
