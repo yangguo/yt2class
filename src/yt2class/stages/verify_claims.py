@@ -7,7 +7,7 @@ import re
 from threading import Event
 from typing import Any, Iterable
 
-from yt2class.adapters.providers.base import Provider
+from yt2class.adapters.providers.base import Provider, RequestCancelled
 from yt2class.domain.editorial import (
     QUALITY_NOTE_MARKERS,
     EditorialPlan,
@@ -29,6 +29,7 @@ from yt2class.domain.verification import (
 from yt2class.domain.visual import VisualCatalogue
 from yt2class.stages.llm_util import (
     allowed_evidence_ids,
+    attach_provider_payload,
     load_prompt,
     model_request,
 )
@@ -47,6 +48,7 @@ CRITICAL_KINDS = {
     "grounding",
 }
 QUALITY_PREFIXES = ("[DRAFT]", "[EVIDENCE-ONLY]")
+VERIFIER_GROUNDING_BATCH_SIZE = 15
 
 
 class StrictVerificationError(ValueError):
@@ -199,37 +201,19 @@ def check_unknown_refs(claim: KnowledgeClaim, allowed: set[str]) -> CheckResult:
     return CheckResult(kind="unknown_ref", passed=True, note="refs resolve")
 
 
-def check_grounding(
-    claim: KnowledgeClaim,
-    index: dict[str, str],
-    *,
-    provider: Provider | None = None,
-    cancel_event: Event | None = None,
-) -> CheckResult:
-    """Only a structured provider verdict can affirm free-text entailment."""
-    failure = CheckResult(
-        kind="grounding", passed=False,
-        note="no affirmative provider evidence support", verdict="insufficient",
+def _grounding_failure(note: str = "no affirmative provider evidence support") -> CheckResult:
+    return CheckResult(
+        kind="grounding",
+        passed=False,
+        note=note,
+        verdict="insufficient",
     )
-    if not claim.text.strip() or not claim.evidence_ids or not any(
-        index.get(item, "").strip() for item in claim.evidence_ids
-    ):
-        failure.note = "missing or empty cited evidence"
-        return failure
-    payload = {
-        "prompt": load_prompt("verifier.md"),
-        "claims": [claim.model_dump(mode="json")],
-        "evidence": {item: index.get(item, "") for item in claim.evidence_ids},
-        "allowed_evidence_ids": list(claim.evidence_ids),
-    }
-    structured = _complete_verifier(
-        provider, payload, request_id=f"verifier:ground:{claim.id}", cancel_event=cancel_event,
-    )
-    rows = structured.get("verdicts") if structured else None
-    if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
-        return failure
+
+
+def _grounding_from_row(claim: KnowledgeClaim, index: dict[str, str], row: dict[str, Any]) -> CheckResult:
+    failure = _grounding_failure()
     try:
-        result = ClaimVerdict.model_validate(rows[0])
+        result = ClaimVerdict.model_validate(row)
     except (ValueError, TypeError):
         return failure
     refs = result.supporting_ids + result.contradicting_ids
@@ -242,9 +226,112 @@ def check_grounding(
     if result.verdict == "contradicted" and not result.contradicting_ids:
         return failure
     return CheckResult(
-        kind="grounding", passed=result.verdict == "supported",
-        verdict=result.verdict, note=result.reason,
-        supporting_ids=result.supporting_ids, contradicting_ids=result.contradicting_ids,
+        kind="grounding",
+        passed=result.verdict == "supported",
+        verdict=result.verdict,
+        note=result.reason,
+        supporting_ids=result.supporting_ids,
+        contradicting_ids=result.contradicting_ids,
+    )
+
+
+def check_grounding_batch(
+    claims: list[KnowledgeClaim],
+    index: dict[str, str],
+    *,
+    provider: Provider | None = None,
+    cancel_event: Event | None = None,
+) -> dict[str, CheckResult]:
+    """Batch grounding checks using the verifier contract's multi-claim payload."""
+
+    results: dict[str, CheckResult] = {}
+    eligible: list[KnowledgeClaim] = []
+    for claim in claims:
+        if not claim.text.strip() or not claim.evidence_ids or not any(
+            index.get(item, "").strip() for item in claim.evidence_ids
+        ):
+            results[claim.id] = _grounding_failure("missing or empty cited evidence")
+        else:
+            eligible.append(claim)
+    if provider is None:
+        for claim in eligible:
+            results[claim.id] = _grounding_failure()
+        return results
+
+    for offset in range(0, len(eligible), VERIFIER_GROUNDING_BATCH_SIZE):
+        chunk = eligible[offset : offset + VERIFIER_GROUNDING_BATCH_SIZE]
+        evidence_ids = sorted({item for claim in chunk for item in claim.evidence_ids})
+        payload = {
+            "prompt": load_prompt("verifier.md"),
+            "claims": [claim.model_dump(mode="json") for claim in chunk],
+            "evidence": {item: index.get(item, "") for item in evidence_ids},
+            "allowed_evidence_ids": evidence_ids,
+        }
+        structured = _complete_verifier(
+            provider,
+            payload,
+            request_id=f"verifier:ground:batch:{offset}",
+            cancel_event=cancel_event,
+        )
+        rows = structured.get("verdicts") if structured else None
+        if not isinstance(rows, list) or len(rows) != len(chunk):
+            for claim in chunk:
+                results[claim.id] = _check_grounding_single(
+                    claim, index, provider=provider, cancel_event=cancel_event
+                )
+            continue
+        by_id = {str(row.get("claim_id")): row for row in rows if isinstance(row, dict)}
+        for claim in chunk:
+            row = by_id.get(claim.id)
+            if row is None:
+                results[claim.id] = _grounding_failure()
+            else:
+                results[claim.id] = _grounding_from_row(claim, index, row)
+    return results
+
+
+def _check_grounding_single(
+    claim: KnowledgeClaim,
+    index: dict[str, str],
+    *,
+    provider: Provider | None = None,
+    cancel_event: Event | None = None,
+) -> CheckResult:
+    """One claim, one verifier request (batch fallback and public single-check API)."""
+    if not claim.text.strip() or not claim.evidence_ids or not any(
+        index.get(item, "").strip() for item in claim.evidence_ids
+    ):
+        return _grounding_failure("missing or empty cited evidence")
+    if provider is None:
+        return _grounding_failure()
+    payload = {
+        "prompt": load_prompt("verifier.md"),
+        "claims": [claim.model_dump(mode="json")],
+        "evidence": {item: index.get(item, "") for item in claim.evidence_ids},
+        "allowed_evidence_ids": list(claim.evidence_ids),
+    }
+    structured = _complete_verifier(
+        provider,
+        payload,
+        request_id=f"verifier:ground:{claim.id}",
+        cancel_event=cancel_event,
+    )
+    rows = structured.get("verdicts") if structured else None
+    if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
+        return _grounding_failure()
+    return _grounding_from_row(claim, index, rows[0])
+
+
+def check_grounding(
+    claim: KnowledgeClaim,
+    index: dict[str, str],
+    *,
+    provider: Provider | None = None,
+    cancel_event: Event | None = None,
+) -> CheckResult:
+    """Only a structured provider verdict can affirm free-text entailment."""
+    return _check_grounding_single(
+        claim, index, provider=provider, cancel_event=cancel_event
     )
 
 
@@ -468,11 +555,6 @@ def _is_practice(knowledge: KnowledgeDocument, claim_ids: list[str]) -> bool:
     return bool(chosen) and all(claim.provenance == "generated-practice" for claim in chosen)
 
 
-def _attach_payload(provider: Provider, payload: dict[str, Any]) -> None:
-    if hasattr(provider, "last_payload"):
-        provider.last_payload = payload
-
-
 def _complete_verifier(
     provider: Provider | None,
     payload: dict[str, Any],
@@ -484,9 +566,11 @@ def _complete_verifier(
         return None
     request = model_request(request_id=request_id[:60], role="verifier", payload=payload)
     request = request.model_copy(update={"request_id": f"{request_id[:60]}:{request.payload_digest[:32]}"})
-    _attach_payload(provider, payload)
+    attach_provider_payload(provider, payload)
     try:
         result = provider.complete(request, cancel_event=cancel_event)
+    except RequestCancelled:
+        raise
     except Exception:
         return None
     structured = result.structured
@@ -536,19 +620,42 @@ def verify_claims(
         removed.extend(item for item in existing.removed_from_formal if item not in target_ids)
 
     current_knowledge = knowledge
+    claim_rows: list[tuple[str, KnowledgeClaim, KnowledgeUnit]] = []
     for claim_id in [item.id for item in knowledge.iter_claims() if item.id in target_ids]:
         claim = next(item for item in current_knowledge.iter_claims() if item.id == claim_id)
         unit = _unit_for_claim(current_knowledge, claim_id)
-        checks = run_claim_checks(
-            claim,
-            unit=unit,
-            transcript=transcript,
-            visual=visual,
-            allowed=allowed,
-            index=index,
-            provider=provider,
-            cancel_event=cancel_event,
-        )
+        claim_rows.append((claim_id, claim, unit))
+
+    grounding_targets: list[KnowledgeClaim] = []
+    preliminary: dict[str, list[CheckResult]] = {}
+    for claim_id, claim, unit in claim_rows:
+        ref_check = check_unknown_refs(claim, allowed)
+        numbers = check_numbers(claim, _join(claim.evidence_ids, index))
+        steps = check_steps(claim, unit, transcript, visual)
+        if not ref_check.passed:
+            preliminary[claim_id] = [
+                ref_check,
+                _grounding_failure("skipped after unknown evidence ref"),
+                numbers,
+                steps,
+            ]
+        else:
+            preliminary[claim_id] = [ref_check, numbers, steps]
+            grounding_targets.append(claim)
+
+    grounding_map = check_grounding_batch(
+        grounding_targets,
+        index,
+        provider=provider,
+        cancel_event=cancel_event,
+    )
+
+    for claim_id, claim, unit in claim_rows:
+        parts = preliminary[claim_id]
+        if len(parts) == 3:
+            checks = [parts[0], grounding_map[claim_id], parts[1], parts[2]]
+        else:
+            checks = parts
         check_by_claim[claim_id] = checks
         if any(check.kind == "unknown_ref" and not check.passed for check in checks):
             structural_errors.append(next(check.note for check in checks if check.kind == "unknown_ref"))

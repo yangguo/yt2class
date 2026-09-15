@@ -6,14 +6,28 @@ from functools import lru_cache
 from hashlib import sha256
 import json
 from pathlib import Path
+import threading
 from typing import Any, Iterable
 
-from yt2class.adapters.providers.base import ModelRequest, ProviderRole
+from yt2class.adapters.providers.base import ModelRequest, Provider, ProviderRole
 from yt2class.domain.resolvers import evidence_universe
 from yt2class.domain.transcript import TranscriptDocument
 from yt2class.domain.visual import VisualCatalogue, is_accepted_visual_occurrence
 
 PROMPT_DIR = Path(__file__).resolve().parents[1] / "prompts"
+_PROVIDER_PAYLOAD_TLS = threading.local()
+
+
+def attach_provider_payload(provider: Provider, payload: dict[str, Any]) -> None:
+    """Bind payload to the current thread before ``provider.complete`` (parallel-safe)."""
+
+    _PROVIDER_PAYLOAD_TLS.payload = payload
+    if hasattr(provider, "last_payload"):
+        provider.last_payload = payload
+
+
+def thread_local_provider_payload() -> dict[str, Any] | None:
+    return getattr(_PROVIDER_PAYLOAD_TLS, "payload", None)
 CHARS_PER_TOKEN = 4
 IMAGE_TOKEN_ESTIMATE = 1500
 OUTPUT_RESERVE_TOKENS = 512

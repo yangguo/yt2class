@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 import hashlib
 import json
-from threading import Event
+from threading import Event, Lock
 from typing import Any, Literal
 
 from pydantic import Field, model_validator
@@ -123,6 +123,7 @@ class Provider(ABC):
     def __init__(self, capabilities: ProviderCapabilities) -> None:
         self.capabilities = capabilities
         self._completed: dict[str, tuple[str, ModelResult]] = {}
+        self._lock = Lock()
 
     @staticmethod
     def request_fingerprint(request: ModelRequest) -> str:
@@ -186,22 +187,23 @@ class Provider(ABC):
         *,
         cancel_event: Event | None = None,
     ) -> ModelResult:
-        self.check_request(request)
-        if cancel_event is not None and cancel_event.is_set():
-            raise RequestCancelled(f"request {request.request_id} cancelled")
-        fingerprint = self.request_fingerprint(request)
-        cached = self._completed.get(request.request_id)
-        if cached is not None:
-            cached_fingerprint, cached_result = cached
-            if cached_fingerprint != fingerprint:
-                raise RequestFingerprintConflict(
-                    f"request_id {request.request_id!r} was already completed "
-                    "with a different request fingerprint"
-                )
-            return cached_result
-        result = self.ensure_result(request, self._complete(request, cancel_event=cancel_event))
-        self._completed[request.request_id] = (fingerprint, result)
-        return result
+        with self._lock:
+            self.check_request(request)
+            if cancel_event is not None and cancel_event.is_set():
+                raise RequestCancelled(f"request {request.request_id} cancelled")
+            fingerprint = self.request_fingerprint(request)
+            cached = self._completed.get(request.request_id)
+            if cached is not None:
+                cached_fingerprint, cached_result = cached
+                if cached_fingerprint != fingerprint:
+                    raise RequestFingerprintConflict(
+                        f"request_id {request.request_id!r} was already completed "
+                        "with a different request fingerprint"
+                    )
+                return cached_result
+            result = self.ensure_result(request, self._complete(request, cancel_event=cancel_event))
+            self._completed[request.request_id] = (fingerprint, result)
+            return result
 
     @abstractmethod
     def _complete(
@@ -263,6 +265,11 @@ class FakeProvider(Provider):
         *,
         cancel_event: Event | None = None,
     ) -> ModelResult:
+        from yt2class.stages.llm_util import thread_local_provider_payload
+
+        local_payload = thread_local_provider_payload()
+        if local_payload is not None:
+            self.last_payload = local_payload
         self.requests.append(request)
         if self._timeout:
             raise RequestTimeout(f"request {request.request_id} timed out")

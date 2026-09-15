@@ -231,12 +231,19 @@ def grounding_provider(*, verdict="supported", copy_verdict="supported"):
     def respond(provider, request):
         payload = provider.last_payload or {}
         rows = []
+        evidence = payload.get("evidence") or {}
         for claim in payload.get("claims", []):
             chosen = copy_verdict if claim["id"] == "copy" else verdict
-            ids = [key for key, text in payload.get("evidence", {}).items() if text.strip()]
-            rows.append(dict(claim_id=claim["id"], verdict=chosen,
-                             supporting_ids=ids if chosen == "supported" else [],
-                             contradicting_ids=ids if chosen == "contradicted" else [],
-                             reason="scripted fixture verdict"))
+            cited = list(claim.get("evidence_ids") or [])
+            ids = [item for item in cited if str(evidence.get(item, "")).strip()]
+            rows.append(
+                dict(
+                    claim_id=claim["id"],
+                    verdict=chosen,
+                    supporting_ids=ids if chosen == "supported" else [],
+                    contradicting_ids=ids if chosen == "contradicted" else [],
+                    reason="scripted fixture verdict",
+                )
+            )
         return {"verdicts": rows}
     return FakeProvider(frames_caps(), responder=respond)
