@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 from threading import Event
 from typing import Any, Iterable
 
@@ -219,6 +220,120 @@ def _example_keep(candidates: Iterable[PageCandidate]) -> set[str]:
     return {item.unit_id for item in best.values()}
 
 
+_KANA_RE = re.compile(r"[\u3040-\u30ff\u3100-\u312f]")
+
+
+def _script_profile(text: str) -> str:
+    if _KANA_RE.search(text):
+        return "ja"
+    if re.search(r"[\u4e00-\u9fff]", text):
+        return "zh"
+    return "other"
+
+
+def _time_overlap_ratio(
+    a_start: float,
+    a_end: float,
+    b_start: float,
+    b_end: float,
+) -> float:
+    start = max(a_start, b_start)
+    end = min(a_end, b_end)
+    if end <= start:
+        return 0.0
+    span = max(1e-6, min(a_end - a_start, b_end - b_start))
+    return (end - start) / span
+
+
+def _evidence_jaccard(ids_a: list[str], ids_b: list[str]) -> float:
+    a, b = set(ids_a), set(ids_b)
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+def _claim_evidence_ids(unit: KnowledgeUnit) -> list[str]:
+    return [item for claim in unit.claims for item in claim.evidence_ids]
+
+
+def _translation_duplicate_pair(unit_a: KnowledgeUnit, unit_b: KnowledgeUnit) -> bool:
+    if unit_a.id == unit_b.id or unit_a.topic_id != unit_b.topic_id:
+        return False
+    if _time_overlap_ratio(
+        unit_a.start_seconds,
+        unit_a.end_seconds,
+        unit_b.start_seconds,
+        unit_b.end_seconds,
+    ) < 0.45:
+        return False
+    if _evidence_jaccard(_claim_evidence_ids(unit_a), _claim_evidence_ids(unit_b)) < 0.45:
+        return False
+    text_a = " ".join(claim.text for claim in unit_a.claims)
+    text_b = " ".join(claim.text for claim in unit_b.claims)
+    profile_a, profile_b = _script_profile(text_a), _script_profile(text_b)
+    if {profile_a, profile_b} == {"ja", "zh"}:
+        return True
+    if profile_a == profile_b and profile_a != "other":
+        normalized_a = re.sub(r"\s+", "", text_a)
+        normalized_b = re.sub(r"\s+", "", text_b)
+        if normalized_a and normalized_b:
+            shorter, longer = (
+                (normalized_a, normalized_b)
+                if len(normalized_a) <= len(normalized_b)
+                else (normalized_b, normalized_a)
+            )
+            if shorter in longer or longer in shorter:
+                return True
+    return False
+
+
+def _demote_translation_duplicate_units(
+    candidates: list[PageCandidate],
+    knowledge: KnowledgeDocument,
+) -> set[str]:
+    demoted: set[str] = set()
+    units = {
+        item.unit_id: _unit_by_id(knowledge, item.unit_id)
+        for item in candidates
+    }
+    for index, left in enumerate(candidates):
+        unit_left = units.get(left.unit_id)
+        if unit_left is None or left.unit_id in demoted:
+            continue
+        for right in candidates[index + 1 :]:
+            unit_right = units.get(right.unit_id)
+            if unit_right is None or right.unit_id in demoted:
+                continue
+            if not _translation_duplicate_pair(unit_left, unit_right):
+                continue
+            if left.score > right.score:
+                loser = right
+            elif right.score > left.score:
+                loser = left
+            elif unit_left.kind == "example" and unit_right.kind != "example":
+                loser = left
+            elif unit_right.kind == "example" and unit_left.kind != "example":
+                loser = right
+            else:
+                loser = right if left.start_seconds <= right.start_seconds else left
+            demoted.add(loser.unit_id)
+    return demoted
+
+
+def _reserved_topic_ids(
+    candidates: list[PageCandidate],
+    course_map: CourseMap | None,
+) -> list[str]:
+    if course_map and course_map.topics:
+        return [topic.id for topic in course_map.topics]
+    return sorted({item.topic_id for item in candidates})
+
+
+def _rank_key(item: PageCandidate, *, demoted: set[str]) -> tuple[float, float, str]:
+    penalty = 5.0 if item.unit_id in demoted else 0.0
+    return (-(item.score - penalty), item.start_seconds, item.id)
+
+
 def select_candidates(
     candidates: list[PageCandidate],
     *,
@@ -227,35 +342,59 @@ def select_candidates(
     knowledge: KnowledgeDocument,
     course_map: CourseMap | None = None,
 ) -> tuple[list[PageCandidate], list[Omission]]:
-    del course_map
     content_target = max(1, min(target_pages, max_pages) - 2)
     content_max = max(1, max_pages - 2)
     parents = prerequisite_parents(knowledge)
     keep_examples = _example_keep(candidates)
-    ranked = sorted(candidates, key=lambda item: (-item.score, item.start_seconds, item.id))
+    demoted = _demote_translation_duplicate_units(candidates, knowledge)
+    ranked = sorted(candidates, key=lambda item: _rank_key(item, demoted=demoted))
     selected: list[PageCandidate] = []
     selected_ids: set[str] = set()
 
     def add(item: PageCandidate) -> None:
         if item.unit_id in selected_ids:
             return
+        if item.unit_id in demoted:
+            return
         if len(selected) >= content_max:
             return
         selected.append(item)
         selected_ids.add(item.unit_id)
 
-    for item in ranked:
-        if item.kind == "example" and item.unit_id not in keep_examples:
-            continue
+    def add_with_prerequisites(item: PageCandidate) -> None:
         for parent_id in sorted(parents.get(item.unit_id, set())):
             parent = next((row for row in ranked if row.unit_id == parent_id), None)
             if parent is not None:
                 add(parent)
+        add(item)
+
+    for topic_id in _reserved_topic_ids(candidates, course_map):
+        pool = [
+            item
+            for item in ranked
+            if item.topic_id == topic_id
+            and item.unit_id not in selected_ids
+            and item.unit_id not in demoted
+        ]
+        if not pool:
+            continue
+        pick = pool[0]
+        if pick.kind == "example" and pick.unit_id not in keep_examples:
+            non_example = next((row for row in pool if row.kind != "example"), None)
+            if non_example is not None:
+                pick = non_example
+        add_with_prerequisites(pick)
+
+    for item in ranked:
+        if item.kind == "example" and item.unit_id not in keep_examples:
+            continue
+        if item.unit_id in selected_ids:
+            continue
         if len(selected) >= content_target and item.unit_id not in selected_ids:
             if item.required_prerequisite:
-                add(item)
+                add_with_prerequisites(item)
             continue
-        add(item)
+        add_with_prerequisites(item)
 
     selected_ids = {item.unit_id for item in selected}
     omissions: list[Omission] = []

@@ -15,7 +15,15 @@ export function formatLocalSeek(mediaPath, seconds) {
   return `${name} @ ${mm}:${ss}`;
 }
 
-export function primarySeekSeconds(page, assets, evidenceByAsset) {
+export function evidenceStartSeconds(evidenceId, evidenceById) {
+  const ev = evidenceById?.[evidenceId];
+  if (!ev) return null;
+  if (ev.timestamp_seconds != null) return ev.timestamp_seconds;
+  if (ev.start_seconds != null) return ev.start_seconds;
+  return null;
+}
+
+export function primarySeekSeconds(page, assets, evidenceByAsset, evidenceById = {}) {
   const assetIds = [];
   if (page.type === "content" && page.layout === "sequence") {
     for (const step of page.steps || []) assetIds.push(step.asset_id);
@@ -30,11 +38,15 @@ export function primarySeekSeconds(page, assets, evidenceByAsset) {
     const ev = evidenceByAsset[assetId];
     if (ev?.timestamp_seconds != null) return ev.timestamp_seconds;
   }
+  const citationTimes = (page.citation_ids || [])
+    .map((id) => evidenceStartSeconds(id, evidenceById))
+    .filter((value) => value != null);
+  if (citationTimes.length) return Math.min(...citationTimes);
   return 0;
 }
 
-export function buildSeekLink(spec, page, assets, evidenceByAsset) {
-  const seconds = primarySeekSeconds(page, assets, evidenceByAsset);
+export function buildSeekLink(spec, page, assets, evidenceByAsset, evidenceById = {}) {
+  const seconds = primarySeekSeconds(page, assets, evidenceByAsset, evidenceById);
   if (spec.source?.kind === "youtube" && spec.source.url) {
     const url = floorYoutubeSeek(spec.source.url, seconds);
     if (url) return { url, label: `来源视频 ${Math.floor(seconds)}s` };

@@ -34,6 +34,10 @@ from yt2class.stages.llm_util import (
 )
 
 NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
+_PEDAGOGICAL_NUMBER_RE = re.compile(
+    r"(?:第\s*\d+|\d+\s*例|用法\s*\d+|例\s*\d+)",
+    re.IGNORECASE,
+)
 CRITICAL_KINDS = {
     "number",
     "negation",
@@ -205,22 +209,24 @@ def check_grounding(
     *,
     provider: Provider | None = None,
     cancel_event: Event | None = None,
+    evidence_ids: list[str] | None = None,
 ) -> CheckResult:
     """Only a structured provider verdict can affirm free-text entailment."""
     failure = CheckResult(
         kind="grounding", passed=False,
         note="no affirmative provider evidence support", verdict="insufficient",
     )
-    if not claim.text.strip() or not claim.evidence_ids or not any(
-        index.get(item, "").strip() for item in claim.evidence_ids
+    cited_ids = list(evidence_ids or claim.evidence_ids)
+    if not claim.text.strip() or not cited_ids or not any(
+        index.get(item, "").strip() for item in cited_ids
     ):
         failure.note = "missing or empty cited evidence"
         return failure
     payload = {
         "prompt": load_prompt("verifier.md"),
         "claims": [claim.model_dump(mode="json")],
-        "evidence": {item: index.get(item, "") for item in claim.evidence_ids},
-        "allowed_evidence_ids": list(claim.evidence_ids),
+        "evidence": {item: index.get(item, "") for item in cited_ids},
+        "allowed_evidence_ids": cited_ids,
     }
     structured = _complete_verifier(
         provider, payload, request_id=f"verifier:ground:{claim.id}", cancel_event=cancel_event,
@@ -234,7 +240,7 @@ def check_grounding(
         return failure
     refs = result.supporting_ids + result.contradicting_ids
     if result.claim_id != claim.id or any(
-        item not in claim.evidence_ids or not index.get(item, "").strip() for item in refs
+        item not in cited_ids or not index.get(item, "").strip() for item in refs
     ):
         return failure
     if result.verdict == "supported" and not result.supporting_ids:
@@ -248,8 +254,51 @@ def check_grounding(
     )
 
 
+def _pedagogical_number_literals(text: str) -> set[str]:
+    literals: set[str] = set()
+    for match in _PEDAGOGICAL_NUMBER_RE.finditer(text):
+        for token in NUMBER_RE.findall(match.group(0)):
+            literals.add(token)
+    return literals
+
+
+def _material_numbers(text: str) -> list[str]:
+    claimed = NUMBER_RE.findall(text)
+    ignore = _pedagogical_number_literals(text)
+    return [item for item in claimed if item not in ignore]
+
+
+def _segment_overlaps_unit(
+    segment_id: str,
+    unit: KnowledgeUnit,
+    transcript: TranscriptDocument,
+) -> bool:
+    for segment in transcript.segments:
+        if segment.id != segment_id:
+            continue
+        return (
+            segment.end_seconds > unit.start_seconds
+            and segment.start_seconds < unit.end_seconds
+        )
+    return True
+
+
+def _aligned_claim_evidence_ids(
+    claim: KnowledgeClaim,
+    unit: KnowledgeUnit,
+    transcript: TranscriptDocument,
+) -> list[str]:
+    segment_ids = {segment.id for segment in transcript.segments}
+    aligned: list[str] = []
+    for item in claim.evidence_ids:
+        if item in segment_ids and not _segment_overlaps_unit(item, unit, transcript):
+            continue
+        aligned.append(item)
+    return aligned
+
+
 def check_numbers(claim: KnowledgeClaim, evidence_text: str) -> CheckResult:
-    claimed = NUMBER_RE.findall(claim.text)
+    claimed = _material_numbers(claim.text)
     if not claimed:
         return CheckResult(kind="number", passed=True, note="no numbers")
     present = set(NUMBER_RE.findall(evidence_text))
@@ -309,10 +358,32 @@ def run_claim_checks(
     provider: Provider | None = None,
     cancel_event: Event | None = None,
 ) -> list[CheckResult]:
-    evidence_text = _join(claim.evidence_ids, index)
+    aligned_ids = _aligned_claim_evidence_ids(claim, unit, transcript)
+    temporal = CheckResult(kind="translation", passed=True, note="caption times align with unit")
+    segment_ids = {segment.id for segment in transcript.segments}
+    misaligned = [
+        item
+        for item in claim.evidence_ids
+        if item in segment_ids and item not in aligned_ids
+    ]
+    if misaligned and not aligned_ids:
+        temporal = CheckResult(
+            kind="translation",
+            passed=False,
+            note="caption citations lack temporal overlap with unit span",
+            verdict="insufficient",
+        )
+    evidence_text = _join(aligned_ids or claim.evidence_ids, index)
     return [
         check_unknown_refs(claim, allowed),
-        check_grounding(claim, index, provider=provider, cancel_event=cancel_event),
+        temporal,
+        check_grounding(
+            claim,
+            index,
+            provider=provider,
+            cancel_event=cancel_event,
+            evidence_ids=aligned_ids or claim.evidence_ids,
+        ),
         check_numbers(claim, evidence_text),
         check_steps(claim, unit, transcript, visual),
     ]
@@ -344,6 +415,28 @@ def _unit_for_claim(knowledge: KnowledgeDocument, claim_id: str) -> KnowledgeUni
         if any(claim.id == claim_id for claim in unit.claims):
             return unit
     raise KeyError(claim_id)
+
+
+def _keep_insufficient_example_in_draft(
+    claim_id: str,
+    *,
+    knowledge: KnowledgeDocument,
+    verdicts: dict[str, ClaimVerdict],
+    quality_mode: QualityMode,
+) -> bool:
+    if quality_mode != "draft":
+        return False
+    unit = _unit_for_claim(knowledge, claim_id)
+    if unit.kind != "example":
+        return False
+    for sibling in knowledge.units:
+        if sibling.topic_id != unit.topic_id or sibling.kind == "example":
+            continue
+        for claim in sibling.claims:
+            verdict = verdicts.get(claim.id)
+            if verdict is not None and verdict.verdict == "supported":
+                return True
+    return False
 
 
 def _is_critical(claim: KnowledgeClaim, checks: list[CheckResult]) -> bool:
@@ -625,6 +718,13 @@ def verify_claims(
 
     for claim_id, verdict in list(verdicts.items()):
         if verdict.verdict == "supported":
+            continue
+        if _keep_insufficient_example_in_draft(
+            claim_id,
+            knowledge=current_knowledge,
+            verdicts=verdicts,
+            quality_mode=quality_mode,
+        ):
             continue
         if claim_id not in removed:
             removed.append(claim_id)

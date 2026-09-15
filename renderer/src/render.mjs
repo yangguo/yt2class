@@ -35,7 +35,9 @@ export async function renderSpec(spec, runRoot, outputPath) {
   const claims = Object.fromEntries((spec.claims || []).map((c) => [c.id, c.text]));
   const assets = Object.fromEntries((spec.assets || []).map((a) => [a.id, a]));
   const frameEvidence = {};
+  const evidenceById = {};
   for (const item of spec.evidence || []) {
+    evidenceById[item.id] = item;
     if (item.kind === "frame") frameEvidence[item.asset_id] = item;
   }
   const ctx = {
@@ -56,7 +58,7 @@ export async function renderSpec(spec, runRoot, outputPath) {
       return ev?.timestamp_seconds ?? 0;
     },
     seekLinkForPage(page) {
-      return buildSeekLink(spec, page, assets, frameEvidence);
+      return buildSeekLink(spec, page, assets, frameEvidence, evidenceById);
     },
   };
   const pageMap = [];
