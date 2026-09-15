@@ -32,6 +32,7 @@ from yt2class.adapters.subtitles import (
 from yt2class.domain.evidence import EvidenceArtifact, EvidenceBundle, EvidenceGap
 from yt2class.domain.source import SourceInputError, SourceManifest, content_sha256
 from yt2class.domain.transcript import SpeechCoverage, TranscriptDocument, TranscriptGap, TranscriptSegment
+from yt2class.stages.transcript_visual_correction import correct_transcript_from_visual
 from yt2class.domain.visual import FrameOccurrence, OcrRegion, VisualCatalogue, VisualGap
 from yt2class.orchestration.workspace import WorkspacePathError
 from yt2class.stages.ingest import IngestError, resolve_manifest_media
@@ -648,6 +649,8 @@ def _extract_evidence_unlocked(
         visual = _rebuild_visual_with_ocr(visual, accepted_regions, accepted_updates)
     if visual_degraded_by_ocr and visual.status == "complete":
         visual = visual.model_copy(update={"status": "degraded"})
+
+    transcript, _visual_asr_corrections = correct_transcript_from_visual(transcript, visual)
 
     if cancel_event is not None and cancel_event.is_set():
         raise EvidenceCancelled("evidence extraction cancelled")
