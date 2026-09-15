@@ -49,6 +49,43 @@ def test_ocr_tsuki_fragment_corrects_asr_nigatsu():
     assert "につき" in corrected.segments[0].text_original
 
 
+def test_late_ocr_tsuki_corrects_early_cap_outside_time_window():
+    transcript = make_transcript(
+        [
+            ("cap-early", 5.0, 18.0, "今日は2月の文法、用法を説明します。"),
+        ],
+        duration=200.0,
+        language="ja",
+    )
+    transcript.segments[0] = transcript.segments[0].model_copy(update={"origin": "asr"})
+    visual = make_visual(
+        [("frame-late", 120.0, "scene-001")],
+        duration=200.0,
+        ocr=[("ocr-late-frag", "frame-late", "ポイント つき")],
+    )
+    corrected, applied = correct_transcript_from_visual(transcript, visual, window_seconds=45.0)
+    assert applied
+    assert "2月" not in corrected.segments[0].text_original
+    assert "につき" in corrected.segments[0].text_original
+
+
+def test_lesson_tsuki_does_not_rewrite_calendar_month_in_transcript():
+    transcript = make_transcript(
+        [("cap-cal", 5.0, 18.0, "来月は2月です。文法の話に戻ります。")],
+        duration=200.0,
+        language="ja",
+    )
+    transcript.segments[0] = transcript.segments[0].model_copy(update={"origin": "asr"})
+    visual = make_visual(
+        [("frame-late", 120.0, "scene-001")],
+        duration=200.0,
+        ocr=[("ocr-tsuki", "frame-late", "～につき")],
+    )
+    corrected, applied = correct_transcript_from_visual(transcript, visual)
+    assert not applied
+    assert "来月は2月です" in corrected.segments[0].text_original
+
+
 def test_without_ocr_headword_asr_surface_is_unchanged():
     transcript = make_transcript(
         [("cap-cal", 0.0, 20.0, "来月は2月です。")],

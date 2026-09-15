@@ -48,6 +48,7 @@ class AnalysisConfig(BaseModel):
     max_evidence_rounds: int = 2
     provider: str = "fake"
     openrouter_json_mode: Literal["auto", "on", "off"] = "auto"
+    openrouter_timeout_seconds: float = 300.0
     ocr_engine: OcrEngineMode = "auto"
     ocr_languages: str = "jpn+eng"
     asr_engine: AsrEngineMode = "auto"

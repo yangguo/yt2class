@@ -33,6 +33,8 @@ from yt2class.orchestration.retry import (
 )
 
 DEFAULT_MAX_TOKENS = 8192
+DEFAULT_TIMEOUT_SECONDS = 300.0
+
 from yt2class.stages.llm_util import payload_digest
 from yt2class.stages.structured_coerce import ROLE_JSON_REMINDERS
 
@@ -102,6 +104,21 @@ def _normalize_openrouter_json_mode(raw: str) -> OpenRouterJsonMode:
     )
 
 
+def resolve_openrouter_timeout_seconds(analysis: AnalysisConfig) -> float:
+    for key in ("YT2CLASS_OPENROUTER_TIMEOUT_SECONDS", "OPENROUTER_TIMEOUT_SECONDS"):
+        value = os.getenv(key)
+        if value:
+            try:
+                parsed = float(value)
+            except ValueError as error:
+                raise ProviderError(f"invalid {key}={value!r}") from error
+            if parsed <= 0:
+                raise ProviderError(f"{key} must be positive")
+            return parsed
+    configured = float(getattr(analysis, "openrouter_timeout_seconds", DEFAULT_TIMEOUT_SECONDS))
+    return configured if configured > 0 else DEFAULT_TIMEOUT_SECONDS
+
+
 def resolve_openrouter_json_mode(analysis: AnalysisConfig) -> OpenRouterJsonMode:
     for key in ("YT2CLASS_OPENROUTER_JSON_MODE", "OPENROUTER_JSON_MODE"):
         value = os.getenv(key)
@@ -135,7 +152,7 @@ class OpenRouterProvider(Provider):
         api_key: str,
         model: str,
         endpoint: str = DEFAULT_ENDPOINT,
-        timeout_seconds: float = 180.0,
+        timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         capabilities: ProviderCapabilities | None = None,
         client: httpx.Client | None = None,
         referer: str | None = None,
@@ -166,6 +183,7 @@ class OpenRouterProvider(Provider):
             endpoint=resolve_openrouter_endpoint(),
             client=client,
             json_mode=resolve_openrouter_json_mode(analysis),
+            timeout_seconds=resolve_openrouter_timeout_seconds(analysis),
         )
 
     def bind_run_context(self, run_root: Path, *, visual: VisualCatalogue | None = None) -> None:
@@ -356,13 +374,31 @@ class OpenRouterProvider(Provider):
             body["response_format"] = {"type": "json_object"}
         return body
 
+    def _httpx_timeout(self) -> httpx.Timeout:
+        return httpx.Timeout(
+            connect=min(30.0, self._timeout),
+            read=self._timeout,
+            write=min(60.0, self._timeout),
+            pool=min(30.0, self._timeout),
+        )
+
     def _post(self, body: dict[str, Any]) -> dict[str, Any]:
-        client = self._client or httpx.Client(timeout=self._timeout)
+        client = self._client or httpx.Client(timeout=self._httpx_timeout())
         owns_client = self._client is None
         try:
             response = client.post(self._endpoint, headers=self._headers(), json=body)
             self._raise_for_status(response)
             data = response.json()
+        except httpx.ReadTimeout as error:
+            raise RetryableError(
+                f"OpenRouter read timed out after {self._timeout:.0f}s"
+            ) from error
+        except httpx.ConnectTimeout as error:
+            raise RetryableError(
+                f"OpenRouter connect timed out after {min(30.0, self._timeout):.0f}s"
+            ) from error
+        except httpx.TimeoutException as error:
+            raise RetryableError(f"OpenRouter request timed out: {error}") from error
         except httpx.HTTPError as error:
             raise RetryableError(f"OpenRouter transport error: {error.__class__.__name__}") from error
         finally:
@@ -451,5 +487,6 @@ __all__ = [
     "resolve_openrouter_endpoint",
     "resolve_openrouter_json_mode",
     "resolve_openrouter_model",
+    "resolve_openrouter_timeout_seconds",
     "structured_output_rejected",
 ]

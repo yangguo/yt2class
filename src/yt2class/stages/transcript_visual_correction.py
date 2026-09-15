@@ -16,6 +16,12 @@ _TSUKI_NI = re.compile(r"につき")
 _TSUKI_WAVE_ONLY = re.compile(r"(～|〜)つき")
 _TSUKI_FRAGMENT = re.compile(r"(?<![一-龥])つき(?![一-龥ぁ-ん])")
 _CALENDAR_MONTH = re.compile(r"\d+月")
+_TRANSCRIPT_CALENDAR_TSUKI = re.compile(
+    r"(来月|今月|先月|毎月).{0,12}?2月|2月の(予定|休み|行事|カレンダー)|2月です"
+)
+_GRAMMAR_TSUKI_CONTEXT = re.compile(
+    r"文法|用法|助詞|意味|例文|説明|について|につき|～|〜"
+)
 
 _TSUKI_ASR_VARIANTS: tuple[str, ...] = (
     "2月",
@@ -136,6 +142,28 @@ def _collect_visual_headwords(visual: VisualCatalogue) -> list[VisualHeadword]:
     return _collect_tsuki_headwords(visual)
 
 
+def _lesson_canonical_tsuki(headwords: list[VisualHeadword]) -> str | None:
+    if not headwords:
+        return None
+    priority = {"～につき": 4, "〜につき": 4, "につき": 3, "～つき": 2, "〜つき": 2}
+    best = max(headwords, key=lambda h: (priority.get(h.canonical, 1), -h.center_seconds))
+    return best.canonical
+
+
+def _text_has_tsuki_asr_variant(text: str) -> bool:
+    return any(variant in text for variant in _TSUKI_ASR_VARIANTS)
+
+
+def _segment_eligible_for_lesson_tsuki_correction(text: str) -> bool:
+    """True when ASR likely misread につき (not a calendar-month mention)."""
+
+    if not _text_has_tsuki_asr_variant(text):
+        return False
+    if _TRANSCRIPT_CALENDAR_TSUKI.search(text):
+        return False
+    return bool(_GRAMMAR_TSUKI_CONTEXT.search(text))
+
+
 def _apply_variants(text: str, visual_form: str, variants: tuple[str, ...]) -> str:
     updated = text
     for variant in sorted(variants, key=len, reverse=True):
@@ -159,12 +187,18 @@ def correct_transcript_from_visual(
         return transcript, []
 
     half = max(1.0, window_seconds / 2.0)
+    lesson_canonical = _lesson_canonical_tsuki(headwords)
+    lesson_evidence = tuple(
+        dict.fromkeys(eid for hw in headwords for eid in hw.evidence_ids)
+    )
     corrections: list[TranscriptVisualCorrection] = []
     updated_segments: list[TranscriptSegment] = []
 
     for segment in transcript.segments:
         text = segment.text_original
         flags = list(segment.quality_flags)
+        applied_canonical: str | None = None
+        applied_evidence: tuple[str, ...] = ()
         for headword in headwords:
             win_start = headword.center_seconds - half
             win_end = headword.center_seconds + half
@@ -177,18 +211,30 @@ def correct_transcript_from_visual(
                 continue
             replaced = _apply_variants(text, headword.canonical, _TSUKI_ASR_VARIANTS)
             if replaced != text:
-                corrections.append(
-                    TranscriptVisualCorrection(
-                        segment_id=segment.id,
-                        before=text,
-                        after=replaced,
-                        visual_form=headword.canonical,
-                        visual_evidence_ids=list(headword.evidence_ids),
-                    )
-                )
+                applied_canonical = headword.canonical
+                applied_evidence = headword.evidence_ids
                 text = replaced
-                if _VISUAL_CORRECTED_FLAG not in flags:
-                    flags.append(_VISUAL_CORRECTED_FLAG)
+        if (
+            lesson_canonical is not None
+            and _segment_eligible_for_lesson_tsuki_correction(text)
+        ):
+            replaced = _apply_variants(text, lesson_canonical, _TSUKI_ASR_VARIANTS)
+            if replaced != text:
+                applied_canonical = lesson_canonical
+                applied_evidence = lesson_evidence
+                text = replaced
+        if applied_canonical is not None:
+            corrections.append(
+                TranscriptVisualCorrection(
+                    segment_id=segment.id,
+                    before=segment.text_original,
+                    after=text,
+                    visual_form=applied_canonical,
+                    visual_evidence_ids=list(applied_evidence),
+                )
+            )
+            if _VISUAL_CORRECTED_FLAG not in flags:
+                flags.append(_VISUAL_CORRECTED_FLAG)
         if text == segment.text_original and flags == list(segment.quality_flags):
             updated_segments.append(segment)
         else:

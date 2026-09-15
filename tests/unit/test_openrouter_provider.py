@@ -502,3 +502,36 @@ def test_openrouter_attaches_frame_images_from_run_root(tmp_path: Path):
     content = messages[0]["content"]
     assert any(part.get("type") == "image_url" for part in content if isinstance(part, dict))
     assert payload_digest(payload) == request.payload_digest
+
+
+def test_openrouter_read_timeout_is_retryable():
+    payload = {
+        "prompt": "outline",
+        "block": {"id": "block-0001"},
+        "transcript": [],
+        "visual_overview": [],
+        "allowed_evidence_ids": [],
+        "constraints": {},
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("read timed out", request=request)
+
+    provider = OpenRouterProvider(
+        api_key="test-key",
+        model="google/gemma-4-31b-it:free",
+        endpoint=ENDPOINT,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        timeout_seconds=5.0,
+    )
+    provider.last_payload = payload
+    request = model_request(request_id="outline:block-0001", role="outline", payload=payload)
+    with pytest.raises(RetryableError, match="read timed out"):
+        provider.complete(request)
+
+
+def test_resolve_openrouter_timeout_seconds_from_config():
+    from yt2class.adapters.providers.openrouter import resolve_openrouter_timeout_seconds
+
+    analysis = AnalysisConfig(provider="openrouter", openrouter_timeout_seconds=120.0)
+    assert resolve_openrouter_timeout_seconds(analysis) == 120.0
