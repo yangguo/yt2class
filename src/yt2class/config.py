@@ -49,6 +49,8 @@ class AnalysisConfig(BaseModel):
     provider: str = "fake"
     openrouter_json_mode: Literal["auto", "on", "off"] = "auto"
     openrouter_timeout_seconds: float = 300.0
+    ark_json_mode: Literal["auto", "on", "off"] | None = None
+    ark_timeout_seconds: float | None = None
     ocr_engine: OcrEngineMode = "auto"
     ocr_languages: str = "jpn+eng"
     asr_engine: AsrEngineMode = "auto"

@@ -136,6 +136,22 @@ def run_doctor() -> DoctorReport:
                 "(install tesseract + jpn langpack for ～につき-style headwords)",
             )
         )
+    if os.getenv("VOLCENGINE_ARK_API_KEY") or os.getenv("ARK_API_KEY"):
+        checks.append(
+            DoctorCheck(
+                "volcengine_ark_api_key",
+                "ok",
+                "VOLCENGINE_ARK_API_KEY or ARK_API_KEY is set (ark-plan provider)",
+            )
+        )
+    else:
+        checks.append(
+            DoctorCheck(
+                "volcengine_ark_api_key",
+                "warn",
+                "VOLCENGINE_ARK_API_KEY not set; required for analysis.provider ark-plan",
+            )
+        )
     font_dirs = [Path("/usr/share/fonts"), Path.home() / ".local" / "share" / "fonts"]
     if any(path.is_dir() for path in font_dirs):
         checks.append(DoctorCheck("fonts", "ok", "system font directories present"))

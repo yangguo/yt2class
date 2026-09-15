@@ -14,6 +14,7 @@ from yt2class.adapters.providers.factory import (
     resolve_course_provider,
 )
 from yt2class.adapters.providers.openrouter import OpenRouterProvider
+from yt2class.adapters.providers.volcengine_ark_plan import VolcengineArkPlanProvider
 from yt2class.config import BuildSource, CourseConfig, write_desensitized_snapshot
 from yt2class.domain.evidence import EvidenceBundle
 from yt2class.domain.run_manifest import RunManifest, StageName
@@ -145,7 +146,7 @@ def _provider(ctx: RunContext) -> Provider:
             )
         except UnsupportedAnalysisProvider as error:
             raise PipelineError(str(error)) from error
-    if isinstance(inner, OpenRouterProvider):
+    if isinstance(inner, (OpenRouterProvider, VolcengineArkPlanProvider)):
         visual = ctx.evidence.visual if ctx.evidence is not None else None
         if ctx.analysis is not None:
             visual = ctx.analysis.visual

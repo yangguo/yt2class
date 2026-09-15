@@ -30,7 +30,7 @@ Build the bundled renderer before packaging wheels (hatch build hook or `scripts
 
 ## Quick start (M5 product CLI)
 
-The product path (`build-run`, `batch`, `resume`, and stage commands below) supports **`analysis.provider: fake`** (default, offline/CI) and **`analysis.provider: openrouter`** for live vision models via [OpenRouter](https://openrouter.ai/). Other provider names fail closed. Opt-in real-model experiments also live under `tests/live/`.
+The product path (`build-run`, `batch`, `resume`, and stage commands below) supports **`analysis.provider: fake`** (default, offline/CI), **`openrouter`** for [OpenRouter](https://openrouter.ai/) vision models, and **`ark-plan`** (alias **`volcengine`**) for Volcengine Ark **Agent Plan** chat/completions. Other provider names fail closed. Opt-in real-model experiments also live under `tests/live/`.
 
 Example configs:
 
