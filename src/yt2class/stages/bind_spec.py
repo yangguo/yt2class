@@ -180,6 +180,26 @@ def _evidence_ids_for_knowledge_claim(claim: KnowledgeClaim) -> list[str]:
     return [f"ev-{item}" for item in claim.evidence_ids]
 
 
+def _retain_ocr_parent_frames(
+    visual: VisualCatalogue,
+    used_frames: set[str],
+    *,
+    evidence_refs: Iterable[str],
+) -> None:
+    """Ensure OCR-cited regions keep their parent frame in the asset closure."""
+
+    occurrences = {item.id: item for item in visual.occurrences}
+    regions = {region.id: region for region in visual.ocr_regions}
+    for ref in evidence_refs:
+        key = ref.removeprefix("ev-")
+        region = regions.get(key)
+        if region is None:
+            continue
+        parent_id = region.parent_occurrence_id
+        if parent_id in occurrences:
+            used_frames.add(parent_id)
+
+
 def _frame_assets(
     visual: VisualCatalogue,
     frame_ids: Iterable[str],
@@ -541,11 +561,16 @@ def bind_editorial_plan(
     for page in plan.pages:
         used_frames.update(page.frame_ids)
     occurrences = {item.id: item for item in visual.occurrences}
+    knowledge_by_id = {claim.id: claim for claim in knowledge.iter_claims()}
     for claim in slide_claims.values():
         for ref in claim.evidence_ids:
             key = ref.removeprefix("ev-")
             if key in occurrences:
                 used_frames.add(key)
+        _retain_ocr_parent_frames(visual, used_frames, evidence_refs=claim.evidence_ids)
+        source_claim = knowledge_by_id.get(claim.id)
+        if source_claim is not None:
+            _retain_ocr_parent_frames(visual, used_frames, evidence_refs=source_claim.evidence_ids)
 
     frame_assets = _frame_assets(visual, used_frames)
     slide_assets: dict[str, SlideAsset] = dict(frame_assets)

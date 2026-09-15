@@ -223,6 +223,48 @@ def test_strict_verified_quality_requires_supported_claims(tmp_path: Path):
     assert all(claim.verdict == "supported" for claim in bound.spec.claims)
 
 
+def test_bind_includes_parent_frame_when_claim_cites_ocr_only(tmp_path: Path):
+    workspace, outcome, source, transcript, visual, _ = seed_lecture_run(tmp_path)
+    from yt2class.domain.visual import OcrRegion
+
+    frame_id = "frame-001"
+    ocr_id = "ocr-board-tsuki"
+    asset_id = next(item.asset_id for item in visual.occurrences if item.id == frame_id)
+    region = OcrRegion(
+        id=ocr_id,
+        asset_id=asset_id,
+        parent_occurrence_id=frame_id,
+        bbox={"x": 1.0, "y": 1.0, "width": 40.0, "height": 12.0},
+        text="につき",
+        engine="fixture",
+        confidence=0.9,
+    )
+    visual = visual.model_copy(update={"ocr_regions": [*visual.ocr_regions, region]})
+    unit = outcome.knowledge.units[0]
+    claim = unit.claims[0].model_copy(update={"evidence_ids": [ocr_id, "cap-001"]})
+    knowledge = outcome.knowledge.model_copy(
+        update={"units": [unit.model_copy(update={"claims": [claim]}), *outcome.knowledge.units[1:]]}
+    )
+    page = outcome.plan.pages[1].model_copy(
+        update={"claim_ids": [claim.id], "frame_ids": [], "layout": "text"}
+    )
+    plan = outcome.plan.model_copy(update={"pages": [outcome.plan.pages[0], page]})
+    bound = bind_editorial_plan(
+        plan=plan,
+        knowledge=knowledge,
+        report=outcome.report,
+        source=source,
+        transcript=transcript,
+        visual=visual,
+        workspace=workspace,
+    )
+    ocr_evidence = [item for item in bound.spec.evidence if item.kind == "ocr"]
+    assert ocr_evidence
+    assert any(item.id == f"ev-{ocr_id}" for item in ocr_evidence)
+    parent_ids = {item.parent_frame_evidence_id for item in ocr_evidence}
+    assert f"ev-{frame_id}" in parent_ids
+
+
 def test_empty_summary_raises_readable_bind_error():
     from yt2class.stages.bind_spec import _bind_summary
     page = PageIntent(id="empty-summary", type="summary", title="Summary", claim_ids=[],

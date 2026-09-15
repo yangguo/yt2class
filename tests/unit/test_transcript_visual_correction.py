@@ -49,6 +49,49 @@ def test_ocr_tsuki_fragment_corrects_asr_nigatsu():
     assert "につき" in corrected.segments[0].text_original
 
 
+def test_ocr_tsuki_corrects_whisper_futuki_misread():
+    transcript = make_transcript(
+        [
+            (
+                "cap-whisper",
+                0.0,
+                25.0,
+                "今日は2つきの表現について説明します。",
+            )
+        ],
+        duration=60.0,
+        language="ja",
+    )
+    transcript.segments[0] = transcript.segments[0].model_copy(update={"origin": "asr"})
+    visual = make_visual(
+        [("frame-board", 10.0, "scene-001")],
+        duration=60.0,
+        ocr=[("ocr-frag", "frame-board", "文法 つき")],
+    )
+    corrected, applied = correct_transcript_from_visual(transcript, visual)
+    assert applied
+    assert "2つき" not in corrected.segments[0].text_original
+    assert "につき" in corrected.segments[0].text_original
+
+
+def test_late_ocr_tsuki_corrects_early_futuki_outside_time_window():
+    transcript = make_transcript(
+        [("cap-early", 5.0, 18.0, "2つきの文法を学びましょう。")],
+        duration=200.0,
+        language="ja",
+    )
+    transcript.segments[0] = transcript.segments[0].model_copy(update={"origin": "asr"})
+    visual = make_visual(
+        [("frame-late", 120.0, "scene-001")],
+        duration=200.0,
+        ocr=[("ocr-late-frag", "frame-late", "ポイント つき")],
+    )
+    corrected, applied = correct_transcript_from_visual(transcript, visual, window_seconds=45.0)
+    assert applied
+    assert "2つき" not in corrected.segments[0].text_original
+    assert "につき" in corrected.segments[0].text_original
+
+
 def test_late_ocr_tsuki_corrects_early_cap_outside_time_window():
     transcript = make_transcript(
         [
