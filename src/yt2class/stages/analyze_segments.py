@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
+from pathlib import Path
 import re
 from threading import Event
 from typing import Any, Iterable
@@ -21,9 +23,12 @@ from yt2class.domain.knowledge import KnowledgeUnit
 from yt2class.domain.segment import AnalysisWindow, SegmentManifest
 from yt2class.domain.transcript import TranscriptDocument
 from yt2class.domain.visual import VisualCatalogue
+from yt2class.orchestration.cache import atomic_write_json
+from yt2class.orchestration.concurrency import map_parallel
 from yt2class.orchestration.scheduler import set_window_status
 from yt2class.stages.llm_util import (
     OUTPUT_RESERVE_TOKENS,
+    attach_provider_payload,
     contains_path_literal,
     estimate_serialized_tokens,
     frames_in_range,
@@ -50,6 +55,54 @@ PATH_ID = re.compile(r"[/\\]|\.(?:jpg|jpeg|png|webp|gif|mp4)$", re.I)
 
 class SegmentContractError(ValueError):
     """Structured output is HTTP-ok but fails the KnowledgeUnit contract."""
+
+
+_CACHED_WINDOW_STATUSES = frozenset({"complete", "degraded", "failed"})
+
+
+def window_cache_path(cache_dir: Path, window_id: str) -> Path:
+    safe = window_id.replace("/", "_").replace("\\", "_")
+    return cache_dir / f"{safe}.json"
+
+
+def serialize_window_outcome(outcome: SegmentAnalysisOutcome) -> dict[str, Any]:
+    return {
+        "window": outcome.window.model_dump(mode="json"),
+        "units": [unit.model_dump(mode="json") for unit in outcome.units],
+        "repaired": outcome.repaired,
+        "error": outcome.error,
+    }
+
+
+def load_window_outcome(payload: dict[str, Any]) -> SegmentAnalysisOutcome:
+    window = AnalysisWindow.model_validate(payload["window"])
+    units = [KnowledgeUnit.model_validate(item) for item in payload.get("units") or []]
+    return SegmentAnalysisOutcome(
+        window=window,
+        payload={},
+        units=units,
+        repaired=bool(payload.get("repaired")),
+        error=payload.get("error"),
+    )
+
+
+def read_cached_window_outcome(cache_dir: Path, window_id: str) -> SegmentAnalysisOutcome | None:
+    path = window_cache_path(cache_dir, window_id)
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        outcome = load_window_outcome(payload)
+    except (json.JSONDecodeError, ValidationError, KeyError, TypeError):
+        return None
+    if outcome.window.status not in _CACHED_WINDOW_STATUSES:
+        return None
+    return outcome
+
+
+def write_cached_window_outcome(cache_dir: Path, outcome: SegmentAnalysisOutcome) -> None:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(window_cache_path(cache_dir, outcome.window.id), serialize_window_outcome(outcome))
 
 
 @dataclass
@@ -363,8 +416,7 @@ def _complete_with_payload(
         video_seconds=video_seconds,
         output_tokens=output_tokens,
     )
-    if hasattr(provider, "last_payload"):
-        provider.last_payload = payload
+    attach_provider_payload(provider, payload)
     return provider.complete(request, cancel_event=cancel_event)
 
 
@@ -526,27 +578,30 @@ def analyze_segments(
     cancel_event: Event | None = None,
     extra_clips: Iterable[object] | None = None,
     analysis_mode: str = "frames",
+    window_cache_dir: Path | None = None,
 ) -> tuple[SegmentManifest, list[KnowledgeUnit], list[SegmentAnalysisOutcome]]:
     """Run every scheduled window. Does not apply a PPT page budget."""
 
-    outcomes: list[SegmentAnalysisOutcome] = []
-    units: list[KnowledgeUnit] = []
-    current = manifest
-    remaining_ids = [window.id for window in manifest.windows]
-    for window in manifest.windows:
-        remaining_ids = remaining_ids[1:]
+    if cancel_event is not None and cancel_event.is_set():
+        current = manifest
+        for window in manifest.windows:
+            current = set_window_status(current, window.id, "failed", failure_reason="cancelled")
+        return current, [], []
+
+    def process_window(window: AnalysisWindow) -> SegmentAnalysisOutcome:
         if cancel_event is not None and cancel_event.is_set():
-            current = set_window_status(
-                current, window.id, "failed", failure_reason="cancelled"
+            return SegmentAnalysisOutcome(
+                window=window.model_copy(update={"status": "failed", "failure_reason": "cancelled"}),
+                payload={},
+                units=[],
+                error="cancelled",
             )
-            for leftover in remaining_ids:
-                current = set_window_status(
-                    current, leftover, "failed", failure_reason="cancelled"
-                )
-            return current, units, outcomes
-        running = set_window_status(current, window.id, "running")
+        if window_cache_dir is not None:
+            cached = read_cached_window_outcome(window_cache_dir, window.id)
+            if cached is not None:
+                return cached
         outcome = analyze_window(
-            next(item for item in running.windows if item.id == window.id),
+            window,
             transcript=transcript,
             visual=visual,
             course_map=course_map,
@@ -555,18 +610,19 @@ def analyze_segments(
             extra_clips=extra_clips,
             analysis_mode=analysis_mode,
         )
+        if window_cache_dir is not None:
+            write_cached_window_outcome(window_cache_dir, outcome)
+        return outcome
+
+    outcomes = map_parallel(list(manifest.windows), process_window, cancel_event=cancel_event)
+    units: list[KnowledgeUnit] = []
+    current = manifest
+    for outcome in outcomes:
         current = set_window_status(
-            running,
-            window.id,
+            current,
+            outcome.window.id,
             outcome.window.status,
             failure_reason=outcome.window.failure_reason,
         )
-        outcomes.append(outcome)
         units.extend(outcome.units)
-        if outcome.window.failure_reason == "cancelled":
-            for leftover in remaining_ids:
-                current = set_window_status(
-                    current, leftover, "failed", failure_reason="cancelled"
-                )
-            return current, units, outcomes
     return current, units, outcomes

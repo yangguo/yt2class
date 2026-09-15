@@ -92,7 +92,7 @@ def build_frame_command(
         "-i",
         str(Path(video_path)),
         "-vf",
-        "showinfo",
+        "scale='min(iw,1280)':-2,showinfo",
         "-frames:v",
         "1",
         "-q:v",

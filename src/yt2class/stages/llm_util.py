@@ -2,19 +2,34 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
 from hashlib import sha256
 import json
 from pathlib import Path
+import threading
 from typing import Any, Iterable
 
-from yt2class.adapters.providers.base import ModelRequest, ProviderRole
+from yt2class.adapters.providers.base import ModelRequest, Provider, ProviderRole
 from yt2class.domain.resolvers import evidence_universe
 from yt2class.domain.transcript import TranscriptDocument
 from yt2class.domain.visual import VisualCatalogue, is_accepted_visual_occurrence
 
 PROMPT_DIR = Path(__file__).resolve().parents[1] / "prompts"
+_PROVIDER_PAYLOAD_TLS = threading.local()
+
+
+def attach_provider_payload(provider: Provider, payload: dict[str, Any]) -> None:
+    """Bind payload to the current thread before ``provider.complete`` (parallel-safe)."""
+
+    _PROVIDER_PAYLOAD_TLS.payload = payload
+    if hasattr(provider, "last_payload"):
+        provider.last_payload = payload
+
+
+def thread_local_provider_payload() -> dict[str, Any] | None:
+    return getattr(_PROVIDER_PAYLOAD_TLS, "payload", None)
 CHARS_PER_TOKEN = 4
-IMAGE_TOKEN_ESTIMATE = 256
+IMAGE_TOKEN_ESTIMATE = 1500
 OUTPUT_RESERVE_TOKENS = 512
 PATH_HINT = (
     r"(?:^|[\s\"'])(?:(?:[A-Za-z]:\\|\\\\|/|\./|\.\./)[^\s\"']+\.(?:jpg|jpeg|png|webp|gif|mp4|mkv|mov|webm))"
@@ -48,6 +63,7 @@ UNIT_PATTERN_HINTS = (
 )
 
 
+@lru_cache(maxsize=32)
 def load_prompt(name: str) -> str:
     path = PROMPT_DIR / name
     return path.read_text(encoding="utf-8")
@@ -63,10 +79,25 @@ def payload_digest(payload: dict[str, Any]) -> str:
     return sha256(encoded).hexdigest()
 
 
-def estimate_tokens(text: str, *, image_count: int = 0) -> int:
-    return max(1, (len(text) + CHARS_PER_TOKEN - 1) // CHARS_PER_TOKEN) + (
-        max(0, image_count) * IMAGE_TOKEN_ESTIMATE
+def _is_cjk_codepoint(codepoint: int) -> bool:
+    return (
+        0x4E00 <= codepoint <= 0x9FFF
+        or 0x3400 <= codepoint <= 0x4DBF
+        or 0x3000 <= codepoint <= 0x303F
+        or 0xFF00 <= codepoint <= 0xFFEF
     )
+
+
+def estimate_tokens(text: str, *, image_count: int = 0) -> int:
+    cjk = 0
+    other = 0
+    for char in text:
+        if _is_cjk_codepoint(ord(char)):
+            cjk += 1
+        else:
+            other += 1
+    text_tokens = cjk + (other + CHARS_PER_TOKEN - 1) // CHARS_PER_TOKEN
+    return max(1, text_tokens) + max(0, image_count) * IMAGE_TOKEN_ESTIMATE
 
 
 def allowed_evidence_ids(

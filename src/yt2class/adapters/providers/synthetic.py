@@ -278,6 +278,25 @@ def synthetic_verifier_from_payload(payload: dict[str, Any] | None) -> dict[str,
         claim = payload["claim"]
         evidence = str(payload.get("evidence_text") or "")
         return {"text": evidence[:400] or claim.get("text"), "evidence_ids": claim.get("evidence_ids") or []}
+    claims = payload.get("claims")
+    if isinstance(claims, list) and claims:
+        evidence = payload.get("evidence") or {}
+        rows = []
+        for claim in claims:
+            if not isinstance(claim, dict):
+                continue
+            ids = list(claim.get("evidence_ids") or [])
+            text = " ".join(str(evidence.get(item, "")) for item in ids).strip()
+            rows.append(
+                {
+                    "claim_id": claim.get("id"),
+                    "verdict": "supported" if text else "insufficient",
+                    "supporting_ids": ids[:1] if text else [],
+                    "contradicting_ids": [],
+                    "reason": "synthetic verifier",
+                }
+            )
+        return {"verdicts": rows}
     return {"verdicts": list(payload.get("draft_verdicts") or [])}
 
 

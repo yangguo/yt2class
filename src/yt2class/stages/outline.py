@@ -8,6 +8,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from yt2class.adapters.providers.base import Provider, RequestCancelled
+from yt2class.orchestration.concurrency import map_parallel
 from yt2class.domain.course_map import (
     CourseMap,
     OutlineBlock,
@@ -17,6 +18,7 @@ from yt2class.domain.course_map import (
 from yt2class.domain.transcript import TranscriptDocument
 from yt2class.domain.visual import VisualCatalogue
 from yt2class.stages.llm_util import (
+    attach_provider_payload,
     evidence_in_range,
     frames_in_range,
     load_prompt,
@@ -232,11 +234,6 @@ def reduce_outline(
     )
 
 
-def _attach_payload(provider: Provider, payload: dict[str, Any]) -> None:
-    if hasattr(provider, "last_payload"):
-        provider.last_payload = payload
-
-
 def outline_course(
     transcript: TranscriptDocument,
     visual: VisualCatalogue,
@@ -253,9 +250,8 @@ def outline_course(
         transcript, duration_seconds=duration_seconds, max_block_chars=max_block_chars
     )
     prompt = load_prompt("outline.md")
-    results: list[tuple[OutlineBlock, list[Topic], list[str]]] = []
 
-    for block in blocks:
+    def outline_block(block: OutlineBlock) -> tuple[OutlineBlock, list[Topic], list[str]]:
         if cancel_event is not None and cancel_event.is_set():
             raise RequestCancelled(f"outline cancelled before {block.id}")
         visual_ids = evidence_in_range(transcript, visual, block.start_seconds, block.end_seconds)
@@ -269,7 +265,7 @@ def outline_course(
             "constraints": {"external_knowledge": False, "page_budget": None},
         }
         request = model_request(request_id=f"outline:{block.id}", role="outline", payload=payload)
-        _attach_payload(provider, payload)
+        attach_provider_payload(provider, payload)
         result = provider.complete(request, cancel_event=cancel_event)
         topics, reasons = validate_outline_topics(
             result.structured,
@@ -287,7 +283,9 @@ def outline_course(
                 "drop_reason": None if topics else "; ".join(reasons) or "empty outline",
             }
         )
-        results.append((updated, topics, reasons))
+        return updated, topics, reasons
+
+    results = map_parallel(blocks, outline_block, cancel_event=cancel_event)
 
     course_map = reduce_outline(source_id, results, duration_seconds=duration_seconds)
     if not transcript.segments:

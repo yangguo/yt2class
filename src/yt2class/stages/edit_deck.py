@@ -22,7 +22,12 @@ from yt2class.domain.editorial import (
 from yt2class.domain.knowledge import KnowledgeDocument, KnowledgeUnit
 from yt2class.domain.transcript import TranscriptDocument
 from yt2class.domain.visual import VisualCatalogue, is_accepted_visual_occurrence
-from yt2class.stages.llm_util import contains_path_literal, load_prompt, model_request
+from yt2class.stages.llm_util import (
+    attach_provider_payload,
+    contains_path_literal,
+    load_prompt,
+    model_request,
+)
 
 KIND_IMPORTANCE = {
     "concept": 1.0,
@@ -559,11 +564,6 @@ def apply_model_organization(
     return fallback.model_copy(update={"pages": merged, "omissions": list(fallback.omissions)})
 
 
-def _attach_payload(provider: Provider, payload: dict[str, Any]) -> None:
-    if hasattr(provider, "last_payload"):
-        provider.last_payload = payload
-
-
 def edit_deck(
     knowledge: KnowledgeDocument,
     *,
@@ -626,19 +626,6 @@ def edit_deck(
             }
             for item in selected
         ],
-        "selected": [
-            {
-                "id": item.id,
-                "claim_ids": item.claim_ids,
-                "frame_ids": item.frame_ids,
-                "layout": item.layout,
-                "title": item.title,
-                "notes": item.notes,
-                "body_points": item.body_points,
-                "selection_reason": item.selection_reason,
-            }
-            for item in selected
-        ],
         "omissions": [item.model_dump(mode="json") for item in omissions],
         "allowed_claim_ids": sorted(allowed_claims),
         "allowed_frame_ids": sorted(allowed_frames),
@@ -649,7 +636,7 @@ def edit_deck(
         role="editor",
         payload=payload,
     )
-    _attach_payload(provider, payload)
+    attach_provider_payload(provider, payload)
     result = provider.complete(request, cancel_event=cancel_event)
     try:
         planned = apply_model_organization(

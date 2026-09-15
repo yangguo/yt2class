@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from threading import Lock
 
 
 class BudgetExceeded(RuntimeError):
@@ -47,8 +48,29 @@ class RunBudget:
     limits: BudgetLimits
     consumed: BudgetSnapshot = field(default_factory=BudgetSnapshot)
     paused: bool = False
+    _lock: Lock = field(default_factory=Lock, repr=False)
 
     def would_exceed(
+        self,
+        *,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        image_count: int = 0,
+        video_seconds: float = 0.0,
+        estimated_usd: float = 0.0,
+        model_calls: int = 1,
+    ) -> str | None:
+        with self._lock:
+            return self._would_exceed_unlocked(
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                image_count=image_count,
+                video_seconds=video_seconds,
+                estimated_usd=estimated_usd,
+                model_calls=model_calls,
+            )
+
+    def _would_exceed_unlocked(
         self,
         *,
         input_tokens: int = 0,
@@ -85,26 +107,28 @@ class RunBudget:
         estimated_usd: float = 0.0,
         model_calls: int = 1,
     ) -> None:
-        reason = self.would_exceed(
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            image_count=image_count,
-            video_seconds=video_seconds,
-            estimated_usd=estimated_usd,
-            model_calls=model_calls,
-        )
-        if reason is not None:
-            self.paused = True
-            raise BudgetExceeded(f"budget exceeded: {reason}", kind=reason)
-        self.consumed.model_calls += model_calls
-        self.consumed.input_tokens += input_tokens
-        self.consumed.output_tokens += output_tokens
-        self.consumed.image_count += image_count
-        self.consumed.video_seconds += video_seconds
-        self.consumed.estimated_usd += estimated_usd
+        with self._lock:
+            reason = self._would_exceed_unlocked(
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                image_count=image_count,
+                video_seconds=video_seconds,
+                estimated_usd=estimated_usd,
+                model_calls=model_calls,
+            )
+            if reason is not None:
+                self.paused = True
+                raise BudgetExceeded(f"budget exceeded: {reason}", kind=reason)
+            self.consumed.model_calls += model_calls
+            self.consumed.input_tokens += input_tokens
+            self.consumed.output_tokens += output_tokens
+            self.consumed.image_count += image_count
+            self.consumed.video_seconds += video_seconds
+            self.consumed.estimated_usd += estimated_usd
 
     def pause(self, reason: str) -> None:
-        self.paused = True
+        with self._lock:
+            self.paused = True
         _ = reason
 
 

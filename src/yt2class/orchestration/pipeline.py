@@ -18,6 +18,7 @@ from yt2class.domain.transcript import TranscriptDocument
 from yt2class.domain.visual import VisualCatalogue
 from yt2class.orchestration.analyze import (
     AnalysisResult,
+    AnalysisCheckpoint,
     analyze_evidence_bundle,
     resolve_native_adapter,
     default_capabilities,
@@ -389,6 +390,13 @@ def run_analysis_stages(ctx: RunContext, bundle: EvidenceBundle) -> AnalysisResu
             _persist(ctx)
             return result
 
+    outline_artifact = stage_artifact_path(
+        ctx.workspace.root, "outline", outline_key, "course-map.json"
+    )
+    window_cache_dir = stage_artifact_path(
+        ctx.workspace.root, "analyze_segments", segments_key, "windows"
+    )
+    window_cache_dir.mkdir(parents=True, exist_ok=True)
     ctx.manifest = set_stage_status(ctx.manifest, "outline", "running")
     _persist(ctx)
     try:
@@ -403,8 +411,19 @@ def run_analysis_stages(ctx: RunContext, bundle: EvidenceBundle) -> AnalysisResu
                 provider_name=ctx.config.analysis.provider,
                 max_video_seconds=ctx.config.budget.max_video_seconds,
             ),
+            checkpoint=AnalysisCheckpoint(
+                outline_path=outline_artifact,
+                window_cache_dir=window_cache_dir,
+            ),
         )
     except BudgetExceeded as error:
+        if outline_artifact.is_file():
+            ctx.manifest = set_stage_status(
+                ctx.manifest, "outline", "complete", cache_key=outline_key
+            )
+            mark_stage_complete(ctx.workspace.root, "outline", outline_key)
+        ctx.manifest = set_stage_status(ctx.manifest, "analyze_segments", "running")
+        _persist(ctx)
         raise PipelinePaused(str(error), reason=error.kind) from error
     except Exception as error:  # noqa: BLE001
         _fail_stage(ctx, "outline", f"analysis failed: {error}")
