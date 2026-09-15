@@ -8,6 +8,7 @@ from threading import Event
 from typing import Any, Iterable
 
 from yt2class.adapters.providers.base import Provider, RequestCancelled
+from yt2class.orchestration.concurrency import map_parallel
 from yt2class.domain.editorial import (
     QUALITY_NOTE_MARKERS,
     EditorialPlan,
@@ -353,6 +354,24 @@ def check_numbers(claim: KnowledgeClaim, evidence_text: str) -> CheckResult:
     )
 
 
+def structural_claim_checks(
+    claim: KnowledgeClaim,
+    *,
+    unit: KnowledgeUnit,
+    transcript: TranscriptDocument,
+    visual: VisualCatalogue,
+    allowed: set[str],
+    index: dict[str, str],
+) -> tuple[CheckResult, CheckResult, CheckResult]:
+    """Local ref/number/step checks. Independent per claim; safe to run in parallel."""
+
+    return (
+        check_unknown_refs(claim, allowed),
+        check_numbers(claim, _join(claim.evidence_ids, index)),
+        check_steps(claim, unit, transcript, visual),
+    )
+
+
 def check_steps(
     claim: KnowledgeClaim,
     unit: KnowledgeUnit,
@@ -517,15 +536,14 @@ def formalize_plan(
     if not pages:
         pages = [relabel_page(plan.pages[0], "draft" if quality_mode != "evidence-only" else "evidence-only")]
     if quality_mode != "evidence-only" and transcript is not None and visual is not None:
-        checked: list[PageIntent] = []
-        for page in pages:
+        def _copy_check(page: PageIntent) -> PageIntent:
             if page.type in {"content", "quiz"} and not page_copy_grounded(
                 page, knowledge=knowledge, transcript=transcript, visual=visual, provider=provider
             ):
-                checked.append(relabel_page(page, "draft"))
-            else:
-                checked.append(page)
-        pages = checked
+                return relabel_page(page, "draft")
+            return page
+
+        pages = map_parallel(pages, _copy_check)
     return plan.model_copy(update={"pages": pages, "omissions": extra_omissions})
 
 
@@ -626,12 +644,28 @@ def verify_claims(
         unit = _unit_for_claim(current_knowledge, claim_id)
         claim_rows.append((claim_id, claim, unit))
 
+    def _structural_row(
+        row: tuple[str, KnowledgeClaim, KnowledgeUnit],
+    ) -> tuple[str, CheckResult, CheckResult, CheckResult]:
+        claim_id, claim, unit = row
+        if cancel_event is not None and cancel_event.is_set():
+            raise RequestCancelled(f"verify cancelled before {claim_id}")
+        ref_check, numbers, steps = structural_claim_checks(
+            claim,
+            unit=unit,
+            transcript=transcript,
+            visual=visual,
+            allowed=allowed,
+            index=index,
+        )
+        return claim_id, ref_check, numbers, steps
+
     grounding_targets: list[KnowledgeClaim] = []
     preliminary: dict[str, list[CheckResult]] = {}
-    for claim_id, claim, unit in claim_rows:
-        ref_check = check_unknown_refs(claim, allowed)
-        numbers = check_numbers(claim, _join(claim.evidence_ids, index))
-        steps = check_steps(claim, unit, transcript, visual)
+    claim_by_id = {claim_id: claim for claim_id, claim, _unit in claim_rows}
+    for claim_id, ref_check, numbers, steps in map_parallel(
+        claim_rows, _structural_row, cancel_event=cancel_event
+    ):
         if not ref_check.passed:
             preliminary[claim_id] = [
                 ref_check,
@@ -641,7 +675,7 @@ def verify_claims(
             ]
         else:
             preliminary[claim_id] = [ref_check, numbers, steps]
-            grounding_targets.append(claim)
+            grounding_targets.append(claim_by_id[claim_id])
 
     grounding_map = check_grounding_batch(
         grounding_targets,
@@ -675,11 +709,13 @@ def verify_claims(
         if claim_id in target_ids and verdict.verdict != "supported"
     ]
     already_repaired = set(repaired_ids)
-    for claim_id in failed_ids:
-        if claim_id in already_repaired:
-            continue
+    repair_targets = [claim_id for claim_id in failed_ids if claim_id not in already_repaired]
+    unit_by_claim = {claim_id: unit for claim_id, _claim, unit in claim_rows}
+
+    def _attempt_repair(claim_id: str) -> tuple[str, str | None]:
+        if cancel_event is not None and cancel_event.is_set():
+            raise RequestCancelled(f"verify cancelled before repair {claim_id}")
         claim = next(item for item in current_knowledge.iter_claims() if item.id == claim_id)
-        unit = _unit_for_claim(current_knowledge, claim_id)
         repair_payload = {
             "prompt": load_prompt("verifier.md"),
             "claim": {"id": claim.id, "text": claim.text, "evidence_ids": claim.evidence_ids},
@@ -693,34 +729,48 @@ def verify_claims(
             request_id=f"verifier:repair:{claim_id}",
             cancel_event=cancel_event,
         )
+        new_text = repaired_structured.get("text") if repaired_structured else None
+        if isinstance(new_text, str) and new_text.strip() and new_text != claim.text:
+            return claim_id, new_text.strip()[:4000]
+        return claim_id, None
+
+    repair_attempts = map_parallel(repair_targets, _attempt_repair, cancel_event=cancel_event)
+    if repair_attempts:
         repaired = True
+    recheck_ids: list[str] = []
+    for claim_id, new_text in repair_attempts:
         repaired_ids.append(claim_id)
         already_repaired.add(claim_id)
-        new_text = None
-        if repaired_structured:
-            new_text = repaired_structured.get("text")
-        if isinstance(new_text, str) and new_text.strip() and new_text != claim.text:
-            current_knowledge = _replace_claim_text(current_knowledge, claim_id, new_text.strip()[:4000])
-            claim = next(item for item in current_knowledge.iter_claims() if item.id == claim_id)
-            checks = run_claim_checks(
-                claim,
-                unit=unit,
-                transcript=transcript,
-                visual=visual,
-                allowed=allowed,
-                index=index,
-                provider=provider,
-                cancel_event=cancel_event,
-            )
-            check_by_claim[claim_id] = checks
-            verdict, reason, supporting, contradicting = _worst_verdict(checks)
-            verdicts[claim_id] = ClaimVerdict(
-                claim_id=claim_id,
-                verdict=verdict,
-                supporting_ids=supporting,
-                contradicting_ids=contradicting,
-                reason=reason,
-            )
+        if new_text:
+            current_knowledge = _replace_claim_text(current_knowledge, claim_id, new_text)
+            recheck_ids.append(claim_id)
+
+    def _recheck_repaired(claim_id: str) -> tuple[str, list[CheckResult]]:
+        if cancel_event is not None and cancel_event.is_set():
+            raise RequestCancelled(f"verify cancelled before recheck {claim_id}")
+        claim = next(item for item in current_knowledge.iter_claims() if item.id == claim_id)
+        checks = run_claim_checks(
+            claim,
+            unit=unit_by_claim[claim_id],
+            transcript=transcript,
+            visual=visual,
+            allowed=allowed,
+            index=index,
+            provider=provider,
+            cancel_event=cancel_event,
+        )
+        return claim_id, checks
+
+    for claim_id, checks in map_parallel(recheck_ids, _recheck_repaired, cancel_event=cancel_event):
+        check_by_claim[claim_id] = checks
+        verdict, reason, supporting, contradicting = _worst_verdict(checks)
+        verdicts[claim_id] = ClaimVerdict(
+            claim_id=claim_id,
+            verdict=verdict,
+            supporting_ids=supporting,
+            contradicting_ids=contradicting,
+            reason=reason,
+        )
 
     for unit_id, claim_ids in procedure_groups.items():
         if any(verdicts.get(claim_id) and verdicts[claim_id].verdict != "supported" for claim_id in claim_ids):
