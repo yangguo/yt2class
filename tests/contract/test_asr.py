@@ -41,6 +41,12 @@ def make_request(tmp_path: Path, **overrides) -> ASRRequest:
     return ASRRequest.model_validate(data)
 
 
+def test_faster_whisper_does_not_spawn_worker_command(tmp_path: Path):
+    request = make_request(tmp_path, engine="faster-whisper", align=False)
+    with pytest.raises(ASRError, match="in-process"):
+        build_asr_command(request)
+
+
 def test_asr_command_records_offset_and_worker_boundary(tmp_path: Path):
     request = make_request(tmp_path)
     command = build_asr_command(request)

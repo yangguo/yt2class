@@ -68,6 +68,7 @@ from yt2class.orchestration.manifest_io import (
 )
 from yt2class.orchestration.workspace import Workspace
 from yt2class.adapters.ocr import resolve_ocr_engine
+from yt2class.orchestration.asr_policy import build_asr_request
 from yt2class.stages.extract_evidence import extract_evidence_locked
 from yt2class.stages.ingest import ingest_source_locked
 
@@ -319,6 +320,11 @@ def run_extract_evidence(ctx: RunContext, source: SourceManifest) -> EvidenceBun
             ocr_engine, ocr_unavailable_reason = resolve_ocr_engine(
                 ctx.config.analysis.ocr_engine
             )
+            asr_request, _asr_unavailable = build_asr_request(
+                source,
+                workspace_root=ctx.workspace.root,
+                analysis=ctx.config.analysis,
+            )
             bundle = extract_evidence_locked(
                 source,
                 workspace=ctx.workspace,
@@ -326,6 +332,7 @@ def run_extract_evidence(ctx: RunContext, source: SourceManifest) -> EvidenceBun
                 ocr_engine=ocr_engine,
                 ocr_languages=ctx.config.analysis.ocr_languages,
                 ocr_unavailable_reason=ocr_unavailable_reason,
+                asr_request=asr_request,
                 cancel_event=ctx.cancel_event,
             )
     except Exception as error:  # noqa: BLE001

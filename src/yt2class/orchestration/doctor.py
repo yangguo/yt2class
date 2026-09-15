@@ -99,13 +99,25 @@ def run_doctor() -> DoctorReport:
                 "ImageMagick not found; preview thumbnails may be skipped",
             )
         )
-    checks.append(
-        DoctorCheck(
-            "asr",
-            "warn",
-            "ASR (WhisperX) not probed in doctor; optional extra / worker env",
+    from yt2class.adapters.asr import faster_whisper_available
+
+    if faster_whisper_available():
+        checks.append(
+            DoctorCheck(
+                "faster_whisper_asr",
+                "ok",
+                "faster-whisper importable (default local ASR when no captions; model=medium)",
+            )
         )
-    )
+    else:
+        checks.append(
+            DoctorCheck(
+                "faster_whisper_asr",
+                "warn",
+                "faster-whisper not installed; videos without captions need "
+                "pip install faster-whisper or pip install 'yt2class[asr]'",
+            )
+        )
     tesseract = shutil.which("tesseract")
     if tesseract:
         checks.append(

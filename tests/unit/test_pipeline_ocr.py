@@ -32,9 +32,10 @@ def test_run_extract_evidence_resolves_auto_ocr_into_extract_call(monkeypatch, t
     monkeypatch.setattr("yt2class.orchestration.pipeline.atomic_write_json", lambda *args, **kwargs: None)
     monkeypatch.setattr("yt2class.orchestration.pipeline.stage_artifact_path", lambda *a, **k: tmp_path / "bundle.json")
 
+    from yt2class.config import CourseConfig
+
     ctx = MagicMock()
-    ctx.config.analysis.ocr_engine = "auto"
-    ctx.config.analysis.ocr_languages = "jpn+eng"
+    ctx.config = CourseConfig()
     ctx.config_digest.return_value = "cfg"
     ctx.tool_versions.return_value = {}
     ctx.cancel_event = None
@@ -72,3 +73,7 @@ def test_run_extract_evidence_resolves_auto_ocr_into_extract_call(monkeypatch, t
     assert captured["ocr_engine"] == "fake"
     assert captured["ocr_languages"] == "jpn+eng"
     assert captured.get("ocr_unavailable_reason") is None
+    asr_request = captured.get("asr_request")
+    assert asr_request is not None
+    assert asr_request.engine == "faster-whisper"
+    assert asr_request.model == "medium"

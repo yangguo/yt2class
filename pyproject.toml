@@ -11,6 +11,11 @@ dependencies = [
   "typer>=0.12",
 ]
 
+[project.optional-dependencies]
+asr = [
+  "faster-whisper>=1.0.0",
+]
+
 [project.scripts]
 yt2class = "yt2class.cli:app"
 

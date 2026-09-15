@@ -34,6 +34,7 @@ class BudgetConfig(BaseModel):
 
 AnalysisMode = Literal["frames", "native-video", "hybrid"]
 OcrEngineMode = Literal["auto", "none", "tesseract"]
+AsrEngineMode = Literal["auto", "none", "faster-whisper", "whisperx"]
 PreviewPolicy = Literal["off", "optional", "required"]
 
 
@@ -49,6 +50,10 @@ class AnalysisConfig(BaseModel):
     openrouter_json_mode: Literal["auto", "on", "off"] = "auto"
     ocr_engine: OcrEngineMode = "auto"
     ocr_languages: str = "jpn+eng"
+    asr_engine: AsrEngineMode = "auto"
+    asr_model: str = "medium"
+    asr_language: str | None = None
+    asr_device: str = "cpu"
 
 
 class EditorConfig(BaseModel):

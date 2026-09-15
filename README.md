@@ -92,9 +92,16 @@ and then auto captions. Within each group it tries the video's declared language
 languages. The caption and its language/origin record stay beside the media in
 the run workspace and are picked up automatically by evidence extraction;
 `--subtitles` takes precedence. Caption content changes invalidate extraction's
-cache. If no supported captions or ASR evidence exist, the transcript remains
-degraded with the explicit gap `no subtitle or ASR evidence`. A selected caption
-that fails to download fails ingest rather than silently producing an empty transcript.
+cache. When no usable caption track exists, `build-run` runs local ASR via
+**faster-whisper** (`analysis.asr_engine: auto`, model **`medium`** by default).
+Leave `analysis.asr_language` unset (`null`) so Whisper autodetects language —
+recommended for mixed Japanese/Chinese lessons instead of forcing `ja` only.
+Install ASR support with `pip install 'yt2class[asr]'` or `pip install faster-whisper`
+(ffmpeg is still required for audio extraction). `yt2class doctor` reports whether
+faster-whisper is importable. Set `analysis.asr_engine: none` to skip ASR entirely.
+If neither captions nor ASR produce segments, the transcript stays degraded with
+`no subtitle or ASR evidence`. A selected caption that fails to download fails
+ingest rather than silently producing an empty transcript.
 
 `build-run` and `resume` report pipeline, bind, and validation failures with exit
 code `1`. When logging through `tee`, use `set -o pipefail` so the shell preserves
