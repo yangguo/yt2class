@@ -268,6 +268,115 @@ def test_working_media_change_during_audio_extract_discards_output(tmp_path: Pat
     assert not output.exists()
 
 
+def test_explicit_none_ocr_skips_regions_and_records_unavailable_gap(tmp_path: Path):
+    media = _write_media(tmp_path / "source.mp4")
+    manifest = _manifest(media)
+    run_root = tmp_path / "run-no-ocr"
+
+    def visual_runner(command, **kwargs):
+        from PIL import Image
+
+        Image.new("RGB", (80, 40), "white").save(command[-1])
+        return SimpleNamespace(
+            returncode=0,
+            stdout="",
+            stderr="[Parsed_showinfo_0] n:1 pts_time:0.200000 duration:0.1",
+        )
+
+    bundle = extract_evidence(
+        manifest,
+        media,
+        run_root,
+        detector=lambda path, **kwargs: [(0.0, 2.0)],
+        runner=visual_runner,
+        ocr_engine="none",
+        ocr_unavailable_reason="OCR engine disabled by configuration",
+    )
+    assert bundle.visual.ocr_regions == []
+    assert bundle.visual.status == "degraded"
+    assert any(
+        gap.modality == "ocr" and "disabled by configuration" in gap.reason for gap in bundle.gaps
+    )
+
+
+def _tsuki_ocr_runner(command, **kwargs):
+    return SimpleNamespace(
+        returncode=0,
+        stdout=json.dumps(
+            {
+                "engine": "fake-ocr",
+                "regions": [
+                    {
+                        "text": "文法 ～につき",
+                        "bbox": {"x": 1, "y": 1, "width": 40, "height": 12},
+                        "confidence": 0.92,
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        stderr="",
+    )
+
+
+def _nigatsu_asr_runner(command, **kwargs):
+    return SimpleNamespace(
+        returncode=0,
+        stdout=json.dumps(
+            {
+                "segments": [
+                    {
+                        "start": 0.0,
+                        "end": 1.5,
+                        "text": "今日は2月の文法を説明します。",
+                    }
+                ],
+                "language": "ja",
+            }
+        ),
+        stderr="",
+    )
+
+
+def test_extract_evidence_ocr_regions_enable_transcript_visual_asr_correction(tmp_path: Path):
+    media = _write_media(tmp_path / "source.mp4")
+    manifest = _manifest(media)
+    run_root = tmp_path / "run-ocr-asr-fix"
+    request = ASRRequest(
+        request_id="asr-1",
+        source_id=manifest.source_id,
+        audio_path=tmp_path / "unused-placeholder.wav",
+    )
+
+    def visual_runner(command, **kwargs):
+        from PIL import Image
+
+        Image.new("RGB", (80, 40), "white").save(command[-1])
+        return SimpleNamespace(
+            returncode=0,
+            stdout="",
+            stderr="[Parsed_showinfo_0] n:1 pts_time:0.200000 duration:0.1",
+        )
+
+    bundle = extract_evidence(
+        manifest,
+        media,
+        run_root,
+        asr_request=request,
+        asr_runner=_nigatsu_asr_runner,
+        audio_runner=_audio_runner,
+        detector=lambda path, **kwargs: [(0.0, 2.0)],
+        runner=visual_runner,
+        ocr_engine="fake",
+        ocr_runner=_tsuki_ocr_runner,
+    )
+    assert bundle.visual.ocr_regions
+    assert bundle.transcript.segments
+    assert "2月" not in bundle.transcript.segments[0].text_original
+    assert "～につき" in bundle.transcript.segments[0].text_original
+    assert "visual-asr-corrected" in bundle.transcript.segments[0].quality_flags
+
+
 def test_scene_detector_failure_on_fresh_run_root_writes_failure_output(tmp_path: Path):
     media = _write_media(tmp_path / "source.mp4")
     manifest = _manifest(media)

@@ -1,0 +1,39 @@
+{
+  "design_version": "1.0",
+  "source_language": "auto",
+  "output_language": "zh-CN",
+  "audience": "beginner",
+  "domain": "general",
+  "analysis": {
+    "mode": "frames",
+    "model_profile": "vision-primary",
+    "model": "google/gemma-4-31b-it:free",
+    "segment_seconds": 120,
+    "overlap_seconds": 10,
+    "max_images_per_batch": 8,
+    "max_evidence_rounds": 2,
+    "provider": "openrouter"
+  },
+  "editor": {
+    "target_pages": 12,
+    "max_pages": 20,
+    "order": "chronological",
+    "quiz": "optional"
+  },
+  "quality": {
+    "mode": "draft",
+    "external_knowledge": false
+  },
+  "budget": {
+    "max_model_calls": 100,
+    "max_input_tokens": 2000000,
+    "max_output_tokens": 500000,
+    "max_images": 500,
+    "max_video_seconds": 3600,
+    "max_estimated_usd": 5.0
+  },
+  "render": {
+    "backend": "pptxgenjs",
+    "preview": "optional"
+  }
+}

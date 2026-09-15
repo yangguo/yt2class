@@ -83,18 +83,26 @@ class SelectionDecision:
 
 
 def parse_model_json(payload: str | Mapping[str, object]) -> dict[str, object]:
-    """Parse a JSON object from plain or Markdown-fenced model output."""
+    """Parse a JSON object from plain or Markdown-fenced model output.
+
+    Completes at the first well-formed top-level value (via ``raw_decode``) so
+    trailing Extra data after a complete object is ignored. Truncated JSON is
+    still rejected because no complete value can be decoded.
+    """
 
     if isinstance(payload, Mapping):
         return dict(payload)
     text = payload.strip()
     text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\s*```$", "", text)
-    start, end = text.find("{"), text.rfind("}")
-    if start < 0 or end <= start:
+    start = text.find("{")
+    if start < 0:
         raise ModelError("model response did not contain a JSON object")
     try:
-        value = json.loads(text[start : end + 1])
+        # json.loads raises Extra data when a complete object is followed by
+        # more JSON or prose that contains "}". raw_decode stops after the
+        # first complete value and leaves the remainder unparsed.
+        value, _end = json.JSONDecoder().raw_decode(text, start)
     except json.JSONDecodeError as error:
         raise ModelError(f"model response was not valid JSON: {error}") from error
     if not isinstance(value, dict):

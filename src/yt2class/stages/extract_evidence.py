@@ -32,6 +32,7 @@ from yt2class.adapters.subtitles import (
 from yt2class.domain.evidence import EvidenceArtifact, EvidenceBundle, EvidenceGap
 from yt2class.domain.source import SourceInputError, SourceManifest, content_sha256
 from yt2class.domain.transcript import SpeechCoverage, TranscriptDocument, TranscriptGap, TranscriptSegment
+from yt2class.stages.transcript_visual_correction import correct_transcript_from_visual
 from yt2class.domain.visual import FrameOccurrence, OcrRegion, VisualCatalogue, VisualGap
 from yt2class.orchestration.workspace import WorkspacePathError
 from yt2class.stages.ingest import IngestError, resolve_manifest_media
@@ -381,6 +382,8 @@ def _extract_evidence_unlocked(
     detector: Callable[..., list[tuple[float, float]]] | None = None,
     runner: Runner = subprocess.run,
     ocr_engine: str = "none",
+    ocr_languages: str = "jpn+eng",
+    ocr_unavailable_reason: str | None = None,
     ocr_runner: Runner = subprocess.run,
     asr_request: ASRRequest | None = None,
     asr_runner: Runner = subprocess.run,
@@ -553,7 +556,7 @@ def _extract_evidence_unlocked(
                 modality="ocr",
                 start_seconds=0.0,
                 end_seconds=duration,
-                reason="OCR engine is not configured",
+                reason=ocr_unavailable_reason or "OCR engine is not configured",
                 status="unavailable",
             )
         )
@@ -567,6 +570,7 @@ def _extract_evidence_unlocked(
                     asset_id=asset.id,
                     occurrence_id=occurrence.id,
                     engine=ocr_engine,
+                    languages=ocr_languages if ocr_engine == "tesseract" else None,
                     runner=ocr_runner,
                     cancel_event=cancel_event,
                 )
@@ -649,6 +653,8 @@ def _extract_evidence_unlocked(
     if visual_degraded_by_ocr and visual.status == "complete":
         visual = visual.model_copy(update={"status": "degraded"})
 
+    transcript, _visual_asr_corrections = correct_transcript_from_visual(transcript, visual)
+
     if cancel_event is not None and cancel_event.is_set():
         raise EvidenceCancelled("evidence extraction cancelled")
 
@@ -722,6 +728,8 @@ def extract_evidence(
     detector: Callable[..., list[tuple[float, float]]] | None = None,
     runner: Runner = subprocess.run,
     ocr_engine: str = "none",
+    ocr_languages: str = "jpn+eng",
+    ocr_unavailable_reason: str | None = None,
     ocr_runner: Runner = subprocess.run,
     asr_request: ASRRequest | None = None,
     asr_runner: Runner = subprocess.run,
@@ -746,6 +754,8 @@ def extract_evidence(
                 detector=detector,
                 runner=runner,
                 ocr_engine=ocr_engine,
+                ocr_languages=ocr_languages,
+                ocr_unavailable_reason=ocr_unavailable_reason,
                 ocr_runner=ocr_runner,
                 asr_request=asr_request,
                 asr_runner=asr_runner,
@@ -766,6 +776,8 @@ def extract_evidence(
         detector=detector,
         runner=runner,
         ocr_engine=ocr_engine,
+        ocr_languages=ocr_languages,
+        ocr_unavailable_reason=ocr_unavailable_reason,
         ocr_runner=ocr_runner,
         asr_request=asr_request,
         asr_runner=asr_runner,

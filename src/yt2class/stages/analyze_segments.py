@@ -33,6 +33,7 @@ from yt2class.stages.llm_util import (
     text_has_units,
     transcript_in_range,
 )
+from yt2class.stages.structured_coerce import coerce_knowledge_unit, extract_units_list, uniquify_knowledge_units
 
 TEMPORAL_MARKERS = (
     "然后",
@@ -251,13 +252,13 @@ def estimate_segment_request_tokens(
 
 
 def validate_knowledge_units(
-    structured: dict[str, Any] | None,
+    structured: dict[str, Any] | list[Any] | None,
     payload: dict[str, Any],
 ) -> list[KnowledgeUnit]:
-    if not isinstance(structured, dict):
-        raise SegmentContractError("segment result missing structured object")
-    raw_units = structured.get("units")
-    if not isinstance(raw_units, list):
+    raw_units = extract_units_list(structured)
+    if raw_units is None:
+        if not isinstance(structured, dict):
+            raise SegmentContractError("segment result missing structured object")
         raise SegmentContractError("segment result must contain a units list")
 
     allowed = set(payload.get("allowed_evidence_ids") or [])
@@ -266,49 +267,73 @@ def validate_knowledge_units(
     topic_id = (payload.get("course_context") or {}).get("topic_id")
     context_start, context_end = payload.get("context_range") or [0.0, 0.0]
     units: list[KnowledgeUnit] = []
-    for raw in raw_units:
+    errors: list[str] = []
+    for index, raw in enumerate(raw_units, start=1):
         if not isinstance(raw, dict):
-            raise SegmentContractError("knowledge unit must be an object")
-        dumped = dict(raw)
-        dumped.setdefault("segment_ids", [payload["segment_id"]])
-        if topic_id and "topic_id" not in dumped:
-            dumped["topic_id"] = topic_id
+            errors.append("knowledge unit must be an object")
+            continue
+        dumped = coerce_knowledge_unit(raw, payload=payload, index=index)
+        if dumped is None:
+            errors.append("knowledge unit missing claims, times, or identifiers")
+            continue
         try:
             unit = KnowledgeUnit.model_validate(dumped)
         except ValidationError as error:
-            raise SegmentContractError(f"knowledge unit failed schema: {error}") from error
+            errors.append(f"knowledge unit failed schema: {error}")
+            continue
         if payload["segment_id"] not in unit.segment_ids:
-            raise SegmentContractError(f"unit {unit.id} missing current segment id")
+            errors.append(f"unit {unit.id} missing current segment id")
+            continue
         if topic_id and unit.topic_id != topic_id:
-            raise SegmentContractError(f"unit {unit.id} cites unknown or other-window topic")
+            errors.append(f"unit {unit.id} cites unknown or other-window topic")
+            continue
         if unit.end_seconds <= context_start or unit.start_seconds >= context_end:
-            raise SegmentContractError(f"unit {unit.id} range is outside the analysis window")
+            errors.append(f"unit {unit.id} range is outside the analysis window")
+            continue
 
+        claim_error: str | None = None
         for claim in unit.claims:
             if not claim.evidence_ids:
-                raise SegmentContractError(f"claim {claim.id} is unsourced")
+                claim_error = f"claim {claim.id} is unsourced"
+                break
             unknown = [item for item in claim.evidence_ids if item not in allowed]
             if unknown:
-                raise SegmentContractError(f"claim {claim.id} cites unknown evidence {unknown}")
+                claim_error = f"claim {claim.id} cites unknown evidence {unknown}"
+                break
             for item in claim.evidence_ids:
                 if contains_path_literal(item) or PATH_ID.search(item):
-                    raise SegmentContractError(f"claim {claim.id} uses a bare image path as evidence")
+                    claim_error = f"claim {claim.id} uses a bare image path as evidence"
+                    break
+            if claim_error:
+                break
             if contains_path_literal(claim.text):
-                raise SegmentContractError(f"claim {claim.id} embeds a bare image path")
+                claim_error = f"claim {claim.id} embeds a bare image path"
+                break
+        if claim_error:
+            errors.append(claim_error)
+            continue
 
+        visual_error: str | None = None
         for candidate in unit.visual_candidates:
             if candidate.frame_id not in allowed_frames and candidate.frame_id not in allowed:
-                raise SegmentContractError(
+                visual_error = (
                     f"unit {unit.id} visual candidate cites unknown frame {candidate.frame_id}"
                 )
+                break
+        if visual_error:
+            errors.append(visual_error)
+            continue
 
+        temporal_error: str | None = None
         for claim in unit.claims:
             if not _claim_is_temporal(claim, unit):
                 continue
             if _cited_temporal_support(claim.evidence_ids, allowed_frames, clip_ids) < 2:
-                raise SegmentContractError(
-                    f"claim {claim.id} claims a temporal sequence from a single frame"
-                )
+                temporal_error = f"claim {claim.id} claims a temporal sequence from a single frame"
+                break
+        if temporal_error:
+            errors.append(temporal_error)
+            continue
 
         local_transcript = " ".join(
             str(row.get("text_original") or "")
@@ -317,11 +342,17 @@ def validate_knowledge_units(
             and float(row.get("start_seconds") or 0) < unit.end_seconds
         )
         if text_has_negation(local_transcript) and not text_has_negation(_collect_text(unit)):
-            raise SegmentContractError(f"unit {unit.id} dropped a transcript negation")
+            errors.append(f"unit {unit.id} dropped a transcript negation")
+            continue
         if text_has_units(local_transcript) and not text_has_units(_collect_text(unit)):
-            raise SegmentContractError(f"unit {unit.id} dropped a transcript unit or quantity")
+            errors.append(f"unit {unit.id} dropped a transcript unit or quantity")
+            continue
         units.append(unit)
-    return units
+    if not units:
+        if errors:
+            raise SegmentContractError(errors[0] if len(errors) == 1 else "; ".join(errors[:3]))
+        return []
+    return uniquify_knowledge_units(units)
 
 
 def reserved_output_tokens(window: AnalysisWindow, provider: Provider) -> int:

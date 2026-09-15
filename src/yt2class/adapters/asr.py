@@ -58,7 +58,7 @@ class ASRRequest(StrictModel):
     audio_path: Path
     language: str | None = Field(default=None, min_length=2, max_length=35)
     engine: str = Field(default="whisperx", min_length=1, max_length=64)
-    model: str = Field(default="small", min_length=1, max_length=100)
+    model: str = Field(default="medium", min_length=1, max_length=100)
     device: str = Field(default="cpu", min_length=1, max_length=32)
     align: bool = True
     diarize: bool = False
@@ -148,9 +148,32 @@ def build_audio_extract_command(input_path: Path, output_path: Path) -> list[str
     ]
 
 
+def resolve_asr_engine(requested: str | None) -> tuple[str, str | None]:
+    """Map course config to a concrete ASR engine."""
+
+    mode = (requested or "auto").strip().lower()
+    if mode in {"none", "off", "disabled"}:
+        return "none", "ASR disabled by configuration"
+    if mode == "auto":
+        return "faster-whisper", None
+    if mode in {"faster-whisper", "whisperx"}:
+        return mode, None
+    return mode, None
+
+
+def faster_whisper_available() -> bool:
+    try:
+        import faster_whisper  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
 def build_asr_command(request: ASRRequest) -> list[str]:
     """Build the argv that crosses the optional WhisperX worker boundary."""
 
+    if request.engine == "faster-whisper":
+        raise ASRError("faster-whisper runs in-process; do not spawn a worker command")
     return build_whisperx_command(
         request.audio_path,
         model=request.model,
@@ -370,6 +393,39 @@ def parse_asr_json(payload: object, request: ASRRequest) -> ASRResult:
     )
 
 
+def _run_faster_whisper_asr(
+    request: ASRRequest,
+    *,
+    cancel_event: Event | None = None,
+) -> ASRResult:
+    from yt2class.workers.faster_whisper_worker import (
+        FasterWhisperUnavailable,
+        transcribe_to_payload,
+    )
+
+    if cancel_event is not None and cancel_event.is_set():
+        raise ASRCancelled("ASR cancelled before start")
+    if not request.audio_path.is_file() or request.audio_path.stat().st_size == 0:
+        raise ASRError(f"ASR audio is missing or empty: {request.audio_path}")
+    try:
+        payload = transcribe_to_payload(
+            request.audio_path,
+            model=request.model,
+            language=request.language,
+            device=request.device,
+            cancel_event=cancel_event,
+        )
+    except FasterWhisperUnavailable as error:
+        raise ASRError(str(error)) from error
+    except RuntimeError as error:
+        if "cancelled" in str(error).lower():
+            raise ASRCancelled(str(error)) from error
+        raise ASRError(str(error)) from error
+    result = parse_asr_json(payload, request)
+    audio_hash = content_sha256(request.audio_path)
+    return result.model_copy(update={"audio_sha256": audio_hash})
+
+
 def run_asr(
     request: ASRRequest,
     *,
@@ -377,6 +433,9 @@ def run_asr(
     cancel_event: Event | None = None,
 ) -> ASRResult:
     """Run the optional worker or a controlled test runner."""
+
+    if request.engine == "faster-whisper":
+        return _run_faster_whisper_asr(request, cancel_event=cancel_event)
 
     if cancel_event is not None and cancel_event.is_set():
         raise ASRCancelled("ASR cancelled before start")
@@ -445,6 +504,8 @@ __all__ = [
     "build_asr_command",
     "extract_audio",
     "extract_audio_with_provenance",
+    "faster_whisper_available",
     "parse_asr_json",
+    "resolve_asr_engine",
     "run_asr",
 ]

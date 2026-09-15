@@ -99,13 +99,59 @@ def run_doctor() -> DoctorReport:
                 "ImageMagick not found; preview thumbnails may be skipped",
             )
         )
-    checks.append(
-        DoctorCheck(
-            "asr",
-            "warn",
-            "ASR (WhisperX) not probed in doctor; optional extra / worker env",
+    from yt2class.adapters.asr import faster_whisper_available
+
+    if faster_whisper_available():
+        checks.append(
+            DoctorCheck(
+                "faster_whisper_asr",
+                "ok",
+                "faster-whisper importable (default local ASR when no captions; model=medium)",
+            )
         )
-    )
+    else:
+        checks.append(
+            DoctorCheck(
+                "faster_whisper_asr",
+                "warn",
+                "faster-whisper not installed; videos without captions need "
+                "pip install faster-whisper or pip install 'yt2class[asr]'",
+            )
+        )
+    tesseract = shutil.which("tesseract")
+    if tesseract:
+        checks.append(
+            DoctorCheck(
+                "tesseract_ocr",
+                "ok",
+                f"{tesseract} (frames OCR auto mode; use analysis.ocr_languages for Japanese boards)",
+            )
+        )
+    else:
+        checks.append(
+            DoctorCheck(
+                "tesseract_ocr",
+                "warn",
+                "tesseract not on PATH; extract_evidence auto OCR will skip board text "
+                "(install tesseract + jpn langpack for ～につき-style headwords)",
+            )
+        )
+    if os.getenv("VOLCENGINE_ARK_API_KEY") or os.getenv("ARK_API_KEY"):
+        checks.append(
+            DoctorCheck(
+                "volcengine_ark_api_key",
+                "ok",
+                "VOLCENGINE_ARK_API_KEY or ARK_API_KEY is set (ark-plan provider)",
+            )
+        )
+    else:
+        checks.append(
+            DoctorCheck(
+                "volcengine_ark_api_key",
+                "warn",
+                "VOLCENGINE_ARK_API_KEY not set; required for analysis.provider ark-plan",
+            )
+        )
     font_dirs = [Path("/usr/share/fonts"), Path.home() / ".local" / "share" / "fonts"]
     if any(path.is_dir() for path in font_dirs):
         checks.append(DoctorCheck("fonts", "ok", "system font directories present"))

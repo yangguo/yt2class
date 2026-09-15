@@ -286,3 +286,46 @@ def test_unrelated_steps_sharing_a_frame_are_not_collapsed():
     texts = [claim.text for item in document.units for claim in item.claims]
     assert "步骤1 打开阀门" in texts
     assert "步骤2 在笔记本上抄公式" in texts
+
+
+def test_duplicate_unit_0001_ids_are_renumbered_not_dropped():
+    first = unit(
+        "unit-0001",
+        start=0.0,
+        end=20.0,
+        claims=[claim("claim-0001", "这是自动词", ["cap-001"])],
+    )
+    second = unit(
+        "unit-0001",
+        segment_ids=["seg-0002"],
+        start=40.0,
+        end=60.0,
+        claims=[claim("claim-0001", "这是他动词", ["cap-002"])],
+    )
+    document = reduce_knowledge([first, second], source_id="src-demo")
+    assert [item.id for item in document.units] == ["unit-0001", "unit-0001-2"]
+    assert [claim.id for item in document.units for claim in item.claims] == [
+        "claim-0001",
+        "claim-0001-2",
+    ]
+    assert document.units[0].claims[0].text == "这是自动词"
+    assert document.units[1].claims[0].text == "这是他动词"
+
+
+def test_duplicate_unit_0001_that_should_merge_keeps_first_id():
+    left = unit(
+        "unit-0001",
+        start=0.0,
+        end=20.0,
+        claims=[claim("claim-a", "这是自动词", ["cap-001", "frame-001"])],
+    )
+    right = unit(
+        "unit-0001",
+        segment_ids=["seg-0002"],
+        start=10.0,
+        end=30.0,
+        claims=[claim("claim-b", "这是自动词", ["cap-001"])],
+    )
+    document = reduce_knowledge([left, right], source_id="src-demo")
+    assert len(document.units) == 1
+    assert document.units[0].id == "unit-0001"
