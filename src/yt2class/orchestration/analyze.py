@@ -11,6 +11,8 @@ from pathlib import Path
 from threading import Event
 from typing import Any
 
+from yt2class.orchestration.cache import CacheCorrupt, atomic_write_json, load_validated_json
+
 from yt2class.adapters.providers.base import Provider, ProviderCapabilities
 from yt2class.adapters.providers.native_video import NativeVideoAdapter, fake_native_adapter
 from yt2class.adapters.providers.synthetic import fake_course_provider
@@ -41,6 +43,14 @@ def default_capabilities() -> ProviderCapabilities:
         max_images=8,
         max_video_seconds=0.0,
     )
+
+
+@dataclass(frozen=True)
+class AnalysisCheckpoint:
+    """Optional on-disk checkpoints for outline and per-window segment analysis."""
+
+    outline_path: Path | None = None
+    window_cache_dir: Path | None = None
 
 
 @dataclass
@@ -80,20 +90,31 @@ def analyze_course(
     analysis_mode: AnalysisMode = "frames",
     native_adapter: NativeVideoAdapter | None = None,
     media_path: Path | None = None,
+    checkpoint: AnalysisCheckpoint | None = None,
 ) -> AnalysisResult:
     """Run the M2 understanding loop. ``page_budget`` is accepted and ignored."""
 
     del page_budget
     caps = capabilities or default_capabilities()
     active = provider or fake_course_provider(caps)
-    course_map = outline_course(
-        transcript,
-        visual,
-        active,
-        source_id=source_id,
-        duration_seconds=duration_seconds,
-        cancel_event=cancel_event,
-    )
+    course_map: CourseMap | None = None
+    if checkpoint and checkpoint.outline_path and checkpoint.outline_path.is_file():
+        try:
+            course_map = load_validated_json(checkpoint.outline_path, CourseMap)
+        except CacheCorrupt:
+            course_map = None
+    if course_map is None:
+        course_map = outline_course(
+            transcript,
+            visual,
+            active,
+            source_id=source_id,
+            duration_seconds=duration_seconds,
+            cancel_event=cancel_event,
+        )
+        if checkpoint and checkpoint.outline_path:
+            checkpoint.outline_path.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_json(checkpoint.outline_path, course_map.model_dump(mode="json"))
     segments = schedule_windows(
         source_id=source_id,
         duration_seconds=duration_seconds,
@@ -112,6 +133,7 @@ def analyze_course(
         provider=active,
         cancel_event=cancel_event,
         analysis_mode=analysis_mode,
+        window_cache_dir=checkpoint.window_cache_dir if checkpoint else None,
     )
     budget = RefinementBudget()
     current_visual = visual
@@ -239,6 +261,7 @@ def analyze_evidence_bundle(
     clip_extractor: Any = None,
     analysis_mode: AnalysisMode = "frames",
     native_adapter: NativeVideoAdapter | None = None,
+    checkpoint: AnalysisCheckpoint | None = None,
 ) -> AnalysisResult:
     media_path = None
     if bundle.source.media_path:
@@ -260,6 +283,7 @@ def analyze_evidence_bundle(
         analysis_mode=analysis_mode,
         native_adapter=native_adapter,
         media_path=media_path,
+        checkpoint=checkpoint,
     )
 
 
