@@ -5,6 +5,7 @@ from __future__ import annotations
 from enum import Enum
 import json
 from pathlib import Path
+import shutil
 import subprocess
 from threading import Event
 from typing import Callable
@@ -58,9 +59,34 @@ class OCRResult(StrictModel):
 Runner = Callable[..., object]
 
 
-def build_ocr_command(image_path: Path, *, engine: str = "tesseract") -> list[str]:
+def resolve_ocr_engine(requested: str | None) -> tuple[str, str | None]:
+    """Map course config to a concrete OCR engine name."""
+
+    mode = (requested or "auto").strip().lower()
+    if mode in {"", "auto"}:
+        if shutil.which("tesseract"):
+            return "tesseract", None
+        return (
+            "none",
+            "OCR auto mode requires tesseract on PATH (e.g. tesseract-ocr + Japanese langpack)",
+        )
+    if mode in {"none", "unavailable"}:
+        return "none", "OCR engine disabled by configuration"
+    return mode, None
+
+
+def build_ocr_command(
+    image_path: Path,
+    *,
+    engine: str = "tesseract",
+    languages: str | None = None,
+) -> list[str]:
     if engine == "tesseract":
-        return ["tesseract", str(Path(image_path)), "stdout", "--psm", "6", "tsv"]
+        command = ["tesseract", str(Path(image_path)), "stdout", "--psm", "6"]
+        if languages:
+            command.extend(["-l", languages])
+        command.append("tsv")
+        return command
     # Custom engines are allowed behind the same argv/JSON contract so tests
     # and deployments can inject a local OCR service without changing stages.
     return [engine, str(Path(image_path))]
@@ -160,6 +186,7 @@ def run_ocr(
     asset_id: str,
     occurrence_id: str,
     engine: str = "none",
+    languages: str | None = None,
     runner: Runner = subprocess.run,
     timeout_seconds: float = 60.0,
     cancel_event: Event | None = None,
@@ -184,7 +211,7 @@ def run_ocr(
             status=OCRStatus.FAILED,
             error=f"OCR image is missing or empty: {image_path}",
         )
-    command = build_ocr_command(image_path, engine=engine)
+    command = build_ocr_command(image_path, engine=engine, languages=languages)
     try:
         if runner is subprocess.run:
             completed = run_process(
@@ -263,5 +290,6 @@ __all__ = [
     "OCRStatus",
     "build_ocr_command",
     "ocr_density",
+    "resolve_ocr_engine",
     "run_ocr",
 ]

@@ -67,6 +67,7 @@ from yt2class.orchestration.manifest_io import (
     stage_record,
 )
 from yt2class.orchestration.workspace import Workspace
+from yt2class.adapters.ocr import resolve_ocr_engine
 from yt2class.stages.extract_evidence import extract_evidence_locked
 from yt2class.stages.ingest import ingest_source_locked
 
@@ -315,10 +316,16 @@ def run_extract_evidence(ctx: RunContext, source: SourceManifest) -> EvidenceBun
     try:
         with ctx.workspace.write_lock():
             sidecar = ctx.build.subtitles if ctx.build and ctx.build.subtitles else None
+            ocr_engine, ocr_unavailable_reason = resolve_ocr_engine(
+                ctx.config.analysis.ocr_engine
+            )
             bundle = extract_evidence_locked(
                 source,
                 workspace=ctx.workspace,
                 sidecar=sidecar,
+                ocr_engine=ocr_engine,
+                ocr_languages=ctx.config.analysis.ocr_languages,
+                ocr_unavailable_reason=ocr_unavailable_reason,
                 cancel_event=ctx.cancel_event,
             )
     except Exception as error:  # noqa: BLE001

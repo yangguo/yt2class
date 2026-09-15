@@ -33,6 +33,7 @@ class BudgetConfig(BaseModel):
         )
 
 AnalysisMode = Literal["frames", "native-video", "hybrid"]
+OcrEngineMode = Literal["auto", "none", "tesseract"]
 PreviewPolicy = Literal["off", "optional", "required"]
 
 
@@ -46,6 +47,8 @@ class AnalysisConfig(BaseModel):
     max_evidence_rounds: int = 2
     provider: str = "fake"
     openrouter_json_mode: Literal["auto", "on", "off"] = "auto"
+    ocr_engine: OcrEngineMode = "auto"
+    ocr_languages: str = "jpn+eng"
 
 
 class EditorConfig(BaseModel):

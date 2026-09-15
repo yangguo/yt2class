@@ -106,6 +106,24 @@ def run_doctor() -> DoctorReport:
             "ASR (WhisperX) not probed in doctor; optional extra / worker env",
         )
     )
+    tesseract = shutil.which("tesseract")
+    if tesseract:
+        checks.append(
+            DoctorCheck(
+                "tesseract_ocr",
+                "ok",
+                f"{tesseract} (frames OCR auto mode; use analysis.ocr_languages for Japanese boards)",
+            )
+        )
+    else:
+        checks.append(
+            DoctorCheck(
+                "tesseract_ocr",
+                "warn",
+                "tesseract not on PATH; extract_evidence auto OCR will skip board text "
+                "(install tesseract + jpn langpack for ～につき-style headwords)",
+            )
+        )
     font_dirs = [Path("/usr/share/fonts"), Path.home() / ".local" / "share" / "fonts"]
     if any(path.is_dir() for path in font_dirs):
         checks.append(DoctorCheck("fonts", "ok", "system font directories present"))
