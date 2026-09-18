@@ -20,6 +20,7 @@ from yt2class.adapters.process import (
     ProcessUnavailable,
     run_process,
 )
+from yt2class.orchestration.concurrency import map_parallel
 from yt2class.domain.visual import (
     FrameOccurrence,
     FrameQuality,
@@ -446,7 +447,8 @@ def extract_visual_catalogue(
     gaps = []
     asset_by_hash: dict[str, str] = {}
     clusters: list[tuple[int, str]] = []
-    for sample in samples:
+
+    def _extract_sample(sample: FrameSample) -> dict[str, object] | None:
         frame_path = frames_dir / f"{sample.id}_{sample.requested_seconds:.3f}s.jpg"
         try:
             extraction = extract_frame_with_timestamp(
@@ -456,74 +458,93 @@ def extract_visual_catalogue(
                 runner=runner,
                 cancel_event=cancel_event,
             )
-            digest = file_sha256(frame_path)
-            asset_id = asset_by_hash.get(digest)
-            if asset_id is None:
-                asset_id = f"asset-{digest[:16]}"
-                asset_by_hash[digest] = asset_id
-                relative_path = frame_path.resolve().relative_to(Path(run_root).resolve()).as_posix()
-                quality = measure_frame_quality(frame_path)
-                assets.append(
-                    VisualAsset(
-                        id=asset_id,
-                        role="frame",
-                        path=relative_path,
-                        sha256=digest,
-                        mime_type="image/jpeg",
-                        width=quality.width,
-                        height=quality.height,
-                    )
-                )
-            else:
-                quality = measure_frame_quality(frame_path)
-            image_hash = _average_hash(frame_path)
-            cluster = _cluster_id(image_hash, clusters)
-            if not any(existing == cluster for _, existing in clusters):
-                clusters.append((image_hash, cluster))
-            occurrence_id = f"occ-{len(occurrences)+1:04d}"
-            reject_reason = None
-            quality_flags: list[str] = list(extraction.quality_flags)
-            actual_source_seconds = extraction.actual_source_seconds
-            if actual_source_seconds is not None and actual_source_seconds >= duration_seconds:
-                actual_source_seconds = max(0.0, duration_seconds - 1e-6)
-                quality_flags.append("actual-timestamp-clamped")
-            occurrence_scene_id = sample.scene_id
-            if actual_source_seconds is not None:
-                for scene in model_scenes:
-                    if scene.start_seconds <= actual_source_seconds < scene.end_seconds:
-                        occurrence_scene_id = scene.id
-                        break
-            if quality.brightness < 0.03 and quality.sharpness < 0.01:
-                reject_reason = "near-black/low-variation"
-                quality_flags.append("near-black")
-            elif quality.sharpness < 0.01:
-                reject_reason = "low-sharpness"
-                quality_flags.append("low-sharpness")
-            occurrences.append(
-                FrameOccurrence(
-                    id=occurrence_id,
-                    scene_id=occurrence_scene_id,
-                    asset_id=asset_id,
-                    requested_seconds=sample.requested_seconds,
-                    timestamp_seconds=actual_source_seconds,
-                    actual_source_seconds=actual_source_seconds,
-                    cluster_id=cluster,
-                    reject_reason=reject_reason,
-                    quality=quality,
-                    quality_flags=quality_flags,
-                )
-            )
+        except ProcessCancelled:
+            raise
         except SceneCancelled:
             raise
-        except (SceneError, OSError, ValueError) as error:
-            gaps.append(
-                {
-                    "id": f"visual-gap-{len(gaps)+1:04d}",
-                    "start_seconds": max(0.0, sample.requested_seconds - 0.5),
-                    "end_seconds": min(duration_seconds, sample.requested_seconds + 0.5),
-                    "reason": str(error),
-                }
+        except (ProcessError, ProcessTimedOut, ProcessUnavailable, SceneError):
+            return None
+        digest = file_sha256(frame_path)
+        quality = measure_frame_quality(frame_path)
+        return {
+            "sample": sample,
+            "frame_path": frame_path,
+            "extraction": extraction,
+            "digest": digest,
+            "quality": quality,
+        }
+
+    extracted = [item for item in map_parallel(samples, _extract_sample, cancel_event=cancel_event) if item]
+    for item in extracted:
+        sample = item["sample"]
+        frame_path = item["frame_path"]
+        extraction = item["extraction"]
+        digest = item["digest"]
+        quality = item["quality"]
+        asset_id = asset_by_hash.get(digest)
+        if asset_id is None:
+            asset_id = f"asset-{digest[:16]}"
+            asset_by_hash[digest] = asset_id
+            relative_path = frame_path.resolve().relative_to(Path(run_root).resolve()).as_posix()
+            assets.append(
+                VisualAsset(
+                    id=asset_id,
+                    role="frame",
+                    path=relative_path,
+                    sha256=digest,
+                    mime_type="image/jpeg",
+                    width=quality.width,
+                    height=quality.height,
+                )
             )
+        image_hash = _average_hash(frame_path)
+        cluster = _cluster_id(image_hash, clusters)
+        if not any(existing == cluster for _, existing in clusters):
+            clusters.append((image_hash, cluster))
+        occurrence_id = f"occ-{len(occurrences)+1:04d}"
+        reject_reason = None
+        quality_flags: list[str] = list(extraction.quality_flags)
+        actual_source_seconds = extraction.actual_source_seconds
+        if actual_source_seconds is not None and actual_source_seconds >= duration_seconds:
+            actual_source_seconds = max(0.0, duration_seconds - 1e-6)
+            quality_flags.append("actual-timestamp-clamped")
+        occurrence_scene_id = sample.scene_id
+        if actual_source_seconds is not None:
+            for scene in model_scenes:
+                if scene.start_seconds <= actual_source_seconds < scene.end_seconds:
+                    occurrence_scene_id = scene.id
+                    break
+        if quality.brightness < 0.03 and quality.sharpness < 0.01:
+            reject_reason = "near-black/low-variation"
+            quality_flags.append("near-black")
+        elif quality.sharpness < 0.01:
+            reject_reason = "low-sharpness"
+            quality_flags.append("low-sharpness")
+        occurrences.append(
+            FrameOccurrence(
+                id=occurrence_id,
+                scene_id=occurrence_scene_id,
+                asset_id=asset_id,
+                requested_seconds=sample.requested_seconds,
+                timestamp_seconds=actual_source_seconds,
+                actual_source_seconds=actual_source_seconds,
+                cluster_id=cluster,
+                reject_reason=reject_reason,
+                quality=quality,
+                quality_flags=quality_flags,
+            )
+        )
+    for sample in samples:
+        if any(item["sample"].id == sample.id for item in extracted):
+            continue
+        gaps.append(
+            {
+                "id": f"visual-gap-{len(gaps)+1:04d}",
+                "start_seconds": max(0.0, sample.requested_seconds - 0.5),
+                "end_seconds": min(duration_seconds, sample.requested_seconds + 0.5),
+                "reason": "frame extraction failed",
+            }
+        )
     assets_by_id = {asset.id: asset for asset in assets}
     covered_scenes = {
         occurrence.scene_id

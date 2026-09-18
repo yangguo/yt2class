@@ -36,6 +36,8 @@ def test_ytdlp_command_is_argv_and_disables_playlists(tmp_path: Path):
 
     assert command[0] == "yt-dlp"
     assert "--no-playlist" in command
+    assert "height<=1080" in command[command.index("--format") + 1]
+    assert "--concurrent-fragments" in command
     assert "--write-info-json" in command
     assert "--no-part" not in command
     assert "--print" in command

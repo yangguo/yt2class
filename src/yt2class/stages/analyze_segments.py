@@ -377,6 +377,67 @@ def validate_knowledge_units(
     return units
 
 
+_MIN_SPLIT_CORE_SECONDS = 2.0
+
+
+def split_window_core_half(window: AnalysisWindow) -> tuple[AnalysisWindow, AnalysisWindow] | None:
+    """Split a core window at the midpoint when dispatch must shrink payload size."""
+
+    core_start = float(window.core_start_seconds)
+    core_end = float(window.core_end_seconds)
+    if core_end - core_start < _MIN_SPLIT_CORE_SECONDS * 2:
+        return None
+    mid = (core_start + core_end) / 2.0
+    shared = {
+        "image_batches": [],
+        "estimated_input_tokens": 0,
+        "estimated_output_tokens": 0,
+        "failure_reason": None,
+        "status": "scheduled",
+    }
+    left = window.model_copy(
+        update={
+            **shared,
+            "id": f"{window.id}:a",
+            "core_end_seconds": mid,
+            "context_end_seconds": min(float(window.context_end_seconds), mid),
+        }
+    )
+    right = window.model_copy(
+        update={
+            **shared,
+            "id": f"{window.id}:b",
+            "core_start_seconds": mid,
+            "context_start_seconds": max(float(window.context_start_seconds), mid),
+        }
+    )
+    return left, right
+
+
+def _merge_split_outcomes(
+    original: AnalysisWindow,
+    left: SegmentAnalysisOutcome,
+    right: SegmentAnalysisOutcome,
+) -> SegmentAnalysisOutcome:
+    units = [*left.units, *right.units]
+    errors = [item for item in (left.error, right.error) if item]
+    statuses = {left.window.status, right.window.status}
+    if "failed" in statuses:
+        status = "failed"
+    elif "degraded" in statuses or not units:
+        status = "degraded"
+    else:
+        status = "complete"
+    failure_reason = "; ".join(errors)[:400] if errors else None
+    return SegmentAnalysisOutcome(
+        window=original.model_copy(update={"status": status, "failure_reason": failure_reason}),
+        payload=left.payload or right.payload,
+        units=units,
+        repaired=left.repaired or right.repaired,
+        error=failure_reason,
+    )
+
+
 def reserved_output_tokens(window: AnalysisWindow, provider: Provider) -> int:
     scheduled = window.estimated_output_tokens
     cap = provider.capabilities.max_output_tokens
@@ -431,8 +492,51 @@ def analyze_window(
     analysis_mode: str = "frames",
     request_suffix: str = "",
     extra_clips: Iterable[object] | None = None,
+    allow_split: bool = True,
 ) -> SegmentAnalysisOutcome:
     """Analyze one window. HTTP-ok contract failures get at most one repair."""
+
+    def _try_split(reason: str) -> SegmentAnalysisOutcome | None:
+        if not allow_split:
+            return None
+        halves = split_window_core_half(window)
+        if halves is None:
+            return None
+        left_window, right_window = halves
+        left = analyze_window(
+            left_window,
+            transcript=transcript,
+            visual=visual,
+            course_map=course_map,
+            provider=provider,
+            cancel_event=cancel_event,
+            analysis_mode=analysis_mode,
+            request_suffix=f"{request_suffix}:a",
+            extra_clips=extra_clips,
+            allow_split=False,
+        )
+        right = analyze_window(
+            right_window,
+            transcript=transcript,
+            visual=visual,
+            course_map=course_map,
+            provider=provider,
+            cancel_event=cancel_event,
+            analysis_mode=analysis_mode,
+            request_suffix=f"{request_suffix}:b",
+            extra_clips=extra_clips,
+            allow_split=False,
+        )
+        merged = _merge_split_outcomes(window, left, right)
+        if merged.error:
+            merged = SegmentAnalysisOutcome(
+                window=merged.window,
+                payload=merged.payload,
+                units=merged.units,
+                repaired=merged.repaired,
+                error=f"{reason}; split retry: {merged.error}",
+            )
+        return merged
 
     batches = window.image_batches or [None]
     all_units: list[KnowledgeUnit] = []
@@ -463,6 +567,16 @@ def analyze_window(
             or image_count > provider.capabilities.max_images
             or output_tokens > provider.capabilities.max_output_tokens
         ):
+            if (
+                allow_split
+                and dispatch_tokens > provider.capabilities.max_input_tokens
+                and video_seconds <= provider.capabilities.max_video_seconds
+                and image_count <= provider.capabilities.max_images
+                and output_tokens <= provider.capabilities.max_output_tokens
+            ):
+                split_outcome = _try_split("unschedulable: exceeds provider input token budget")
+                if split_outcome is not None:
+                    return split_outcome
             return SegmentAnalysisOutcome(
                 window=window.model_copy(
                     update={
@@ -540,7 +654,20 @@ def analyze_window(
                     repaired=True,
                     error=last_error,
                 )
-        except (ContextOverflow, ProviderError) as error:
+        except ContextOverflow as error:
+            last_error = str(error)
+            split_outcome = _try_split(last_error)
+            if split_outcome is not None:
+                return split_outcome
+            return SegmentAnalysisOutcome(
+                window=window.model_copy(
+                    update={"status": "failed", "failure_reason": last_error[:400]}
+                ),
+                payload=payload,
+                units=[],
+                error=last_error,
+            )
+        except ProviderError as error:
             last_error = str(error)
             return SegmentAnalysisOutcome(
                 window=window.model_copy(

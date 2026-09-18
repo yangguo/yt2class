@@ -141,10 +141,15 @@ def evidence_in_range(
         timestamp = occurrence_timestamp(occurrence)
         if timestamp is not None and start <= timestamp < end:
             ids.append(occurrence.id)
-    ocr_by_parent = {region.parent_occurrence_id: region.id for region in visual.ocr_regions}
-    for occurrence_id, region_id in ocr_by_parent.items():
-        if occurrence_id in ids and region_id not in ids:
-            ids.append(region_id)
+    frame_ids = {
+        occurrence.id
+        for occurrence in accepted_occurrences(visual)
+        if occurrence_timestamp(occurrence) is not None
+        and start <= occurrence_timestamp(occurrence) < end
+    }
+    for region in visual.ocr_regions:
+        if region.parent_occurrence_id in frame_ids and region.id not in ids:
+            ids.append(region.id)
     return ids
 
 

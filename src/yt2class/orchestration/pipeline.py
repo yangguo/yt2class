@@ -397,7 +397,10 @@ def run_analysis_stages(ctx: RunContext, bundle: EvidenceBundle) -> AnalysisResu
         ctx.workspace.root, "analyze_segments", segments_key, "windows"
     )
     window_cache_dir.mkdir(parents=True, exist_ok=True)
-    ctx.manifest = set_stage_status(ctx.manifest, "outline", "running")
+    if stage_cache_hit(ctx.workspace.root, "outline", outline_key) and outline_artifact.is_file():
+        ctx.manifest = set_stage_status(ctx.manifest, "outline", "complete", cache_key=outline_key)
+    else:
+        ctx.manifest = set_stage_status(ctx.manifest, "outline", "running")
     _persist(ctx)
     try:
         result = analyze_evidence_bundle(

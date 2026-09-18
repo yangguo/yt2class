@@ -179,8 +179,10 @@ def page_evidence_text(
     knowledge: KnowledgeDocument,
     transcript: TranscriptDocument,
     visual: VisualCatalogue,
+    index: dict[str, str] | None = None,
 ) -> str:
-    index = evidence_index(transcript, visual)
+    if index is None:
+        index = evidence_index(transcript, visual)
     evidence_ids: list[str] = []
     claim_ids = set(page.claim_ids)
     for unit in knowledge.units:
@@ -536,14 +538,22 @@ def formalize_plan(
     if not pages:
         pages = [relabel_page(plan.pages[0], "draft" if quality_mode != "evidence-only" else "evidence-only")]
     if quality_mode != "evidence-only" and transcript is not None and visual is not None:
-        def _copy_check(page: PageIntent) -> PageIntent:
-            if page.type in {"content", "quiz"} and not page_copy_grounded(
-                page, knowledge=knowledge, transcript=transcript, visual=visual, provider=provider
-            ):
-                return relabel_page(page, "draft")
-            return page
-
-        pages = map_parallel(pages, _copy_check)
+        copy_index = evidence_index(transcript, visual)
+        copy_ok = pages_copy_grounded(
+            pages,
+            knowledge=knowledge,
+            transcript=transcript,
+            visual=visual,
+            provider=provider,
+            index=copy_index,
+        )
+        checked: list[PageIntent] = []
+        for page in pages:
+            if page.type in {"content", "quiz"} and not copy_ok.get(page.id, False):
+                checked.append(relabel_page(page, "draft"))
+            else:
+                checked.append(page)
+        pages = checked
     return plan.model_copy(update={"pages": pages, "omissions": extra_omissions})
 
 
@@ -554,17 +564,73 @@ def page_copy_grounded(
     transcript: TranscriptDocument,
     visual: VisualCatalogue,
     provider: Provider | None = None,
+    index: dict[str, str] | None = None,
 ) -> bool:
     """True when page title/notes/body_points are affirmed by the page's evidence."""
 
-    evidence_text = page_evidence_text(
-        page, knowledge=knowledge, transcript=transcript, visual=visual
-    )
-    if not evidence_text.strip():
-        return False
-    texts = [page.title, *page.body_points, notes_without_quality(page.notes)]
-    practice = _is_practice(knowledge, list(page.claim_ids))
-    return all(copy_is_affirmed(text, evidence_text, practice=practice, provider=provider) for text in texts)
+    return pages_copy_grounded(
+        [page],
+        knowledge=knowledge,
+        transcript=transcript,
+        visual=visual,
+        provider=provider,
+        index=index,
+    ).get(page.id, False)
+
+
+def pages_copy_grounded(
+    pages: list[PageIntent],
+    *,
+    knowledge: KnowledgeDocument,
+    transcript: TranscriptDocument,
+    visual: VisualCatalogue,
+    provider: Provider | None = None,
+    index: dict[str, str] | None = None,
+) -> dict[str, bool]:
+    """Batch grounding for page copy strings (one verifier batch per evidence block)."""
+
+    if index is None:
+        index = evidence_index(transcript, visual)
+    results = {page.id: True for page in pages}
+    copy_claims: list[KnowledgeClaim] = []
+    claim_pages: dict[str, str] = {}
+    grounding_index = dict(index)
+    for page in pages:
+        if page.type not in {"content", "quiz"}:
+            continue
+        evidence_text = page_evidence_text(
+            page, knowledge=knowledge, transcript=transcript, visual=visual, index=index
+        )
+        if not evidence_text.strip():
+            results[page.id] = False
+            continue
+        excerpt_id = f"excerpt:{page.id}"
+        grounding_index[excerpt_id] = evidence_text
+        practice = _is_practice(knowledge, list(page.claim_ids))
+        texts = [page.title, *page.body_points, notes_without_quality(page.notes)]
+        for idx, text in enumerate(texts):
+            if not text.strip():
+                continue
+            claim_id = f"copy:{page.id}:{idx}"
+            claim = KnowledgeClaim(
+                id=claim_id,
+                status="insufficient",
+                text=text,
+                evidence_ids=[excerpt_id],
+                provenance="generated-practice" if practice else "source",
+            )
+            if not check_numbers(claim, evidence_text).passed:
+                results[page.id] = False
+                continue
+            copy_claims.append(claim)
+            claim_pages[claim_id] = page.id
+    if not copy_claims:
+        return results
+    grounding_map = check_grounding_batch(copy_claims, grounding_index, provider=provider)
+    for claim_id, page_id in claim_pages.items():
+        if not grounding_map.get(claim_id, _grounding_failure()).passed:
+            results[page_id] = False
+    return results
 
 
 def _is_practice(knowledge: KnowledgeDocument, claim_ids: list[str]) -> bool:

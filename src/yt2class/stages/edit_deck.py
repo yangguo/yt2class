@@ -618,9 +618,6 @@ def edit_deck(
                 "claim_ids": item.claim_ids,
                 "frame_ids": item.frame_ids,
                 "layout": item.layout,
-                "title": item.title,
-                "notes": item.notes,
-                "body_points": item.body_points,
                 "selection_reason": item.selection_reason,
                 "start_seconds": item.start_seconds,
             }

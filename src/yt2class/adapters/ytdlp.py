@@ -59,7 +59,9 @@ def build_download_command(url: str, output_dir: Path) -> list[str]:
         "yt-dlp",
         "--no-playlist",
         "--format",
-        "bv*+ba/b",
+        "bv*[height<=1080]+ba/b",
+        "--concurrent-fragments",
+        "4",
         "--write-info-json",
         "--print",
         "after_move:filepath",
@@ -277,9 +279,12 @@ def _download_captions(
                 "--sub-format", ext, "--force-overwrites", "--output",
                 str(media_path.with_suffix("")).replace("%", "%%") + ".%(ext)s",
             ]
-            _run_download(command, runner, timeout_seconds, cancel_event)
+            try:
+                _run_download(command, runner, timeout_seconds, cancel_event)
+            except YtDlpError:
+                continue
             if not caption_path.is_file() or not caption_path.stat().st_size:
-                raise YtDlpError(f"yt-dlp did not write selected caption: {lang}")
+                continue
             record_path.write_text(json.dumps({
                 "filename": caption_path.name, "language": lang.removesuffix("-orig"),
                 "origin": origin,

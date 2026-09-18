@@ -233,7 +233,8 @@ def grounding_provider(*, verdict="supported", copy_verdict="supported"):
         rows = []
         evidence = payload.get("evidence") or {}
         for claim in payload.get("claims", []):
-            chosen = copy_verdict if claim["id"] == "copy" else verdict
+            claim_id = str(claim.get("id") or "")
+            chosen = copy_verdict if claim_id == "copy" or claim_id.startswith("copy:") else verdict
             cited = list(claim.get("evidence_ids") or [])
             ids = [item for item in cited if str(evidence.get(item, "")).strip()]
             rows.append(
