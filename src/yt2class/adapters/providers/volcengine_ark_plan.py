@@ -26,7 +26,6 @@ from yt2class.adapters.providers.base import (
     Usage,
 )
 from yt2class.adapters.providers.openrouter import (
-    DEFAULT_MAX_TOKENS,
     DEFAULT_TIMEOUT_SECONDS,
     StructuredOutputUnsupported,
     structured_output_rejected,
@@ -50,13 +49,25 @@ DEFAULT_ARK_OUTLINE_MAX_VISUAL_OVERVIEW = 8
 DEFAULT_ARK_SEGMENT_MAX_OCR_REGIONS = 48
 DEFAULT_ARK_SEGMENT_MAX_EVIDENCE_IDS = 160
 DEFAULT_ARK_SEGMENT_OCR_TEXT_CHARS = 240
+DEFAULT_ARK_MAX_TOKENS = 16_384
+DEFAULT_ARK_MAX_TOKENS_LENGTH_RETRY = 32_768
+DEFAULT_ARK_REASONING_EFFORT = "none"
+_LENGTH_RETRY_JSON_REMINDER = (
+    "Your previous answer was truncated before any JSON object was returned. "
+    "Put the full JSON object in message.content only. No prose, markdown, or reasoning."
+)
 
 ArkJsonMode = Literal["auto", "on", "off"]
+ArkReasoningEffort = Literal["none", "low", "medium", "high"]
 
 logger = logging.getLogger(__name__)
 
 
-def volcengine_ark_capabilities(*, max_images: int = DEFAULT_ARK_MAX_IMAGES_PER_BATCH) -> ProviderCapabilities:
+def volcengine_ark_capabilities(
+    *,
+    max_images: int = DEFAULT_ARK_MAX_IMAGES_PER_BATCH,
+    max_output_tokens: int = DEFAULT_ARK_MAX_TOKENS_LENGTH_RETRY,
+) -> ProviderCapabilities:
     return ProviderCapabilities(
         supports_images=True,
         supports_video=False,
@@ -64,7 +75,7 @@ def volcengine_ark_capabilities(*, max_images: int = DEFAULT_ARK_MAX_IMAGES_PER_
         supports_structured_output=True,
         reports_usage=True,
         max_input_tokens=128_000,
-        max_output_tokens=8_192,
+        max_output_tokens=max(1024, max_output_tokens),
         max_images=max(0, max_images),
         max_video_seconds=0.0,
     )
@@ -234,6 +245,43 @@ def resolve_volcengine_ark_outline_max_visual_overview(analysis: AnalysisConfig)
     return DEFAULT_ARK_OUTLINE_MAX_VISUAL_OVERVIEW
 
 
+def resolve_volcengine_ark_max_tokens(analysis: AnalysisConfig) -> int:
+    return _resolve_positive_int_env(
+        ("YT2CLASS_ARK_MAX_TOKENS", "ARK_MAX_TOKENS", "VOLCENGINE_ARK_MAX_TOKENS"),
+        configured=getattr(analysis, "ark_max_tokens", None),
+        default=DEFAULT_ARK_MAX_TOKENS,
+    )
+
+
+def resolve_volcengine_ark_max_tokens_length_retry(analysis: AnalysisConfig) -> int:
+    base = resolve_volcengine_ark_max_tokens(analysis)
+    retry = _resolve_positive_int_env(
+        (
+            "YT2CLASS_ARK_MAX_TOKENS_LENGTH_RETRY",
+            "ARK_MAX_TOKENS_LENGTH_RETRY",
+            "VOLCENGINE_ARK_MAX_TOKENS_LENGTH_RETRY",
+        ),
+        configured=getattr(analysis, "ark_max_tokens_length_retry", None),
+        default=DEFAULT_ARK_MAX_TOKENS_LENGTH_RETRY,
+    )
+    return max(retry, base)
+
+
+def resolve_volcengine_ark_reasoning_effort(analysis: AnalysisConfig) -> str:
+    for key in (
+        "YT2CLASS_ARK_REASONING_EFFORT",
+        "ARK_REASONING_EFFORT",
+        "VOLCENGINE_ARK_REASONING_EFFORT",
+    ):
+        value = os.getenv(key)
+        if value:
+            return value.strip().lower()
+    configured = getattr(analysis, "ark_reasoning_effort", None)
+    if configured:
+        return str(configured).strip().lower()
+    return DEFAULT_ARK_REASONING_EFFORT
+
+
 def resolve_volcengine_ark_timeout_seconds(analysis: AnalysisConfig) -> float:
     for key in (
         "YT2CLASS_ARK_TIMEOUT_SECONDS",
@@ -275,10 +323,17 @@ class VolcengineArkPlanProvider(Provider):
         segment_max_ocr_regions: int = DEFAULT_ARK_SEGMENT_MAX_OCR_REGIONS,
         segment_max_evidence_ids: int = DEFAULT_ARK_SEGMENT_MAX_EVIDENCE_IDS,
         segment_ocr_text_chars: int = DEFAULT_ARK_SEGMENT_OCR_TEXT_CHARS,
+        max_tokens: int = DEFAULT_ARK_MAX_TOKENS,
+        max_tokens_length_retry: int = DEFAULT_ARK_MAX_TOKENS_LENGTH_RETRY,
+        reasoning_effort: str = DEFAULT_ARK_REASONING_EFFORT,
     ) -> None:
+        retry_cap = max(max_tokens_length_retry, max_tokens)
         super().__init__(
             capabilities
-            or volcengine_ark_capabilities(max_images=max_images_per_batch)
+            or volcengine_ark_capabilities(
+                max_images=max_images_per_batch,
+                max_output_tokens=retry_cap,
+            )
         )
         if not api_key.strip():
             raise ProviderError(
@@ -295,6 +350,9 @@ class VolcengineArkPlanProvider(Provider):
         self._segment_max_ocr_regions = max(1, segment_max_ocr_regions)
         self._segment_max_evidence_ids = max(1, segment_max_evidence_ids)
         self._segment_ocr_text_chars = max(32, segment_ocr_text_chars)
+        self._max_tokens = max(1024, max_tokens)
+        self._max_tokens_length_retry = max(self._max_tokens, max_tokens_length_retry)
+        self._reasoning_effort = reasoning_effort.strip().lower() or DEFAULT_ARK_REASONING_EFFORT
         self.last_payload: dict[str, Any] | None = None
         self._run_root: Path | None = None
         self._visual: VisualCatalogue | None = None
@@ -304,6 +362,8 @@ class VolcengineArkPlanProvider(Provider):
         cls, analysis: AnalysisConfig, *, client: httpx.Client | None = None
     ) -> VolcengineArkPlanProvider:
         max_images = resolve_volcengine_ark_max_images_per_batch(analysis)
+        max_tokens = resolve_volcengine_ark_max_tokens(analysis)
+        max_tokens_retry = resolve_volcengine_ark_max_tokens_length_retry(analysis)
         return cls(
             api_key=resolve_volcengine_ark_api_key(),
             model=resolve_volcengine_ark_model(analysis),
@@ -311,8 +371,14 @@ class VolcengineArkPlanProvider(Provider):
             client=client,
             json_mode=resolve_volcengine_ark_json_mode(analysis),
             timeout_seconds=resolve_volcengine_ark_timeout_seconds(analysis),
-            capabilities=volcengine_ark_capabilities(max_images=max_images),
+            capabilities=volcengine_ark_capabilities(
+                max_images=max_images,
+                max_output_tokens=max_tokens_retry,
+            ),
             max_images_per_batch=max_images,
+            max_tokens=max_tokens,
+            max_tokens_length_retry=max_tokens_retry,
+            reasoning_effort=resolve_volcengine_ark_reasoning_effort(analysis),
             outline_max_visual_overview=resolve_volcengine_ark_outline_max_visual_overview(
                 analysis
             ),
@@ -468,17 +534,24 @@ class VolcengineArkPlanProvider(Provider):
             return self._trim_segment_payload(payload)
         return payload
 
-    def _build_messages(self, request: ModelRequest, payload: dict[str, Any]) -> list[dict[str, Any]]:
+    def _build_messages(
+        self,
+        request: ModelRequest,
+        payload: dict[str, Any],
+        *,
+        strengthen_json_reminder: bool = False,
+    ) -> list[dict[str, Any]]:
         prompt = str(payload.get("prompt") or "Follow the JSON schema implied by your role.")
         payload_for_text = self._payload_for_prompt(request, payload)
         serialized = json.dumps(payload_for_text, ensure_ascii=False, sort_keys=True)
         reminder = ROLE_JSON_REMINDERS.get(request.role, "Return only the specified JSON object.")
+        extra = f"\n\n{_LENGTH_RETRY_JSON_REMINDER}" if strengthen_json_reminder else ""
         text = (
             f"{prompt}\n\n"
             "Respond with a single JSON object only. No markdown fences or commentary.\n\n"
             f"Request role: {request.role}\n"
             f"Payload:\n{serialized}\n\n"
-            f"{reminder}"
+            f"{reminder}{extra}"
         )
         content: list[dict[str, Any]] = [{"type": "text", "text": text}]
         for path in self._image_paths_for_payload(payload, request.image_count):
@@ -491,28 +564,97 @@ class VolcengineArkPlanProvider(Provider):
         return [{"role": "user", "content": content}]
 
     @staticmethod
-    def _extract_message_content(data: dict[str, Any]) -> str:
-        choices = data.get("choices")
-        if not isinstance(choices, list) or not choices:
-            raise ProviderError("Ark Plan response missing choices")
-        message = choices[0].get("message")
-        if not isinstance(message, dict):
-            raise ProviderError("Ark Plan response missing message")
+    def _message_strings(message: dict[str, Any]) -> tuple[str, str]:
         content = message.get("content", "")
-        if isinstance(content, str) and content.strip():
-            return content
-        if isinstance(content, list):
+        content_text = ""
+        if isinstance(content, str):
+            content_text = content
+        elif isinstance(content, list):
             parts = []
             for block in content:
                 if isinstance(block, dict) and block.get("type") == "text":
                     parts.append(str(block.get("text") or ""))
-            joined = "".join(parts)
-            if joined.strip():
-                return joined
+            content_text = "".join(parts)
         reasoning = message.get("reasoning_content")
-        if isinstance(reasoning, str) and reasoning.strip():
-            return reasoning
+        reasoning_text = reasoning if isinstance(reasoning, str) else ""
+        return content_text, reasoning_text
+
+    @staticmethod
+    def _choice_fields(data: dict[str, Any]) -> tuple[dict[str, Any], str, str]:
+        choices = data.get("choices")
+        if not isinstance(choices, list) or not choices:
+            raise ProviderError("Ark Plan response missing choices")
+        choice = choices[0]
+        if not isinstance(choice, dict):
+            raise ProviderError("Ark Plan response choice malformed")
+        message = choice.get("message")
+        if not isinstance(message, dict):
+            raise ProviderError("Ark Plan response missing message")
+        finish_reason = str(choice.get("finish_reason") or "")
+        routed_model = str(data.get("model") or "")
+        return message, finish_reason, routed_model
+
+    @classmethod
+    def _response_diagnostics(
+        cls,
+        data: dict[str, Any],
+        *,
+        request_model: str,
+    ) -> dict[str, Any]:
+        message, finish_reason, routed_model = cls._choice_fields(data)
+        content_text, reasoning_text = cls._message_strings(message)
+        return {
+            "request_model": request_model,
+            "routed_model": routed_model or request_model,
+            "finish_reason": finish_reason,
+            "content_len": len(content_text),
+            "reasoning_len": len(reasoning_text),
+            "content_has_brace": "{" in content_text,
+            "reasoning_has_brace": "{" in reasoning_text,
+        }
+
+    @staticmethod
+    def _text_for_json_parse(content_text: str, reasoning_text: str) -> str:
+        content = content_text.strip()
+        if content:
+            return content_text
+        reasoning = reasoning_text.strip()
+        if reasoning and "{" in reasoning:
+            return reasoning_text
+        if reasoning:
+            return reasoning_text
         raise ProviderError("Ark Plan response did not contain text or reasoning content")
+
+    @classmethod
+    def _should_retry_length_truncation(cls, data: dict[str, Any], content_text: str, reasoning_text: str) -> bool:
+        _, finish_reason, _ = cls._choice_fields(data)
+        if finish_reason != "length":
+            return False
+        if "{" in content_text:
+            return False
+        if "{" in reasoning_text:
+            return False
+        return True
+
+    def _persist_failure_diagnostics(
+        self,
+        request: ModelRequest,
+        diagnostics: dict[str, Any],
+        *,
+        error: str,
+    ) -> None:
+        if self._run_root is None:
+            return
+        path = self._run_root / "logs" / "ark-plan-failures.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            **diagnostics,
+            "request_id": request.request_id,
+            "role": request.role,
+            "error": error[:500],
+        }
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     @staticmethod
     def _usage_from_response(request: ModelRequest, data: dict[str, Any]) -> Usage:
@@ -579,12 +721,19 @@ class VolcengineArkPlanProvider(Provider):
         payload: dict[str, Any],
         *,
         use_structured_output: bool,
+        max_tokens: int | None = None,
+        strengthen_json_reminder: bool = False,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {
             "model": self._model,
             "temperature": 0.1,
-            "max_tokens": DEFAULT_MAX_TOKENS,
-            "messages": self._build_messages(request, payload),
+            "max_tokens": max_tokens if max_tokens is not None else self._max_tokens,
+            "messages": self._build_messages(
+                request,
+                payload,
+                strengthen_json_reminder=strengthen_json_reminder,
+            ),
+            "reasoning": {"effort": self._reasoning_effort},
         }
         if use_structured_output:
             body["response_format"] = {"type": "json_object"}
@@ -615,12 +764,15 @@ class VolcengineArkPlanProvider(Provider):
     def _log_request_start(self, body: dict[str, Any]) -> None:
         parsed = urlparse(self._endpoint)
         logger.info(
-            "Ark Plan request start model=%s host=%s path=%s image_count=%d timeout_seconds=%.0f",
+            "Ark Plan request start model=%s host=%s path=%s image_count=%d "
+            "max_tokens=%s timeout_seconds=%.0f reasoning_effort=%s",
             self._model,
             parsed.netloc,
             parsed.path or "/",
             self._count_images_in_body(body),
+            body.get("max_tokens"),
             self._timeout,
+            (body.get("reasoning") or {}).get("effort"),
         )
 
     def _post(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -664,28 +816,82 @@ class VolcengineArkPlanProvider(Provider):
         *,
         use_structured_output: bool,
     ) -> ModelResult:
-        body = self._build_request_body(
-            request,
-            payload,
-            use_structured_output=use_structured_output,
-        )
-        data = self._post(body)
-        text = self._extract_message_content(data)
-        try:
-            structured = parse_model_json(text)
-        except Exception as error:
-            message = str(error)
-            if "Unterminated" in message or "Expecting value" in message:
-                raise InvalidJsonResponse(
-                    f"Ark Plan returned truncated JSON for {request.request_id}: {error}"
+        attempts: list[tuple[int, bool]] = [
+            (self._max_tokens, False),
+            (self._max_tokens_length_retry, True),
+        ]
+        last_error = "Ark Plan returned invalid JSON"
+        last_diag: dict[str, Any] | None = None
+        data: dict[str, Any] | None = None
+        for index, (token_budget, strengthen) in enumerate(attempts):
+            body = self._build_request_body(
+                request,
+                payload,
+                use_structured_output=use_structured_output,
+                max_tokens=token_budget,
+                strengthen_json_reminder=strengthen,
+            )
+            data = self._post(body)
+            message, _, _ = self._choice_fields(data)
+            content_text, reasoning_text = self._message_strings(message)
+            diag = self._response_diagnostics(data, request_model=self._model)
+            last_diag = diag
+            if (
+                index == 0
+                and self._should_retry_length_truncation(data, content_text, reasoning_text)
+            ):
+                logger.info(
+                    "Ark Plan length truncation without JSON; retrying request_id=%s "
+                    "max_tokens=%d routed_model=%s",
+                    request.request_id,
+                    self._max_tokens_length_retry,
+                    diag.get("routed_model"),
+                )
+                continue
+            try:
+                text = self._text_for_json_parse(content_text, reasoning_text)
+            except ProviderError as error:
+                last_error = str(error)
+                if index == 0 and self._should_retry_length_truncation(
+                    data, content_text, reasoning_text
+                ):
+                    continue
+                if last_diag is not None:
+                    self._persist_failure_diagnostics(request, last_diag, error=last_error)
+                raise MissingStructuredOutput(
+                    f"Ark Plan returned no parseable JSON for {request.request_id}: {error}"
                 ) from error
-            raise MissingStructuredOutput(
-                f"Ark Plan returned invalid JSON for {request.request_id}: {error}"
-            ) from error
-        return ModelResult(
-            request_id=request.request_id,
-            structured=structured,
-            usage=self._usage_from_response(request, data),
+            try:
+                structured = parse_model_json(text)
+            except Exception as error:
+                message = str(error)
+                last_error = message
+                if index == 0 and (
+                    self._should_retry_length_truncation(data, content_text, reasoning_text)
+                    or "json object" in message.lower()
+                ):
+                    continue
+                if "Unterminated" in message or "Expecting value" in message:
+                    if last_diag is not None:
+                        self._persist_failure_diagnostics(request, last_diag, error=message)
+                    raise InvalidJsonResponse(
+                        f"Ark Plan returned truncated JSON for {request.request_id}: {error}"
+                    ) from error
+                if last_diag is not None:
+                    self._persist_failure_diagnostics(request, last_diag, error=message)
+                raise MissingStructuredOutput(
+                    f"Ark Plan returned invalid JSON for {request.request_id}: {error}"
+                ) from error
+            assert data is not None
+            return ModelResult(
+                request_id=request.request_id,
+                structured=structured,
+                usage=self._usage_from_response(request, data),
+            )
+        if last_diag is not None:
+            self._persist_failure_diagnostics(request, last_diag, error=last_error)
+        raise MissingStructuredOutput(
+            f"Ark Plan returned invalid JSON for {request.request_id}: {last_error}"
         )
 
     def _complete(
@@ -742,6 +948,9 @@ __all__ = [
     "resolve_volcengine_ark_endpoint",
     "resolve_volcengine_ark_json_mode",
     "resolve_volcengine_ark_model",
+    "resolve_volcengine_ark_max_tokens",
+    "resolve_volcengine_ark_max_tokens_length_retry",
+    "resolve_volcengine_ark_reasoning_effort",
     "resolve_volcengine_ark_max_images_per_batch",
     "resolve_volcengine_ark_outline_max_visual_overview",
     "resolve_volcengine_ark_segment_max_evidence_ids",

@@ -19,7 +19,10 @@
     "ark_outline_max_visual_overview": 8,
     "ark_segment_max_ocr_regions": 48,
     "ark_segment_max_evidence_ids": 160,
-    "ark_segment_ocr_text_chars": 240
+    "ark_segment_ocr_text_chars": 240,
+    "ark_max_tokens": 16384,
+    "ark_max_tokens_length_retry": 32768,
+    "ark_reasoning_effort": "none"
   },
   "editor": {
     "target_pages": 12,

@@ -56,6 +56,9 @@ class AnalysisConfig(BaseModel):
     ark_segment_max_ocr_regions: int | None = None
     ark_segment_max_evidence_ids: int | None = None
     ark_segment_ocr_text_chars: int | None = None
+    ark_max_tokens: int | None = None
+    ark_max_tokens_length_retry: int | None = None
+    ark_reasoning_effort: str | None = None
     ocr_engine: OcrEngineMode = "auto"
     ocr_languages: str = "jpn+eng"
     asr_engine: AsrEngineMode = "auto"

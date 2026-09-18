@@ -36,6 +36,94 @@ def test_ark_missing_api_key_raises():
         VolcengineArkPlanProvider(api_key="", model="ark-code-latest", endpoint=ENDPOINT)
 
 
+def test_ark_request_includes_reasoning_effort_none():
+    payload = {
+        "prompt": "segment",
+        "segment_id": "win-1",
+        "allowed_evidence_ids": [],
+        "constraints": {},
+    }
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["json"] = json.loads(request.content.decode())
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": json.dumps({"units": []})}}],
+                "usage": {},
+            },
+            request=request,
+        )
+
+    provider = _provider(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    provider.last_payload = payload
+    request = model_request(request_id="seg:win-1", role="segment", payload=payload)
+    provider.complete(request)
+    body = captured["json"]
+    assert isinstance(body, dict)
+    assert body.get("reasoning") == {"effort": "none"}
+    assert body.get("max_tokens", 0) >= 16_384
+
+
+def test_ark_length_truncation_retries_with_higher_max_tokens():
+    payload = {
+        "prompt": "segment",
+        "segment_id": "win-1",
+        "allowed_evidence_ids": [],
+        "constraints": {},
+    }
+    bodies: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        bodies.append(body)
+        if len(bodies) == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "model": "glm-5-3-flash",
+                    "choices": [
+                        {
+                            "finish_reason": "length",
+                            "message": {
+                                "content": "",
+                                "reasoning_content": "extended internal reasoning without json",
+                            },
+                        }
+                    ],
+                    "usage": {"completion_tokens_details": {"reasoning_tokens": 8089}},
+                },
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            json={
+                "model": "glm-5-3-flash",
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": json.dumps({"units": []})},
+                    }
+                ],
+                "usage": {},
+            },
+            request=request,
+        )
+
+    provider = _provider(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    provider.last_payload = payload
+    request = model_request(request_id="seg:win-1", role="segment", payload=payload)
+    result = provider.complete(request)
+    assert result.structured == {"units": []}
+    assert len(bodies) == 2
+    assert bodies[0].get("max_tokens") == 16_384
+    assert bodies[1].get("max_tokens") == 32_768
+    assert bodies[1].get("reasoning") == {"effort": "none"}
+    retry_text = bodies[1]["messages"][0]["content"][0]["text"]
+    assert "truncated" in retry_text.lower()
+
+
 def test_ark_successful_structured_json():
     payload = {
         "prompt": "outline",
