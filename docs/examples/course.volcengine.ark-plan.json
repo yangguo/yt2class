@@ -16,7 +16,10 @@
     "ark_json_mode": "auto",
     "ark_timeout_seconds": 300,
     "ark_max_images_per_batch": 4,
-    "ark_outline_max_visual_overview": 8
+    "ark_outline_max_visual_overview": 8,
+    "ark_segment_max_ocr_regions": 48,
+    "ark_segment_max_evidence_ids": 160,
+    "ark_segment_ocr_text_chars": 240
   },
   "editor": {
     "target_pages": 12,

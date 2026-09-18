@@ -411,6 +411,17 @@ def validate_knowledge_units(
 _MIN_SPLIT_CORE_SECONDS = 2.0
 
 
+def _json_parse_failure(error: BaseException) -> bool:
+    lowered = str(error).lower()
+    if isinstance(error, MissingStructuredOutput):
+        return (
+            "json object" in lowered
+            or "invalid json" in lowered
+            or "truncated json" in lowered
+        )
+    return "json object" in lowered or "invalid json" in lowered
+
+
 def split_window_core_half(window: AnalysisWindow) -> tuple[AnalysisWindow, AnalysisWindow] | None:
     """Split a core window at the midpoint when dispatch must shrink payload size."""
 
@@ -676,6 +687,10 @@ def analyze_window(
                 )
             except (SegmentContractError, MissingStructuredOutput, ProviderError) as repair_error:
                 last_error = str(repair_error)
+                if _json_parse_failure(repair_error):
+                    split_outcome = _try_split(f"invalid JSON after repair: {last_error}")
+                    if split_outcome is not None:
+                        return split_outcome
                 return SegmentAnalysisOutcome(
                     window=window.model_copy(
                         update={"status": "failed", "failure_reason": last_error[:400]}

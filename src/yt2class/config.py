@@ -53,6 +53,9 @@ class AnalysisConfig(BaseModel):
     ark_timeout_seconds: float | None = None
     ark_max_images_per_batch: int | None = None
     ark_outline_max_visual_overview: int | None = None
+    ark_segment_max_ocr_regions: int | None = None
+    ark_segment_max_evidence_ids: int | None = None
+    ark_segment_ocr_text_chars: int | None = None
     ocr_engine: OcrEngineMode = "auto"
     ocr_languages: str = "jpn+eng"
     asr_engine: AsrEngineMode = "auto"

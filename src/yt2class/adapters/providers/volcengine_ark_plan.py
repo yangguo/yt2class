@@ -47,6 +47,9 @@ DEFAULT_ENDPOINT = "https://ark.cn-beijing.volces.com/api/plan/v3/chat/completio
 DEFAULT_MODEL = "ark-code-latest"
 DEFAULT_ARK_MAX_IMAGES_PER_BATCH = 4
 DEFAULT_ARK_OUTLINE_MAX_VISUAL_OVERVIEW = 8
+DEFAULT_ARK_SEGMENT_MAX_OCR_REGIONS = 48
+DEFAULT_ARK_SEGMENT_MAX_EVIDENCE_IDS = 160
+DEFAULT_ARK_SEGMENT_OCR_TEXT_CHARS = 240
 
 ArkJsonMode = Literal["auto", "on", "off"]
 
@@ -153,6 +156,63 @@ def resolve_volcengine_ark_max_images_per_batch(analysis: AnalysisConfig) -> int
     return min(analysis.max_images_per_batch, DEFAULT_ARK_MAX_IMAGES_PER_BATCH)
 
 
+def _resolve_positive_int_env(
+    keys: tuple[str, ...],
+    *,
+    configured: int | None,
+    default: int,
+) -> int:
+    for key in keys:
+        value = os.getenv(key)
+        if value:
+            try:
+                parsed = int(value)
+            except ValueError as error:
+                raise ProviderError(f"invalid {key}={value!r}") from error
+            if parsed <= 0:
+                raise ProviderError(f"{key} must be positive")
+            return parsed
+    if configured is not None and int(configured) > 0:
+        return int(configured)
+    return default
+
+
+def resolve_volcengine_ark_segment_max_ocr_regions(analysis: AnalysisConfig) -> int:
+    return _resolve_positive_int_env(
+        (
+            "YT2CLASS_ARK_SEGMENT_MAX_OCR_REGIONS",
+            "ARK_SEGMENT_MAX_OCR_REGIONS",
+            "VOLCENGINE_ARK_SEGMENT_MAX_OCR_REGIONS",
+        ),
+        configured=getattr(analysis, "ark_segment_max_ocr_regions", None),
+        default=DEFAULT_ARK_SEGMENT_MAX_OCR_REGIONS,
+    )
+
+
+def resolve_volcengine_ark_segment_max_evidence_ids(analysis: AnalysisConfig) -> int:
+    return _resolve_positive_int_env(
+        (
+            "YT2CLASS_ARK_SEGMENT_MAX_EVIDENCE_IDS",
+            "ARK_SEGMENT_MAX_EVIDENCE_IDS",
+            "VOLCENGINE_ARK_SEGMENT_MAX_EVIDENCE_IDS",
+        ),
+        configured=getattr(analysis, "ark_segment_max_evidence_ids", None),
+        default=DEFAULT_ARK_SEGMENT_MAX_EVIDENCE_IDS,
+    )
+
+
+def resolve_volcengine_ark_segment_ocr_text_chars(analysis: AnalysisConfig) -> int:
+    return _resolve_positive_int_env(
+        (
+            "YT2CLASS_ARK_SEGMENT_OCR_TEXT_CHARS",
+            "ARK_SEGMENT_OCR_TEXT_CHARS",
+            "VOLCENGINE_ARK_SEGMENT_OCR_TEXT_CHARS",
+        ),
+        configured=getattr(analysis, "ark_segment_ocr_text_chars", None),
+        default=DEFAULT_ARK_SEGMENT_OCR_TEXT_CHARS,
+    )
+
+
 def resolve_volcengine_ark_outline_max_visual_overview(analysis: AnalysisConfig) -> int:
     for key in (
         "YT2CLASS_ARK_OUTLINE_MAX_VISUAL_OVERVIEW",
@@ -212,6 +272,9 @@ class VolcengineArkPlanProvider(Provider):
         json_mode: ArkJsonMode = "auto",
         max_images_per_batch: int = DEFAULT_ARK_MAX_IMAGES_PER_BATCH,
         outline_max_visual_overview: int = DEFAULT_ARK_OUTLINE_MAX_VISUAL_OVERVIEW,
+        segment_max_ocr_regions: int = DEFAULT_ARK_SEGMENT_MAX_OCR_REGIONS,
+        segment_max_evidence_ids: int = DEFAULT_ARK_SEGMENT_MAX_EVIDENCE_IDS,
+        segment_ocr_text_chars: int = DEFAULT_ARK_SEGMENT_OCR_TEXT_CHARS,
     ) -> None:
         super().__init__(
             capabilities
@@ -229,6 +292,9 @@ class VolcengineArkPlanProvider(Provider):
         self._json_mode = json_mode
         self._max_images_per_batch = max(1, max_images_per_batch)
         self._outline_max_visual_overview = max(1, outline_max_visual_overview)
+        self._segment_max_ocr_regions = max(1, segment_max_ocr_regions)
+        self._segment_max_evidence_ids = max(1, segment_max_evidence_ids)
+        self._segment_ocr_text_chars = max(32, segment_ocr_text_chars)
         self.last_payload: dict[str, Any] | None = None
         self._run_root: Path | None = None
         self._visual: VisualCatalogue | None = None
@@ -250,6 +316,9 @@ class VolcengineArkPlanProvider(Provider):
             outline_max_visual_overview=resolve_volcengine_ark_outline_max_visual_overview(
                 analysis
             ),
+            segment_max_ocr_regions=resolve_volcengine_ark_segment_max_ocr_regions(analysis),
+            segment_max_evidence_ids=resolve_volcengine_ark_segment_max_evidence_ids(analysis),
+            segment_ocr_text_chars=resolve_volcengine_ark_segment_ocr_text_chars(analysis),
         )
 
     def bind_run_context(self, run_root: Path, *, visual: VisualCatalogue | None = None) -> None:
@@ -313,9 +382,74 @@ class VolcengineArkPlanProvider(Provider):
                 paths.append(candidate)
         return paths
 
-    def _payload_for_prompt(self, request: ModelRequest, payload: dict[str, Any]) -> dict[str, Any]:
-        if request.role != "outline":
-            return payload
+    @staticmethod
+    def _cap_evidence_id_lists(
+        payload: dict[str, Any],
+        *,
+        max_ids: int,
+    ) -> tuple[dict[str, Any], bool]:
+        keys = ("evidence_ids", "allowed_evidence_ids")
+        lists = {
+            key: payload.get(key)
+            for key in keys
+            if isinstance(payload.get(key), list)
+        }
+        if not lists:
+            return payload, False
+        longest = max(len(items) for items in lists.values())
+        if longest <= max_ids:
+            return payload, False
+
+        merged: list[str] = []
+        for items in lists.values():
+            merged.extend(str(item) for item in items)
+        unique = sorted(set(merged))
+        ocr_ids = [item for item in unique if item.startswith("ocr-")]
+        other_ids = [item for item in unique if not item.startswith("ocr-")]
+        budget_for_ocr = max(0, max_ids - len(other_ids))
+        kept = sorted(set(other_ids) | set(ocr_ids[:budget_for_ocr]))
+        trimmed = dict(payload)
+        for key in keys:
+            if key in trimmed and isinstance(trimmed[key], list):
+                trimmed[key] = kept
+        trimmed["evidence_ids_omitted"] = max(0, len(unique) - len(kept))
+        if len(ocr_ids) > budget_for_ocr:
+            trimmed["ocr_evidence_ids_omitted"] = len(ocr_ids) - budget_for_ocr
+        return trimmed, True
+
+    def _trim_segment_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        trimmed, changed = self._cap_evidence_id_lists(
+            payload,
+            max_ids=self._segment_max_evidence_ids,
+        )
+        ocr = trimmed.get("ocr")
+        if isinstance(ocr, list) and len(ocr) > self._segment_max_ocr_regions:
+            trimmed = dict(trimmed)
+            trimmed["ocr"] = ocr[: self._segment_max_ocr_regions]
+            trimmed["ocr_regions_omitted"] = len(ocr) - self._segment_max_ocr_regions
+            changed = True
+        if isinstance(trimmed.get("ocr"), list):
+            compact_ocr: list[dict[str, Any]] = []
+            for row in trimmed["ocr"]:
+                if not isinstance(row, dict):
+                    continue
+                text = row.get("text")
+                if isinstance(text, str) and len(text) > self._segment_ocr_text_chars:
+                    compact_ocr.append(
+                        {
+                            **row,
+                            "text": text[: self._segment_ocr_text_chars] + "…",
+                        }
+                    )
+                    changed = True
+                else:
+                    compact_ocr.append(row)
+            if changed:
+                trimmed = dict(trimmed)
+                trimmed["ocr"] = compact_ocr
+        return trimmed if changed else payload
+
+    def _trim_outline_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         overview = payload.get("visual_overview")
         if not isinstance(overview, list):
             return payload
@@ -326,6 +460,13 @@ class VolcengineArkPlanProvider(Provider):
         trimmed["visual_overview"] = overview[:cap]
         trimmed["visual_overview_omitted"] = len(overview) - cap
         return trimmed
+
+    def _payload_for_prompt(self, request: ModelRequest, payload: dict[str, Any]) -> dict[str, Any]:
+        if request.role == "outline":
+            return self._trim_outline_payload(payload)
+        if request.role == "segment":
+            return self._trim_segment_payload(payload)
+        return payload
 
     def _build_messages(self, request: ModelRequest, payload: dict[str, Any]) -> list[dict[str, Any]]:
         prompt = str(payload.get("prompt") or "Follow the JSON schema implied by your role.")
@@ -603,6 +744,9 @@ __all__ = [
     "resolve_volcengine_ark_model",
     "resolve_volcengine_ark_max_images_per_batch",
     "resolve_volcengine_ark_outline_max_visual_overview",
+    "resolve_volcengine_ark_segment_max_evidence_ids",
+    "resolve_volcengine_ark_segment_max_ocr_regions",
+    "resolve_volcengine_ark_segment_ocr_text_chars",
     "resolve_volcengine_ark_timeout_seconds",
     "volcengine_ark_capabilities",
 ]

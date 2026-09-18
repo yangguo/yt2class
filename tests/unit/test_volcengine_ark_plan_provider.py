@@ -261,6 +261,61 @@ def test_ark_outline_trims_visual_overview_in_prompt():
     assert '"id": "f-11"' not in text
 
 
+def test_ark_segment_trims_dense_ocr_and_evidence_lists():
+    ocr_rows = [
+        {
+            "id": f"ocr-{index:04d}",
+            "parent_frame_id": "frame-0001",
+            "text": "x" * 400,
+        }
+        for index in range(60)
+    ]
+    evidence_ids = [f"ocr-{index:04d}" for index in range(200)] + ["frame-0001", "seg-0001"]
+    payload = {
+        "prompt": "segment",
+        "segment_id": "win-1",
+        "evidence_ids": evidence_ids,
+        "allowed_evidence_ids": evidence_ids,
+        "allowed_frame_ids": ["frame-0001"],
+        "frames": [{"id": "frame-0001", "timestamp_seconds": 0.0}],
+        "ocr": ocr_rows,
+        "transcript": [],
+        "constraints": {},
+    }
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["json"] = json.loads(request.content.decode())
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": json.dumps({"units": []})}}],
+                "usage": {},
+            },
+            request=request,
+        )
+
+    provider = VolcengineArkPlanProvider(
+        api_key="test-ark-key",
+        model="ark-code-latest",
+        endpoint=ENDPOINT,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        segment_max_ocr_regions=10,
+        segment_max_evidence_ids=20,
+        segment_ocr_text_chars=80,
+    )
+    provider.last_payload = payload
+    request = model_request(request_id="seg:win-1", role="segment", payload=payload)
+    provider.complete(request)
+    body = captured["json"]
+    assert isinstance(body, dict)
+    text = body["messages"][0]["content"][0]["text"]
+    assert "ocr_regions_omitted" in text
+    assert "evidence_ids_omitted" in text
+    assert "ocr-0059" not in text
+    assert ("x" * 400) not in text
+
+
 def test_resolve_ark_model_prefers_config():
     analysis = AnalysisConfig(provider="ark-plan", model="custom-ark-model")
     assert resolve_volcengine_ark_model(analysis) == "custom-ark-model"

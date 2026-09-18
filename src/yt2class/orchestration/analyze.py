@@ -219,6 +219,9 @@ def analyze_course(
     unfinished = [window.id for window in segments.windows if window.status == "scheduled"]
     if unfinished:
         gap_reasons.append(f"unanalyzed windows: {unfinished}")
+    if transcript.segments and not list(knowledge.iter_claims()):
+        coverage = False
+        gap_reasons.append("segment analysis produced no knowledge units")
     return AnalysisResult(
         course_map=course_map,
         segments=segments,
