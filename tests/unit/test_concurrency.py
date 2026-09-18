@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import threading
+from concurrent.futures import ThreadPoolExecutor
+
+import pytest
 
 from yt2class.orchestration.concurrency import MAX_PROVIDER_CONCURRENCY, map_parallel
 from yt2class.stages.edit_deck import edit_deck
 from yt2class.stages import verify_claims as verify_mod
 from tests.helpers.m2 import frames_caps, make_transcript, make_visual
 from tests.helpers.m3 import concept_unit, course_map, grounding_provider, knowledge
-from yt2class.adapters.providers.base import FakeProvider
+from yt2class.adapters.providers.base import FakeProvider, RequestCancelled
+from yt2class.stages.llm_util import model_request
 
 
 def test_map_parallel_preserves_order():
@@ -39,6 +43,76 @@ def test_map_parallel_respects_worker_cap():
 
     map_parallel(list(range(6)), work, max_workers=2)
     assert peak <= 2
+
+
+def test_provider_runs_distinct_requests_concurrently():
+    class SlowProvider(FakeProvider):
+        def __init__(self):
+            super().__init__(frames_caps())
+            self.active = 0
+            self.peak = 0
+            self.state_lock = threading.Lock()
+            self.barrier = threading.Barrier(2)
+
+        def _complete(self, request, *, cancel_event=None):
+            with self.state_lock:
+                self.active += 1
+                self.peak = max(self.peak, self.active)
+            self.barrier.wait(timeout=1.0)
+            try:
+                return super()._complete(request, cancel_event=cancel_event)
+            finally:
+                with self.state_lock:
+                    self.active -= 1
+
+    provider = SlowProvider()
+    requests = [
+        model_request(request_id=f"parallel-{index}", role="verifier", payload={"index": index})
+        for index in range(2)
+    ]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(provider.complete, requests))
+
+    assert len(results) == 2
+    assert provider.peak == 2
+
+
+def test_same_request_waiter_can_cancel_without_cancelling_owner():
+    class BlockingProvider(FakeProvider):
+        def __init__(self):
+            super().__init__(frames_caps())
+            self.started = threading.Event()
+            self.release = threading.Event()
+
+        def _complete(self, request, *, cancel_event=None):
+            self.started.set()
+            assert self.release.wait(timeout=1.0)
+            return super()._complete(request, cancel_event=cancel_event)
+
+    class ObservableCancel(threading.Event):
+        def __init__(self):
+            super().__init__()
+            self.checked = threading.Event()
+
+        def is_set(self):
+            self.checked.set()
+            return super().is_set()
+
+    provider = BlockingProvider()
+    request = model_request(request_id="shared-request", role="verifier", payload={"ok": True})
+    waiter_cancel = ObservableCancel()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        owner = pool.submit(provider.complete, request)
+        assert provider.started.wait(timeout=1.0)
+        waiter = pool.submit(provider.complete, request, cancel_event=waiter_cancel)
+        assert waiter_cancel.checked.wait(timeout=1.0)
+        waiter_cancel.set()
+        try:
+            with pytest.raises(RequestCancelled):
+                waiter.result(timeout=0.2)
+        finally:
+            provider.release.set()
+        assert owner.result(timeout=1.0).request_id == "shared-request"
 
 
 def test_verify_structural_checks_cap_concurrency(monkeypatch):

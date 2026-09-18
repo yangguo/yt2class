@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 import hashlib
 import json
-from threading import Event, Lock
+from threading import Event, Lock, local
 from typing import Any, Literal
 
 from pydantic import Field, model_validator
@@ -59,6 +60,13 @@ class RequestFingerprintConflict(ProviderError):
     """The request ID was reused for a materially different request."""
 
     code = "idempotency_conflict"
+
+
+@dataclass
+class _InFlightCall:
+    fingerprint: str
+    done: Event = field(default_factory=Event)
+    error: BaseException | None = None
 
 
 class ProviderCapabilities(StrictModel):
@@ -123,6 +131,7 @@ class Provider(ABC):
     def __init__(self, capabilities: ProviderCapabilities) -> None:
         self.capabilities = capabilities
         self._completed: dict[str, tuple[str, ModelResult]] = {}
+        self._inflight: dict[str, _InFlightCall] = {}
         self._lock = Lock()
 
     @staticmethod
@@ -187,11 +196,11 @@ class Provider(ABC):
         *,
         cancel_event: Event | None = None,
     ) -> ModelResult:
+        self.check_request(request)
+        if cancel_event is not None and cancel_event.is_set():
+            raise RequestCancelled(f"request {request.request_id} cancelled")
+        fingerprint = self.request_fingerprint(request)
         with self._lock:
-            self.check_request(request)
-            if cancel_event is not None and cancel_event.is_set():
-                raise RequestCancelled(f"request {request.request_id} cancelled")
-            fingerprint = self.request_fingerprint(request)
             cached = self._completed.get(request.request_id)
             if cached is not None:
                 cached_fingerprint, cached_result = cached
@@ -201,9 +210,41 @@ class Provider(ABC):
                         "with a different request fingerprint"
                     )
                 return cached_result
+            inflight = self._inflight.get(request.request_id)
+            if inflight is not None:
+                if inflight.fingerprint != fingerprint:
+                    raise RequestFingerprintConflict(
+                        f"request_id {request.request_id!r} is already running "
+                        "with a different request fingerprint"
+                    )
+                owner = False
+            else:
+                inflight = _InFlightCall(fingerprint=fingerprint)
+                self._inflight[request.request_id] = inflight
+                owner = True
+
+        if not owner:
+            while not inflight.done.wait(timeout=0.05):
+                if cancel_event is not None and cancel_event.is_set():
+                    raise RequestCancelled(f"request {request.request_id} cancelled")
+            if inflight.error is not None:
+                raise inflight.error
+            with self._lock:
+                return self._completed[request.request_id][1]
+
+        try:
             result = self.ensure_result(request, self._complete(request, cancel_event=cancel_event))
+        except BaseException as error:
+            with self._lock:
+                self._inflight.pop(request.request_id, None)
+                inflight.error = error
+                inflight.done.set()
+            raise
+        with self._lock:
             self._completed[request.request_id] = (fingerprint, result)
-            return result
+            self._inflight.pop(request.request_id, None)
+            inflight.done.set()
+        return result
 
     @abstractmethod
     def _complete(
@@ -242,16 +283,28 @@ class FakeProvider(Provider):
         self._responder = responder
         self._sequential = list(sequential or [])
         self._seq_index = 0
+        self._state_lock = Lock()
+        self._payload_local = local()
         self.requests: list[ModelRequest] = []
-        self.last_payload: dict[str, Any] | None = None
+        self._last_payload: dict[str, Any] | None = None
+
+    @property
+    def last_payload(self) -> dict[str, Any] | None:
+        return getattr(self._payload_local, "value", self._last_payload)
+
+    @last_payload.setter
+    def last_payload(self, payload: dict[str, Any] | None) -> None:
+        self._payload_local.value = payload
+        self._last_payload = payload
 
     def _next_structured(self, request: ModelRequest) -> dict[str, Any] | None:
         if self._sequential:
-            if self._seq_index >= len(self._sequential):
-                item = self._sequential[-1]
-            else:
-                item = self._sequential[self._seq_index]
-            self._seq_index += 1
+            with self._state_lock:
+                if self._seq_index >= len(self._sequential):
+                    item = self._sequential[-1]
+                else:
+                    item = self._sequential[self._seq_index]
+                self._seq_index += 1
             if isinstance(item, BaseException):
                 raise item
             return item
@@ -270,7 +323,8 @@ class FakeProvider(Provider):
         local_payload = thread_local_provider_payload()
         if local_payload is not None:
             self.last_payload = local_payload
-        self.requests.append(request)
+        with self._state_lock:
+            self.requests.append(request)
         if self._timeout:
             raise RequestTimeout(f"request {request.request_id} timed out")
         if self._cancel or (cancel_event is not None and cancel_event.is_set()):

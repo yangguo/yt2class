@@ -8,6 +8,7 @@ from threading import Event
 from typing import Any, Iterable
 
 from yt2class.adapters.providers.base import Provider, RequestCancelled
+from yt2class.orchestration.budget import BudgetExceeded
 from yt2class.orchestration.concurrency import map_parallel
 from yt2class.domain.editorial import (
     QUALITY_NOTE_MARKERS,
@@ -653,7 +654,7 @@ def _complete_verifier(
     attach_provider_payload(provider, payload)
     try:
         result = provider.complete(request, cancel_event=cancel_event)
-    except RequestCancelled:
+    except (BudgetExceeded, RequestCancelled):
         raise
     except Exception:
         return None
