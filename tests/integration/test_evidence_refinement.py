@@ -253,7 +253,8 @@ def test_two_rounds_then_budget_exhaust_marks_unresolved():
             }
         ]
     }
-    provider = FakeProvider(frames_caps(), structured=structured)
+    caps = frames_caps(max_input_tokens=32000)
+    provider = FakeProvider(caps, structured=structured)
     outcome = SegmentAnalysisOutcome(window=_window(), payload={}, units=[needy_unit()])
     counter = {"n": 0}
 
@@ -267,7 +268,7 @@ def test_two_rounds_then_budget_exhaust_marks_unresolved():
         visual=visual,
         course_map=sample_course_map(),
         provider=provider,
-        capabilities=frames_caps(),
+        capabilities=caps,
         duration_seconds=60.0,
         budget=RefinementBudget(max_rounds=2, remaining_frames=8),
         frame_extractor=extract_frame,

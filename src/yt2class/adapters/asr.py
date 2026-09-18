@@ -225,7 +225,7 @@ def extract_audio_with_provenance(
         raise ASRError("ffmpeg completed but did not produce ASR audio")
     temporary.replace(output_path)
     try:
-        post_parent_hash = content_sha256(input_path)
+        post_parent_hash = content_sha256(input_path, fresh=True)
     except (OSError, SourceInputError) as error:
         output_path.unlink(missing_ok=True)
         raise ASRError(f"cannot rehash ASR parent media: {input_path}") from error
@@ -389,6 +389,7 @@ def run_asr(
                 command,
                 timeout_seconds=request.timeout_seconds,
                 cancel_event=cancel_event,
+                env={"PYTHONUTF8": "1"},
             )
         else:
             completed = runner(

@@ -60,17 +60,49 @@ def _normalize_youtube(value: str) -> tuple[str, str]:
     return f"https://www.youtube.com/watch?v={video_id}", video_id
 
 
-def content_sha256(path: Path) -> str:
-    """Hash file bytes without loading a media file into memory."""
+_SHA256_BY_PATH: dict[str, tuple[tuple[str, int, int, int, int], str]] = {}
 
+
+def clear_content_sha256_cache() -> None:
+    """Test helper: drop in-process stat memoization."""
+
+    _SHA256_BY_PATH.clear()
+
+
+def content_sha256(path: Path, *, fresh: bool = False) -> str:
+    """Hash file bytes without loading a media file into memory.
+
+    Reuses the digest for unchanged inode/size/mtime/ctime within the process unless
+    ``fresh=True`` (use after mutating a file when proving it did not change).
+    """
+
+    try:
+        resolved = path.expanduser().resolve(strict=False)
+        stat = resolved.stat()
+    except OSError as error:
+        raise SourceInputError(f"cannot read source file: {path}") from error
+    key = (
+        str(resolved),
+        int(stat.st_ino),
+        int(stat.st_size),
+        int(stat.st_mtime_ns),
+        int(getattr(stat, "st_ctime_ns", stat.st_ctime)),
+    )
+    path_key = str(resolved)
+    if not fresh:
+        cached = _SHA256_BY_PATH.get(path_key)
+        if cached is not None and cached[0] == key:
+            return cached[1]
     digest = sha256()
     try:
-        with path.open("rb") as stream:
+        with resolved.open("rb") as stream:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                 digest.update(chunk)
     except OSError as error:
         raise SourceInputError(f"cannot read source file: {path}") from error
-    return digest.hexdigest()
+    value = digest.hexdigest()
+    _SHA256_BY_PATH[path_key] = (key, value)
+    return value
 
 
 def _validate_local_path(value: str | Path) -> Path:
@@ -140,7 +172,9 @@ class SourceInput(StrictModel):
 
     @property
     def content_sha256(self) -> str | None:
-        return None if self.kind == "youtube" else content_sha256(Path(self.value))
+        if self.kind == "youtube":
+            return None
+        return content_sha256(Path(self.value), fresh=True)
 
 
 def read_source_inputs(path: Path, *, local_mode: LocalMode = "copy") -> list[SourceInput]:

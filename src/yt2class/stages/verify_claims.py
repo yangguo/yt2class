@@ -7,7 +7,9 @@ import re
 from threading import Event
 from typing import Any, Iterable
 
-from yt2class.adapters.providers.base import Provider
+from yt2class.adapters.providers.base import Provider, RequestCancelled
+from yt2class.orchestration.budget import BudgetExceeded
+from yt2class.orchestration.concurrency import map_parallel
 from yt2class.domain.editorial import (
     QUALITY_NOTE_MARKERS,
     EditorialPlan,
@@ -29,6 +31,7 @@ from yt2class.domain.verification import (
 from yt2class.domain.visual import VisualCatalogue
 from yt2class.stages.llm_util import (
     allowed_evidence_ids,
+    attach_provider_payload,
     load_prompt,
     model_request,
 )
@@ -47,6 +50,7 @@ CRITICAL_KINDS = {
     "grounding",
 }
 QUALITY_PREFIXES = ("[DRAFT]", "[EVIDENCE-ONLY]")
+VERIFIER_GROUNDING_BATCH_SIZE = 15
 
 
 class StrictVerificationError(ValueError):
@@ -176,8 +180,10 @@ def page_evidence_text(
     knowledge: KnowledgeDocument,
     transcript: TranscriptDocument,
     visual: VisualCatalogue,
+    index: dict[str, str] | None = None,
 ) -> str:
-    index = evidence_index(transcript, visual)
+    if index is None:
+        index = evidence_index(transcript, visual)
     evidence_ids: list[str] = []
     claim_ids = set(page.claim_ids)
     for unit in knowledge.units:
@@ -199,37 +205,19 @@ def check_unknown_refs(claim: KnowledgeClaim, allowed: set[str]) -> CheckResult:
     return CheckResult(kind="unknown_ref", passed=True, note="refs resolve")
 
 
-def check_grounding(
-    claim: KnowledgeClaim,
-    index: dict[str, str],
-    *,
-    provider: Provider | None = None,
-    cancel_event: Event | None = None,
-) -> CheckResult:
-    """Only a structured provider verdict can affirm free-text entailment."""
-    failure = CheckResult(
-        kind="grounding", passed=False,
-        note="no affirmative provider evidence support", verdict="insufficient",
+def _grounding_failure(note: str = "no affirmative provider evidence support") -> CheckResult:
+    return CheckResult(
+        kind="grounding",
+        passed=False,
+        note=note,
+        verdict="insufficient",
     )
-    if not claim.text.strip() or not claim.evidence_ids or not any(
-        index.get(item, "").strip() for item in claim.evidence_ids
-    ):
-        failure.note = "missing or empty cited evidence"
-        return failure
-    payload = {
-        "prompt": load_prompt("verifier.md"),
-        "claims": [claim.model_dump(mode="json")],
-        "evidence": {item: index.get(item, "") for item in claim.evidence_ids},
-        "allowed_evidence_ids": list(claim.evidence_ids),
-    }
-    structured = _complete_verifier(
-        provider, payload, request_id=f"verifier:ground:{claim.id}", cancel_event=cancel_event,
-    )
-    rows = structured.get("verdicts") if structured else None
-    if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
-        return failure
+
+
+def _grounding_from_row(claim: KnowledgeClaim, index: dict[str, str], row: dict[str, Any]) -> CheckResult:
+    failure = _grounding_failure()
     try:
-        result = ClaimVerdict.model_validate(rows[0])
+        result = ClaimVerdict.model_validate(row)
     except (ValueError, TypeError):
         return failure
     refs = result.supporting_ids + result.contradicting_ids
@@ -242,9 +230,112 @@ def check_grounding(
     if result.verdict == "contradicted" and not result.contradicting_ids:
         return failure
     return CheckResult(
-        kind="grounding", passed=result.verdict == "supported",
-        verdict=result.verdict, note=result.reason,
-        supporting_ids=result.supporting_ids, contradicting_ids=result.contradicting_ids,
+        kind="grounding",
+        passed=result.verdict == "supported",
+        verdict=result.verdict,
+        note=result.reason,
+        supporting_ids=result.supporting_ids,
+        contradicting_ids=result.contradicting_ids,
+    )
+
+
+def check_grounding_batch(
+    claims: list[KnowledgeClaim],
+    index: dict[str, str],
+    *,
+    provider: Provider | None = None,
+    cancel_event: Event | None = None,
+) -> dict[str, CheckResult]:
+    """Batch grounding checks using the verifier contract's multi-claim payload."""
+
+    results: dict[str, CheckResult] = {}
+    eligible: list[KnowledgeClaim] = []
+    for claim in claims:
+        if not claim.text.strip() or not claim.evidence_ids or not any(
+            index.get(item, "").strip() for item in claim.evidence_ids
+        ):
+            results[claim.id] = _grounding_failure("missing or empty cited evidence")
+        else:
+            eligible.append(claim)
+    if provider is None:
+        for claim in eligible:
+            results[claim.id] = _grounding_failure()
+        return results
+
+    for offset in range(0, len(eligible), VERIFIER_GROUNDING_BATCH_SIZE):
+        chunk = eligible[offset : offset + VERIFIER_GROUNDING_BATCH_SIZE]
+        evidence_ids = sorted({item for claim in chunk for item in claim.evidence_ids})
+        payload = {
+            "prompt": load_prompt("verifier.md"),
+            "claims": [claim.model_dump(mode="json") for claim in chunk],
+            "evidence": {item: index.get(item, "") for item in evidence_ids},
+            "allowed_evidence_ids": evidence_ids,
+        }
+        structured = _complete_verifier(
+            provider,
+            payload,
+            request_id=f"verifier:ground:batch:{offset}",
+            cancel_event=cancel_event,
+        )
+        rows = structured.get("verdicts") if structured else None
+        if not isinstance(rows, list) or len(rows) != len(chunk):
+            for claim in chunk:
+                results[claim.id] = _check_grounding_single(
+                    claim, index, provider=provider, cancel_event=cancel_event
+                )
+            continue
+        by_id = {str(row.get("claim_id")): row for row in rows if isinstance(row, dict)}
+        for claim in chunk:
+            row = by_id.get(claim.id)
+            if row is None:
+                results[claim.id] = _grounding_failure()
+            else:
+                results[claim.id] = _grounding_from_row(claim, index, row)
+    return results
+
+
+def _check_grounding_single(
+    claim: KnowledgeClaim,
+    index: dict[str, str],
+    *,
+    provider: Provider | None = None,
+    cancel_event: Event | None = None,
+) -> CheckResult:
+    """One claim, one verifier request (batch fallback and public single-check API)."""
+    if not claim.text.strip() or not claim.evidence_ids or not any(
+        index.get(item, "").strip() for item in claim.evidence_ids
+    ):
+        return _grounding_failure("missing or empty cited evidence")
+    if provider is None:
+        return _grounding_failure()
+    payload = {
+        "prompt": load_prompt("verifier.md"),
+        "claims": [claim.model_dump(mode="json")],
+        "evidence": {item: index.get(item, "") for item in claim.evidence_ids},
+        "allowed_evidence_ids": list(claim.evidence_ids),
+    }
+    structured = _complete_verifier(
+        provider,
+        payload,
+        request_id=f"verifier:ground:{claim.id}",
+        cancel_event=cancel_event,
+    )
+    rows = structured.get("verdicts") if structured else None
+    if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
+        return _grounding_failure()
+    return _grounding_from_row(claim, index, rows[0])
+
+
+def check_grounding(
+    claim: KnowledgeClaim,
+    index: dict[str, str],
+    *,
+    provider: Provider | None = None,
+    cancel_event: Event | None = None,
+) -> CheckResult:
+    """Only a structured provider verdict can affirm free-text entailment."""
+    return _check_grounding_single(
+        claim, index, provider=provider, cancel_event=cancel_event
     )
 
 
@@ -263,6 +354,24 @@ def check_numbers(claim: KnowledgeClaim, evidence_text: str) -> CheckResult:
         note=f"numbers {missing} not in evidence",
         verdict=verdict,
         contradicting_ids=list(claim.evidence_ids) if verdict == "contradicted" else [],
+    )
+
+
+def structural_claim_checks(
+    claim: KnowledgeClaim,
+    *,
+    unit: KnowledgeUnit,
+    transcript: TranscriptDocument,
+    visual: VisualCatalogue,
+    allowed: set[str],
+    index: dict[str, str],
+) -> tuple[CheckResult, CheckResult, CheckResult]:
+    """Local ref/number/step checks. Independent per claim; safe to run in parallel."""
+
+    return (
+        check_unknown_refs(claim, allowed),
+        check_numbers(claim, _join(claim.evidence_ids, index)),
+        check_steps(claim, unit, transcript, visual),
     )
 
 
@@ -430,11 +539,18 @@ def formalize_plan(
     if not pages:
         pages = [relabel_page(plan.pages[0], "draft" if quality_mode != "evidence-only" else "evidence-only")]
     if quality_mode != "evidence-only" and transcript is not None and visual is not None:
+        copy_index = evidence_index(transcript, visual)
+        copy_ok = pages_copy_grounded(
+            pages,
+            knowledge=knowledge,
+            transcript=transcript,
+            visual=visual,
+            provider=provider,
+            index=copy_index,
+        )
         checked: list[PageIntent] = []
         for page in pages:
-            if page.type in {"content", "quiz"} and not page_copy_grounded(
-                page, knowledge=knowledge, transcript=transcript, visual=visual, provider=provider
-            ):
+            if page.type in {"content", "quiz"} and not copy_ok.get(page.id, False):
                 checked.append(relabel_page(page, "draft"))
             else:
                 checked.append(page)
@@ -449,28 +565,79 @@ def page_copy_grounded(
     transcript: TranscriptDocument,
     visual: VisualCatalogue,
     provider: Provider | None = None,
+    index: dict[str, str] | None = None,
 ) -> bool:
     """True when page title/notes/body_points are affirmed by the page's evidence."""
 
-    evidence_text = page_evidence_text(
-        page, knowledge=knowledge, transcript=transcript, visual=visual
-    )
-    if not evidence_text.strip():
-        return False
-    texts = [page.title, *page.body_points, notes_without_quality(page.notes)]
-    practice = _is_practice(knowledge, list(page.claim_ids))
-    return all(copy_is_affirmed(text, evidence_text, practice=practice, provider=provider) for text in texts)
+    return pages_copy_grounded(
+        [page],
+        knowledge=knowledge,
+        transcript=transcript,
+        visual=visual,
+        provider=provider,
+        index=index,
+    ).get(page.id, False)
+
+
+def pages_copy_grounded(
+    pages: list[PageIntent],
+    *,
+    knowledge: KnowledgeDocument,
+    transcript: TranscriptDocument,
+    visual: VisualCatalogue,
+    provider: Provider | None = None,
+    index: dict[str, str] | None = None,
+) -> dict[str, bool]:
+    """Batch grounding for page copy strings (one verifier batch per evidence block)."""
+
+    if index is None:
+        index = evidence_index(transcript, visual)
+    results = {page.id: True for page in pages}
+    copy_claims: list[KnowledgeClaim] = []
+    claim_pages: dict[str, str] = {}
+    grounding_index = dict(index)
+    for page in pages:
+        if page.type not in {"content", "quiz"}:
+            continue
+        evidence_text = page_evidence_text(
+            page, knowledge=knowledge, transcript=transcript, visual=visual, index=index
+        )
+        if not evidence_text.strip():
+            results[page.id] = False
+            continue
+        excerpt_id = f"excerpt:{page.id}"
+        grounding_index[excerpt_id] = evidence_text
+        practice = _is_practice(knowledge, list(page.claim_ids))
+        texts = [page.title, *page.body_points, notes_without_quality(page.notes)]
+        for idx, text in enumerate(texts):
+            if not text.strip():
+                continue
+            claim_id = f"copy:{page.id}:{idx}"
+            claim = KnowledgeClaim(
+                id=claim_id,
+                status="insufficient",
+                text=text,
+                evidence_ids=[excerpt_id],
+                provenance="generated-practice" if practice else "source",
+            )
+            if not check_numbers(claim, evidence_text).passed:
+                results[page.id] = False
+                continue
+            copy_claims.append(claim)
+            claim_pages[claim_id] = page.id
+    if not copy_claims:
+        return results
+    grounding_map = check_grounding_batch(copy_claims, grounding_index, provider=provider)
+    for claim_id, page_id in claim_pages.items():
+        if not grounding_map.get(claim_id, _grounding_failure()).passed:
+            results[page_id] = False
+    return results
 
 
 def _is_practice(knowledge: KnowledgeDocument, claim_ids: list[str]) -> bool:
     claims = {claim.id: claim for claim in knowledge.iter_claims()}
     chosen = [claims[item] for item in claim_ids if item in claims]
     return bool(chosen) and all(claim.provenance == "generated-practice" for claim in chosen)
-
-
-def _attach_payload(provider: Provider, payload: dict[str, Any]) -> None:
-    if hasattr(provider, "last_payload"):
-        provider.last_payload = payload
 
 
 def _complete_verifier(
@@ -484,9 +651,11 @@ def _complete_verifier(
         return None
     request = model_request(request_id=request_id[:60], role="verifier", payload=payload)
     request = request.model_copy(update={"request_id": f"{request_id[:60]}:{request.payload_digest[:32]}"})
-    _attach_payload(provider, payload)
+    attach_provider_payload(provider, payload)
     try:
         result = provider.complete(request, cancel_event=cancel_event)
+    except (BudgetExceeded, RequestCancelled):
+        raise
     except Exception:
         return None
     structured = result.structured
@@ -536,19 +705,58 @@ def verify_claims(
         removed.extend(item for item in existing.removed_from_formal if item not in target_ids)
 
     current_knowledge = knowledge
+    claim_rows: list[tuple[str, KnowledgeClaim, KnowledgeUnit]] = []
     for claim_id in [item.id for item in knowledge.iter_claims() if item.id in target_ids]:
         claim = next(item for item in current_knowledge.iter_claims() if item.id == claim_id)
         unit = _unit_for_claim(current_knowledge, claim_id)
-        checks = run_claim_checks(
+        claim_rows.append((claim_id, claim, unit))
+
+    def _structural_row(
+        row: tuple[str, KnowledgeClaim, KnowledgeUnit],
+    ) -> tuple[str, CheckResult, CheckResult, CheckResult]:
+        claim_id, claim, unit = row
+        if cancel_event is not None and cancel_event.is_set():
+            raise RequestCancelled(f"verify cancelled before {claim_id}")
+        ref_check, numbers, steps = structural_claim_checks(
             claim,
             unit=unit,
             transcript=transcript,
             visual=visual,
             allowed=allowed,
             index=index,
-            provider=provider,
-            cancel_event=cancel_event,
         )
+        return claim_id, ref_check, numbers, steps
+
+    grounding_targets: list[KnowledgeClaim] = []
+    preliminary: dict[str, list[CheckResult]] = {}
+    claim_by_id = {claim_id: claim for claim_id, claim, _unit in claim_rows}
+    for claim_id, ref_check, numbers, steps in map_parallel(
+        claim_rows, _structural_row, cancel_event=cancel_event
+    ):
+        if not ref_check.passed:
+            preliminary[claim_id] = [
+                ref_check,
+                _grounding_failure("skipped after unknown evidence ref"),
+                numbers,
+                steps,
+            ]
+        else:
+            preliminary[claim_id] = [ref_check, numbers, steps]
+            grounding_targets.append(claim_by_id[claim_id])
+
+    grounding_map = check_grounding_batch(
+        grounding_targets,
+        index,
+        provider=provider,
+        cancel_event=cancel_event,
+    )
+
+    for claim_id, claim, unit in claim_rows:
+        parts = preliminary[claim_id]
+        if len(parts) == 3:
+            checks = [parts[0], grounding_map[claim_id], parts[1], parts[2]]
+        else:
+            checks = parts
         check_by_claim[claim_id] = checks
         if any(check.kind == "unknown_ref" and not check.passed for check in checks):
             structural_errors.append(next(check.note for check in checks if check.kind == "unknown_ref"))
@@ -568,11 +776,13 @@ def verify_claims(
         if claim_id in target_ids and verdict.verdict != "supported"
     ]
     already_repaired = set(repaired_ids)
-    for claim_id in failed_ids:
-        if claim_id in already_repaired:
-            continue
+    repair_targets = [claim_id for claim_id in failed_ids if claim_id not in already_repaired]
+    unit_by_claim = {claim_id: unit for claim_id, _claim, unit in claim_rows}
+
+    def _attempt_repair(claim_id: str) -> tuple[str, str | None]:
+        if cancel_event is not None and cancel_event.is_set():
+            raise RequestCancelled(f"verify cancelled before repair {claim_id}")
         claim = next(item for item in current_knowledge.iter_claims() if item.id == claim_id)
-        unit = _unit_for_claim(current_knowledge, claim_id)
         repair_payload = {
             "prompt": load_prompt("verifier.md"),
             "claim": {"id": claim.id, "text": claim.text, "evidence_ids": claim.evidence_ids},
@@ -586,34 +796,48 @@ def verify_claims(
             request_id=f"verifier:repair:{claim_id}",
             cancel_event=cancel_event,
         )
+        new_text = repaired_structured.get("text") if repaired_structured else None
+        if isinstance(new_text, str) and new_text.strip() and new_text != claim.text:
+            return claim_id, new_text.strip()[:4000]
+        return claim_id, None
+
+    repair_attempts = map_parallel(repair_targets, _attempt_repair, cancel_event=cancel_event)
+    if repair_attempts:
         repaired = True
+    recheck_ids: list[str] = []
+    for claim_id, new_text in repair_attempts:
         repaired_ids.append(claim_id)
         already_repaired.add(claim_id)
-        new_text = None
-        if repaired_structured:
-            new_text = repaired_structured.get("text")
-        if isinstance(new_text, str) and new_text.strip() and new_text != claim.text:
-            current_knowledge = _replace_claim_text(current_knowledge, claim_id, new_text.strip()[:4000])
-            claim = next(item for item in current_knowledge.iter_claims() if item.id == claim_id)
-            checks = run_claim_checks(
-                claim,
-                unit=unit,
-                transcript=transcript,
-                visual=visual,
-                allowed=allowed,
-                index=index,
-                provider=provider,
-                cancel_event=cancel_event,
-            )
-            check_by_claim[claim_id] = checks
-            verdict, reason, supporting, contradicting = _worst_verdict(checks)
-            verdicts[claim_id] = ClaimVerdict(
-                claim_id=claim_id,
-                verdict=verdict,
-                supporting_ids=supporting,
-                contradicting_ids=contradicting,
-                reason=reason,
-            )
+        if new_text:
+            current_knowledge = _replace_claim_text(current_knowledge, claim_id, new_text)
+            recheck_ids.append(claim_id)
+
+    def _recheck_repaired(claim_id: str) -> tuple[str, list[CheckResult]]:
+        if cancel_event is not None and cancel_event.is_set():
+            raise RequestCancelled(f"verify cancelled before recheck {claim_id}")
+        claim = next(item for item in current_knowledge.iter_claims() if item.id == claim_id)
+        checks = run_claim_checks(
+            claim,
+            unit=unit_by_claim[claim_id],
+            transcript=transcript,
+            visual=visual,
+            allowed=allowed,
+            index=index,
+            provider=provider,
+            cancel_event=cancel_event,
+        )
+        return claim_id, checks
+
+    for claim_id, checks in map_parallel(recheck_ids, _recheck_repaired, cancel_event=cancel_event):
+        check_by_claim[claim_id] = checks
+        verdict, reason, supporting, contradicting = _worst_verdict(checks)
+        verdicts[claim_id] = ClaimVerdict(
+            claim_id=claim_id,
+            verdict=verdict,
+            supporting_ids=supporting,
+            contradicting_ids=contradicting,
+            reason=reason,
+        )
 
     for unit_id, claim_ids in procedure_groups.items():
         if any(verdicts.get(claim_id) and verdicts[claim_id].verdict != "supported" for claim_id in claim_ids):
