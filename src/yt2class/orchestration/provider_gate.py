@@ -37,17 +37,30 @@ class BudgetedProvider(Provider):
         def attempt() -> ModelResult:
             if active_cancel is not None and active_cancel.is_set():
                 raise RequestCancelled(f"request {request.request_id} cancelled")
-            result = self._inner.complete(request, cancel_event=active_cancel)
-            usage = result.usage
-            if usage is None:
-                raise BudgetExceeded("provider result missing usage", kind="missing_usage")
-            self._budget.charge(
-                input_tokens=int(usage.input_tokens),
-                output_tokens=int(usage.output_tokens),
+            preflight = self._budget.would_exceed(
+                input_tokens=int(request.estimated_input_tokens),
+                output_tokens=int(request.estimated_output_tokens),
                 image_count=int(request.image_count),
                 video_seconds=float(request.video_seconds),
                 model_calls=1,
             )
+            if preflight is not None:
+                raise BudgetExceeded(f"budget exceeded: {preflight}", kind=preflight)
+            result = self._inner.complete(request, cancel_event=active_cancel)
+            usage = result.usage
+            if usage is None:
+                raise BudgetExceeded("provider result missing usage", kind="missing_usage")
+            try:
+                self._budget.charge(
+                    input_tokens=int(usage.input_tokens),
+                    output_tokens=int(usage.output_tokens),
+                    image_count=int(request.image_count),
+                    video_seconds=float(request.video_seconds),
+                    model_calls=1,
+                )
+            except BudgetExceeded:
+                # Keep the paid provider response; pause blocks subsequent dispatch.
+                return result
             return result
 
         if self._retry_policy is None:
