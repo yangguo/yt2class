@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import mimetypes
 import os
 from pathlib import Path
 from threading import Event
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 import httpx
 
+from yt2class.adapters.http_deadline import post_json_with_wall_clock_deadline
 from yt2class.adapters.providers.base import (
     MissingStructuredOutput,
     ModelRequest,
@@ -42,11 +45,15 @@ from yt2class.stages.structured_coerce import ROLE_JSON_REMINDERS
 
 DEFAULT_ENDPOINT = "https://ark.cn-beijing.volces.com/api/plan/v3/chat/completions"
 DEFAULT_MODEL = "ark-code-latest"
+DEFAULT_ARK_MAX_IMAGES_PER_BATCH = 4
+DEFAULT_ARK_OUTLINE_MAX_VISUAL_OVERVIEW = 8
 
 ArkJsonMode = Literal["auto", "on", "off"]
 
+logger = logging.getLogger(__name__)
 
-def volcengine_ark_capabilities() -> ProviderCapabilities:
+
+def volcengine_ark_capabilities(*, max_images: int = DEFAULT_ARK_MAX_IMAGES_PER_BATCH) -> ProviderCapabilities:
     return ProviderCapabilities(
         supports_images=True,
         supports_video=False,
@@ -55,7 +62,7 @@ def volcengine_ark_capabilities() -> ProviderCapabilities:
         reports_usage=True,
         max_input_tokens=128_000,
         max_output_tokens=8_192,
-        max_images=8,
+        max_images=max(0, max_images),
         max_video_seconds=0.0,
     )
 
@@ -125,6 +132,48 @@ def resolve_openrouter_json_mode_fallback(analysis: AnalysisConfig) -> ArkJsonMo
     return resolve_openrouter_json_mode(analysis)
 
 
+def resolve_volcengine_ark_max_images_per_batch(analysis: AnalysisConfig) -> int:
+    for key in (
+        "YT2CLASS_ARK_MAX_IMAGES_PER_BATCH",
+        "ARK_MAX_IMAGES_PER_BATCH",
+        "VOLCENGINE_ARK_MAX_IMAGES_PER_BATCH",
+    ):
+        value = os.getenv(key)
+        if value:
+            try:
+                parsed = int(value)
+            except ValueError as error:
+                raise ProviderError(f"invalid {key}={value!r}") from error
+            if parsed <= 0:
+                raise ProviderError(f"{key} must be positive")
+            return min(analysis.max_images_per_batch, parsed)
+    configured = getattr(analysis, "ark_max_images_per_batch", None)
+    if configured is not None and int(configured) > 0:
+        return min(analysis.max_images_per_batch, int(configured))
+    return min(analysis.max_images_per_batch, DEFAULT_ARK_MAX_IMAGES_PER_BATCH)
+
+
+def resolve_volcengine_ark_outline_max_visual_overview(analysis: AnalysisConfig) -> int:
+    for key in (
+        "YT2CLASS_ARK_OUTLINE_MAX_VISUAL_OVERVIEW",
+        "ARK_OUTLINE_MAX_VISUAL_OVERVIEW",
+        "VOLCENGINE_ARK_OUTLINE_MAX_VISUAL_OVERVIEW",
+    ):
+        value = os.getenv(key)
+        if value:
+            try:
+                parsed = int(value)
+            except ValueError as error:
+                raise ProviderError(f"invalid {key}={value!r}") from error
+            if parsed <= 0:
+                raise ProviderError(f"{key} must be positive")
+            return parsed
+    configured = getattr(analysis, "ark_outline_max_visual_overview", None)
+    if configured is not None and int(configured) > 0:
+        return int(configured)
+    return DEFAULT_ARK_OUTLINE_MAX_VISUAL_OVERVIEW
+
+
 def resolve_volcengine_ark_timeout_seconds(analysis: AnalysisConfig) -> float:
     for key in (
         "YT2CLASS_ARK_TIMEOUT_SECONDS",
@@ -161,8 +210,13 @@ class VolcengineArkPlanProvider(Provider):
         capabilities: ProviderCapabilities | None = None,
         client: httpx.Client | None = None,
         json_mode: ArkJsonMode = "auto",
+        max_images_per_batch: int = DEFAULT_ARK_MAX_IMAGES_PER_BATCH,
+        outline_max_visual_overview: int = DEFAULT_ARK_OUTLINE_MAX_VISUAL_OVERVIEW,
     ) -> None:
-        super().__init__(capabilities or volcengine_ark_capabilities())
+        super().__init__(
+            capabilities
+            or volcengine_ark_capabilities(max_images=max_images_per_batch)
+        )
         if not api_key.strip():
             raise ProviderError(
                 "VOLCENGINE_ARK_API_KEY is required for analysis.provider ark-plan"
@@ -173,6 +227,8 @@ class VolcengineArkPlanProvider(Provider):
         self._timeout = timeout_seconds
         self._client = client
         self._json_mode = json_mode
+        self._max_images_per_batch = max(1, max_images_per_batch)
+        self._outline_max_visual_overview = max(1, outline_max_visual_overview)
         self.last_payload: dict[str, Any] | None = None
         self._run_root: Path | None = None
         self._visual: VisualCatalogue | None = None
@@ -181,6 +237,7 @@ class VolcengineArkPlanProvider(Provider):
     def from_config(
         cls, analysis: AnalysisConfig, *, client: httpx.Client | None = None
     ) -> VolcengineArkPlanProvider:
+        max_images = resolve_volcengine_ark_max_images_per_batch(analysis)
         return cls(
             api_key=resolve_volcengine_ark_api_key(),
             model=resolve_volcengine_ark_model(analysis),
@@ -188,6 +245,11 @@ class VolcengineArkPlanProvider(Provider):
             client=client,
             json_mode=resolve_volcengine_ark_json_mode(analysis),
             timeout_seconds=resolve_volcengine_ark_timeout_seconds(analysis),
+            capabilities=volcengine_ark_capabilities(max_images=max_images),
+            max_images_per_batch=max_images,
+            outline_max_visual_overview=resolve_volcengine_ark_outline_max_visual_overview(
+                analysis
+            ),
         )
 
     def bind_run_context(self, run_root: Path, *, visual: VisualCatalogue | None = None) -> None:
@@ -227,6 +289,7 @@ class VolcengineArkPlanProvider(Provider):
     def _image_paths_for_payload(self, payload: dict[str, Any], limit: int) -> list[Path]:
         if limit <= 0 or self._run_root is None:
             return []
+        limit = min(limit, self._max_images_per_batch)
         visual = self._visual_catalogue()
         if visual is None:
             return []
@@ -250,9 +313,24 @@ class VolcengineArkPlanProvider(Provider):
                 paths.append(candidate)
         return paths
 
+    def _payload_for_prompt(self, request: ModelRequest, payload: dict[str, Any]) -> dict[str, Any]:
+        if request.role != "outline":
+            return payload
+        overview = payload.get("visual_overview")
+        if not isinstance(overview, list):
+            return payload
+        cap = self._outline_max_visual_overview
+        if len(overview) <= cap:
+            return payload
+        trimmed = dict(payload)
+        trimmed["visual_overview"] = overview[:cap]
+        trimmed["visual_overview_omitted"] = len(overview) - cap
+        return trimmed
+
     def _build_messages(self, request: ModelRequest, payload: dict[str, Any]) -> list[dict[str, Any]]:
         prompt = str(payload.get("prompt") or "Follow the JSON schema implied by your role.")
-        serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        payload_for_text = self._payload_for_prompt(request, payload)
+        serialized = json.dumps(payload_for_text, ensure_ascii=False, sort_keys=True)
         reminder = ROLE_JSON_REMINDERS.get(request.role, "Return only the specified JSON object.")
         text = (
             f"{prompt}\n\n"
@@ -379,13 +457,48 @@ class VolcengineArkPlanProvider(Provider):
             pool=min(30.0, self._timeout),
         )
 
+    @staticmethod
+    def _count_images_in_body(body: dict[str, Any]) -> int:
+        count = 0
+        for message in body.get("messages") or []:
+            if not isinstance(message, dict):
+                continue
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "image_url":
+                    count += 1
+        return count
+
+    def _log_request_start(self, body: dict[str, Any]) -> None:
+        parsed = urlparse(self._endpoint)
+        logger.info(
+            "Ark Plan request start model=%s host=%s path=%s image_count=%d timeout_seconds=%.0f",
+            self._model,
+            parsed.netloc,
+            parsed.path or "/",
+            self._count_images_in_body(body),
+            self._timeout,
+        )
+
     def _post(self, body: dict[str, Any]) -> dict[str, Any]:
+        self._log_request_start(body)
         client = self._client or httpx.Client(timeout=self._httpx_timeout())
         owns_client = self._client is None
         try:
-            response = client.post(self._endpoint, headers=self._headers(), json=body)
+            response = post_json_with_wall_clock_deadline(
+                client,
+                self._endpoint,
+                headers=self._headers(),
+                json_body=body,
+                deadline_seconds=self._timeout,
+                error_label="Ark Plan request",
+            )
             self._raise_for_status(response)
             data = response.json()
+        except RetryableError:
+            raise
         except httpx.ReadTimeout as error:
             raise RetryableError(f"Ark Plan read timed out after {self._timeout:.0f}s") from error
         except httpx.ConnectTimeout as error:
@@ -488,6 +601,8 @@ __all__ = [
     "resolve_volcengine_ark_endpoint",
     "resolve_volcengine_ark_json_mode",
     "resolve_volcengine_ark_model",
+    "resolve_volcengine_ark_max_images_per_batch",
+    "resolve_volcengine_ark_outline_max_visual_overview",
     "resolve_volcengine_ark_timeout_seconds",
     "volcengine_ark_capabilities",
 ]

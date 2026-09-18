@@ -436,6 +436,7 @@ def run_analysis_stages(ctx: RunContext, bundle: EvidenceBundle) -> AnalysisResu
         result = analyze_evidence_bundle(
             bundle,
             provider=provider,
+            capabilities=provider.capabilities,
             cancel_event=ctx.cancel_event,
             output_dir=ctx.workspace.root,
             analysis_mode=ctx.config.analysis.mode,

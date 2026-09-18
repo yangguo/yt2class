@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 import httpx
 import pytest
@@ -130,6 +131,50 @@ def test_ark_uses_reasoning_content_when_content_empty():
     assert result.structured == {"topics": [], "relations": [], "unverified_guesses": []}
 
 
+def test_ark_wall_clock_deadline_aborts_slow_handler():
+    payload = {
+        "prompt": "outline",
+        "block": {"id": "block-0001"},
+        "transcript": [],
+        "visual_overview": [],
+        "allowed_evidence_ids": [],
+        "constraints": {},
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        time.sleep(2.0)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {"topics": [], "relations": [], "unverified_guesses": []}
+                            )
+                        }
+                    }
+                ],
+                "usage": {},
+            },
+            request=request,
+        )
+
+    provider = VolcengineArkPlanProvider(
+        api_key="test-ark-key",
+        model="ark-code-latest",
+        endpoint=ENDPOINT,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        timeout_seconds=0.25,
+    )
+    provider.last_payload = payload
+    request = model_request(request_id="outline:block-0001", role="outline", payload=payload)
+    started = time.monotonic()
+    with pytest.raises(RetryableError, match="wall-clock deadline"):
+        provider.complete(request)
+    assert time.monotonic() - started < 1.5
+
+
 def test_ark_read_timeout_is_retryable():
     payload = {
         "prompt": "outline",
@@ -154,6 +199,66 @@ def test_ark_read_timeout_is_retryable():
     request = model_request(request_id="outline:block-0001", role="outline", payload=payload)
     with pytest.raises(RetryableError, match="read timed out"):
         provider.complete(request)
+
+
+def test_ark_from_config_caps_max_images_per_batch(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("VOLCENGINE_ARK_API_KEY", "secret")
+    analysis = AnalysisConfig(
+        provider="ark-plan",
+        max_images_per_batch=8,
+        ark_max_images_per_batch=3,
+    )
+    provider = VolcengineArkPlanProvider.from_config(analysis)
+    assert provider.capabilities.max_images == 3
+
+
+def test_ark_outline_trims_visual_overview_in_prompt():
+    payload = {
+        "prompt": "outline",
+        "block": {"id": "block-0001"},
+        "transcript": [],
+        "visual_overview": [{"id": f"f-{index}"} for index in range(12)],
+        "allowed_evidence_ids": [],
+        "constraints": {},
+    }
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["json"] = json.loads(request.content.decode())
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {"topics": [], "relations": [], "unverified_guesses": []}
+                            )
+                        }
+                    }
+                ],
+                "usage": {},
+            },
+            request=request,
+        )
+
+    provider = VolcengineArkPlanProvider(
+        api_key="test-ark-key",
+        model="ark-code-latest",
+        endpoint=ENDPOINT,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        outline_max_visual_overview=5,
+    )
+    provider.last_payload = payload
+    request = model_request(request_id="outline:block-0001", role="outline", payload=payload)
+    provider.complete(request)
+    body = captured["json"]
+    assert isinstance(body, dict)
+    messages = body["messages"]
+    text = messages[0]["content"][0]["text"]
+    assert "visual_overview_omitted" in text
+    assert '"id": "f-4"' in text
+    assert '"id": "f-11"' not in text
 
 
 def test_resolve_ark_model_prefers_config():
