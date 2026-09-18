@@ -15,7 +15,7 @@ from yt2class.adapters.providers.volcengine_ark_plan import (
 )
 from yt2class.config import AnalysisConfig
 from yt2class.orchestration.retry import RetryableError
-from yt2class.stages.llm_util import model_request
+from yt2class.stages.llm_util import attach_provider_payload, model_request
 
 ENDPOINT = "https://ark.test/api/plan/v3/chat/completions"
 
@@ -67,6 +67,41 @@ def test_ark_successful_structured_json():
     result = provider.complete(request)
     assert result.structured == {"topics": [], "relations": [], "unverified_guesses": []}
     assert result.usage.input_tokens == 12
+
+
+def test_ark_prefers_thread_payload_over_shared_last_payload():
+    payload = {
+        "prompt": "outline-a",
+        "block": {"id": "block-a"},
+        "transcript": [],
+        "visual_overview": [],
+        "allowed_evidence_ids": [],
+        "constraints": {},
+    }
+    response = {
+        "choices": [
+            {
+                "message": {
+                    "content": '{"topics":[],"relations":[],"unverified_guesses":[]}'
+                }
+            }
+        ],
+        "usage": {},
+    }
+    provider = _provider(
+        client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, json=response, request=request)
+            )
+        )
+    )
+    attach_provider_payload(provider, payload)
+    provider.last_payload = {**payload, "prompt": "outline-b"}
+    request = model_request(request_id="outline:block-a", role="outline", payload=payload)
+
+    result = provider.complete(request)
+
+    assert result.structured == {"topics": [], "relations": [], "unverified_guesses": []}
 
 
 def test_ark_uses_reasoning_content_when_content_empty():

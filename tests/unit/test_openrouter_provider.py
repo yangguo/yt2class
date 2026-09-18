@@ -15,7 +15,7 @@ from yt2class.config import AnalysisConfig
 from yt2class.domain.visual import VisualCatalogue
 from yt2class.adapters.providers.openrouter import DEFAULT_MAX_TOKENS
 from yt2class.orchestration.retry import InvalidJsonResponse, NonRetryableError, RetryableError
-from yt2class.stages.llm_util import model_request, payload_digest
+from yt2class.stages.llm_util import attach_provider_payload, model_request, payload_digest
 
 ENDPOINT = "https://openrouter.test/v1/chat/completions"
 
@@ -67,6 +67,41 @@ def test_openrouter_successful_structured_json():
     assert result.structured == {"topics": [], "relations": [], "unverified_guesses": []}
     assert result.usage.input_tokens == 10
     assert result.usage.output_tokens == 4
+
+
+def test_openrouter_prefers_thread_payload_over_shared_last_payload():
+    payload = {
+        "prompt": "outline-a",
+        "block": {"id": "block-a"},
+        "transcript": [],
+        "visual_overview": [],
+        "allowed_evidence_ids": [],
+        "constraints": {},
+    }
+    response = {
+        "choices": [
+            {
+                "message": {
+                    "content": '{"topics":[],"relations":[],"unverified_guesses":[]}'
+                }
+            }
+        ],
+        "usage": {},
+    }
+    provider = _provider(
+        client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, json=response, request=request)
+            )
+        )
+    )
+    attach_provider_payload(provider, payload)
+    provider.last_payload = {**payload, "prompt": "outline-b"}
+    request = model_request(request_id="outline:block-a", role="outline", payload=payload)
+
+    result = provider.complete(request)
+
+    assert result.structured == {"topics": [], "relations": [], "unverified_guesses": []}
 
 
 def test_openrouter_success_includes_response_format_by_default():

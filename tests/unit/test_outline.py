@@ -204,6 +204,43 @@ def test_reducer_drops_empty_blocks_and_keeps_neighbors():
     assert course_map.relations[0].kind == "follows"
 
 
+def test_outline_repair_retries_once_after_invalid_topics():
+    transcript = make_transcript([("cap-1", 0.0, 10.0, "第一节内容足够长。")], duration=10.0)
+    visual = empty_visual(duration=10.0)
+    invalid = {
+        "topics": [
+            {
+                "id": "topic-bad",
+                "title": "坏引用",
+                "goal": "应触发修复",
+                "start_seconds": 0.0,
+                "end_seconds": 10.0,
+                "evidence_ids": ["cap-missing"],
+                "speculative": False,
+            }
+        ]
+    }
+    repaired = {
+        "topics": [
+            {
+                "id": "topic-ok",
+                "title": "修复后",
+                "goal": "合法",
+                "start_seconds": 0.0,
+                "end_seconds": 10.0,
+                "evidence_ids": ["cap-1"],
+                "speculative": False,
+            }
+        ]
+    }
+    provider = FakeProvider(frames_caps(), sequential=[invalid, repaired])
+    course_map = outline_course(
+        transcript, visual, provider, source_id="src-demo", duration_seconds=10.0
+    )
+    assert any(topic.id == "topic-ok" for topic in course_map.topics)
+    assert any("repair" in item.request_id for item in provider.requests)
+
+
 def test_non_speculative_topic_must_cite_block_local_evidence():
     transcript = make_transcript(
         [

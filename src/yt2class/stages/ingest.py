@@ -253,6 +253,7 @@ def _ingest_source_unlocked(
     if not isinstance(source, SourceInput):
         source = SourceInput.from_value(source)
     downloaded: YtDlpDownload | None = None
+    source_hash: str | None = None
     if source.kind == "youtube":
         download_dir = workspace.safe_path("media", create_parent=True).resolve(strict=True)
         downloaded = downloader(source, download_dir)
@@ -269,7 +270,8 @@ def _ingest_source_unlocked(
     # Probe before constructing/returning the manifest so failures cannot be
     # represented as complete ingestion output.
     probe = prober(media_path)
-    source_hash = content_sha256(media_path)
+    if source_hash is None:
+        source_hash = content_sha256(media_path)
     manifest_media_path = media_path if source.kind == "youtube" or source.local_mode == "copy" else workspace.media_dir / f"reference-{source_hash[:16]}{media_path.suffix.lower()}"
     if source.kind == "local" and source.local_mode == "reference":
         # Keep a run-relative logical path in SourceManifest while the actual

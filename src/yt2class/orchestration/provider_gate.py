@@ -50,26 +50,7 @@ class BudgetedProvider(Provider):
         cancel_event: Event | None = None,
     ) -> ModelResult:
         active_cancel = cancel_event or self._cancel_event
-
-        def attempt() -> ModelResult:
-            if active_cancel is not None and active_cancel.is_set():
-                raise RequestCancelled(f"request {request.request_id} cancelled")
-            result = self._inner.complete(request, cancel_event=active_cancel)
-            usage = result.usage
-            if usage is None:
-                raise BudgetExceeded("provider result missing usage", kind="missing_usage")
-            self._budget.charge(
-                input_tokens=int(usage.input_tokens),
-                output_tokens=int(usage.output_tokens),
-                image_count=int(request.image_count),
-                video_seconds=float(request.video_seconds),
-                model_calls=1,
-            )
-            return result
-
-        if self._retry_policy is None:
-            return attempt()
-        return call_with_retry(attempt, policy=self._retry_policy)
+        return super().complete(request, cancel_event=active_cancel)
 
     def _complete(
         self,
@@ -77,8 +58,41 @@ class BudgetedProvider(Provider):
         *,
         cancel_event: Event | None = None,
     ) -> ModelResult:
-        return self.complete(request, cancel_event=cancel_event)
+        active_cancel = cancel_event or self._cancel_event
 
+        def attempt() -> ModelResult:
+            if active_cancel is not None and active_cancel.is_set():
+                raise RequestCancelled(f"request {request.request_id} cancelled")
+            reservation = self._budget.reserve(
+                input_tokens=int(request.estimated_input_tokens),
+                output_tokens=int(request.estimated_output_tokens),
+                image_count=int(request.image_count),
+                video_seconds=float(request.video_seconds),
+                model_calls=1,
+            )
+            try:
+                result = self._inner.complete(request, cancel_event=active_cancel)
+            except BaseException:
+                self._budget.release(reservation)
+                raise
+            usage = result.usage
+            if usage is None:
+                self._budget.release(reservation)
+                raise BudgetExceeded("provider result missing usage", kind="missing_usage")
+            self._budget.settle(
+                reservation,
+                input_tokens=int(usage.input_tokens),
+                output_tokens=int(usage.output_tokens),
+                image_count=int(usage.image_count),
+                video_seconds=float(usage.video_seconds),
+                estimated_usd=float(usage.estimated_usd or 0.0),
+                model_calls=1,
+            )
+            return result
+
+        if self._retry_policy is None:
+            return attempt()
+        return call_with_retry(attempt, policy=self._retry_policy)
 
 def wrap_provider(
     provider: Provider,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 import re
 from typing import Iterable
 
@@ -35,6 +36,7 @@ def polarity(text: str) -> str:
     return "neg" if NEGATION_RE.search(text) else "pos"
 
 
+@lru_cache(maxsize=8192)
 def normalize_concept(text: str) -> str:
     cleaned = strip_negation(text).lower()
     cleaned = re.sub(r"[是的了與与和]", "", cleaned)

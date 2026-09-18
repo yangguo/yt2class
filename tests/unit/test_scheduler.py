@@ -120,7 +120,7 @@ def test_multi_batch_images_stay_in_one_core_window():
         40.0,
         transcript=transcript,
         visual=visual,
-        caps=frames_caps(max_images=8),
+        caps=frames_caps(max_images=8, max_input_tokens=32000),
         config=SchedulerConfig(core_seconds=120.0, max_core_seconds=180.0),
     )
     assert len(manifest.windows) == 1

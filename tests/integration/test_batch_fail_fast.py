@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 from pathlib import Path
+from threading import Event
 
 from yt2class.config import BuildSource
 from yt2class.orchestration.batch import BatchItem, run_batch
 
 
 def test_fail_fast_returns_report_without_cancelled_error(tmp_path: Path, monkeypatch):
-    order = {"n": 0}
+    nonfailing_started = Event()
 
     def fake_execute(_output, build, **kwargs):
-        order["n"] += 1
-        if order["n"] == 1:
+        if build.source_id == "src-0":
+            assert nonfailing_started.wait(timeout=1.0)
             raise RuntimeError("boom")
+        nonfailing_started.set()
+        assert kwargs["cancel_event"].wait(timeout=1.0)
         return __import__(
             "yt2class.orchestration.pipeline", fromlist=["RunOutcome"]
         ).RunOutcome(manifest=None, workspace=None)  # type: ignore[arg-type]

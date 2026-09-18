@@ -116,11 +116,9 @@ class AtomicWriteResult:
 
 
 def file_sha256(path: Path) -> str:
-    hasher = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            hasher.update(chunk)
-    return hasher.hexdigest()
+    from yt2class.domain.source import content_sha256
+
+    return content_sha256(path)
 
 
 def atomic_write_bytes(path: Path, data: bytes, *, fsync: bool = True) -> AtomicWriteResult:
@@ -134,7 +132,7 @@ def atomic_write_bytes(path: Path, data: bytes, *, fsync: bool = True) -> Atomic
         finally:
             os.close(fd)
     partial.replace(path)
-    return AtomicWriteResult(path=path, sha256=file_sha256(path))
+    return AtomicWriteResult(path=path, sha256=hashlib.sha256(data).hexdigest())
 
 
 def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> AtomicWriteResult:

@@ -10,6 +10,7 @@ import signal
 import subprocess
 import time
 from threading import Event
+from collections.abc import Mapping
 from typing import Sequence
 
 
@@ -36,11 +37,42 @@ class ProcessResult:
     stderr: str
 
 
+def _kill_process_tree(pid: int) -> None:
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            check=False,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        return
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+
 def _signal_group(process: subprocess.Popen[str], sig: signal.Signals) -> None:
     """Signal the child and every process it started in its session/group."""
 
     pid = process.pid
     if pid is None:
+        return
+    if os.name == "nt":
+        if sig == signal.SIGKILL:
+            _kill_process_tree(pid)
+        else:
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T"],
+                check=False,
+                capture_output=True,
+                encoding="utf-8",
+                errors="replace",
+            )
         return
     if os.name == "posix":
         try:
@@ -85,7 +117,10 @@ def _terminate(process: subprocess.Popen[str], *, grace_seconds: float) -> None:
             continue
     # Always SIGKILL the group after the grace window so descendants that
     # ignored SIGTERM cannot survive a leader that already exited.
-    _signal_pgid(pgid, signal.SIGKILL)
+    if os.name == "nt" and pgid is not None:
+        _kill_process_tree(pgid)
+    else:
+        _signal_pgid(pgid, signal.SIGKILL)
     try:
         process.wait(timeout=grace_seconds)
     except subprocess.TimeoutExpired:
@@ -105,6 +140,7 @@ def run_process(
     cancel_event: Event | None = None,
     poll_seconds: float = 0.05,
     terminate_grace_seconds: float = 0.5,
+    env: Mapping[str, str] | None = None,
 ) -> ProcessResult:
     """Run a command with bounded timeout and cooperative cancellation.
 
@@ -121,13 +157,17 @@ def run_process(
     if cancel_event is not None and cancel_event.is_set():
         raise ProcessCancelled("process cancelled before start")
     try:
+        popen_env = None if env is None else {**os.environ, **dict(env)}
         process = subprocess.Popen(
             argv,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             shell=False,
-            start_new_session=True,
+            start_new_session=os.name == "posix",
+            env=popen_env,
         )
     except FileNotFoundError as error:
         raise ProcessUnavailable(f"executable is unavailable: {argv[0]}") from error

@@ -37,7 +37,7 @@ from yt2class.orchestration.retry import (
     RetryableError,
     parse_retry_after,
 )
-from yt2class.stages.llm_util import payload_digest
+from yt2class.stages.llm_util import payload_digest, thread_local_provider_payload
 from yt2class.stages.structured_coerce import ROLE_JSON_REMINDERS
 
 DEFAULT_ENDPOINT = "https://ark.cn-beijing.volces.com/api/plan/v3/chat/completions"
@@ -442,7 +442,13 @@ class VolcengineArkPlanProvider(Provider):
     ) -> ModelResult:
         if cancel_event is not None and cancel_event.is_set():
             raise RequestCancelled(f"request {request.request_id} cancelled")
-        payload = self.last_payload
+        thread_payload = thread_local_provider_payload()
+        payload = (
+            thread_payload
+            if isinstance(thread_payload, dict)
+            and payload_digest(thread_payload) == request.payload_digest
+            else self.last_payload
+        )
         if not isinstance(payload, dict):
             raise ProviderError("Ark Plan provider missing stage payload (last_payload)")
         if payload_digest(payload) != request.payload_digest:
