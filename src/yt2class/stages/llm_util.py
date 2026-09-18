@@ -6,6 +6,7 @@ from functools import lru_cache
 from hashlib import sha256
 import json
 from pathlib import Path
+import re
 import threading
 from typing import Any, Iterable
 
@@ -34,7 +35,7 @@ OUTPUT_RESERVE_TOKENS = 512
 PATH_HINT = (
     r"(?:^|[\s\"'])(?:(?:[A-Za-z]:\\|\\\\|/|\./|\.\./)[^\s\"']+\.(?:jpg|jpeg|png|webp|gif|mp4|mkv|mov|webm))"
 )
-NEGATION_MARKERS = (
+CJK_NEGATION_MARKERS = (
     "不是",
     "不会",
     "不能",
@@ -44,10 +45,15 @@ NEGATION_MARKERS = (
     "没有",
     "从未",
     "绝不",
-    " not ",
-    "n't",
-    "never",
-    "no ",
+)
+_EN_NEGATION_RE = re.compile(
+    r"(?:"
+    r"\bnot\b|"
+    r"\bnever\b|"
+    r"\bno\b|"
+    r"\b(?:can|do|does|did|is|are|was|were|will|would|should|could|have|has|had)n't"
+    r")",
+    re.IGNORECASE,
 )
 UNIT_PATTERN_HINTS = (
     "秒",
@@ -210,8 +216,9 @@ def contains_path_literal(value: str) -> bool:
 
 
 def text_has_negation(text: str) -> bool:
-    lowered = f" {text.lower()} "
-    return any(marker in text or marker in lowered for marker in NEGATION_MARKERS)
+    if any(marker in text for marker in CJK_NEGATION_MARKERS):
+        return True
+    return _EN_NEGATION_RE.search(text) is not None
 
 
 def text_has_units(text: str) -> bool:

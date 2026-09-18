@@ -255,24 +255,48 @@ def outline_course(
         if cancel_event is not None and cancel_event.is_set():
             raise RequestCancelled(f"outline cancelled before {block.id}")
         visual_ids = evidence_in_range(transcript, visual, block.start_seconds, block.end_seconds)
-        block_allowed = set(visual_ids) | set(block.evidence_ids)
+        frame_rows = frames_in_range(visual, block.start_seconds, block.end_seconds)
+        ocr_ids = {
+            region.id
+            for region in visual.ocr_regions
+            if region.parent_occurrence_id in {row["id"] for row in frame_rows}
+        }
+        block_allowed = set(visual_ids) | set(block.evidence_ids) | ocr_ids
         payload = {
             "prompt": prompt,
             "block": block.model_dump(mode="json"),
             "transcript": transcript_in_range(transcript, block.start_seconds, block.end_seconds),
-            "visual_overview": frames_in_range(visual, block.start_seconds, block.end_seconds),
+            "visual_overview": frame_rows,
             "allowed_evidence_ids": sorted(block_allowed),
             "constraints": {"external_knowledge": False, "page_budget": None},
         }
-        request = model_request(request_id=f"outline:{block.id}", role="outline", payload=payload)
-        attach_provider_payload(provider, payload)
-        result = provider.complete(request, cancel_event=cancel_event)
+        def _dispatch(outline_payload: dict[str, Any], request_id: str):
+            request = model_request(request_id=request_id, role="outline", payload=outline_payload)
+            attach_provider_payload(provider, outline_payload)
+            return provider.complete(request, cancel_event=cancel_event)
+
+        result = _dispatch(payload, f"outline:{block.id}")
         topics, reasons = validate_outline_topics(
             result.structured,
             block=block,
             allowed=block_allowed,
             duration_seconds=duration_seconds,
         )
+        if not topics:
+            repair_payload = {
+                **payload,
+                "repair": {
+                    "error": "; ".join(reasons) or "empty or invalid outline",
+                    "attempt": 1,
+                },
+            }
+            result = _dispatch(repair_payload, f"outline:{block.id}:repair")
+            topics, reasons = validate_outline_topics(
+                result.structured,
+                block=block,
+                allowed=block_allowed,
+                duration_seconds=duration_seconds,
+            )
         if not block_allowed and topics:
             for topic in topics:
                 topic.speculative = True
