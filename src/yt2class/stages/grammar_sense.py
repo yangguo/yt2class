@@ -68,6 +68,25 @@ _RATE_EXAMPLE_RE = re.compile(
     r"[0-9０-９]+時間(?:につき|当たり)|"
     r"時間につき[0-9０-９]+|[0-9０-９]+円|ごとに|每[一個人匹本]"
 )
+_TSUKI_LESSON_RE = re.compile(r"(?:～|〜)?につき")
+
+
+def _is_tsuki_lesson(
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument | None,
+) -> bool:
+    """Return whether the lesson explicitly teaches the ～につき grammar point."""
+
+    if course_map is not None:
+        for topic in course_map.topics:
+            if _TSUKI_LESSON_RE.search(f"{topic.title} {topic.goal}"):
+                return True
+    if knowledge is not None:
+        return any(
+            _TSUKI_LESSON_RE.search(claim.text)
+            for claim in knowledge.iter_claims()
+        )
+    return False
 
 
 def _text_signals_rate(text: str) -> bool:
@@ -175,6 +194,8 @@ def usage_topics(
     *,
     knowledge: KnowledgeDocument | None = None,
 ) -> list[Topic]:
+    if not _is_tsuki_lesson(course_map, knowledge):
+        return []
     return [
         topic
         for topic in iter_topics(course_map, knowledge)
@@ -266,6 +287,8 @@ def topic_for_sense_ordinal(
 ) -> Topic | None:
     if ordinal not in _ORDINAL_TO_KIND:
         return None
+    if not _is_tsuki_lesson(course_map, knowledge):
+        return None
     if knowledge is None and (course_map is None or not course_map.topics):
         return None
     want = _ORDINAL_TO_KIND[ordinal]
@@ -295,6 +318,8 @@ def sense_ordinal(
     *,
     knowledge: KnowledgeDocument | None = None,
 ) -> int | None:
+    if not _is_tsuki_lesson(course_map, knowledge):
+        return None
     if knowledge is None and (course_map is None or not course_map.topics):
         return None
     topic = next((item for item in iter_topics(course_map, knowledge) if item.id == topic_id), None)

@@ -5,6 +5,7 @@ from yt2class.stages.grammar_sense import (
     pick_summary_unit,
     sense_heading,
     sense_ordinal,
+    sense_topic_ids,
     summary_bullet_for_sense,
     topic_for_sense_ordinal,
     usage_topics,
@@ -30,13 +31,55 @@ def test_usage_topics_skip_connective_head():
     ) == "用法二：比例・単位"
 
 
+def test_non_tsuki_course_does_not_force_japanese_sense_headings():
+    topics = course_map(
+        [
+            ("topic-cause", "Root cause analysis", 0.0, 20.0),
+            ("topic-rate", "Rate and proportion", 20.0, 40.0),
+            ("topic-about", "About the theorem", 40.0, 60.0),
+        ]
+    )
+    doc = knowledge(
+        concept_unit(
+            "unit-cause",
+            "claim-cause",
+            "A fault causes the system to stop.",
+            ["cap-cause"],
+            topic_id="topic-cause",
+        ),
+        concept_unit(
+            "unit-rate",
+            "claim-rate",
+            "The rate is 500 requests per second.",
+            ["cap-rate"],
+            topic_id="topic-rate",
+        ),
+        concept_unit(
+            "unit-about",
+            "claim-about",
+            "This section is about the theorem.",
+            ["cap-about"],
+            topic_id="topic-about",
+        ),
+    )
+
+    assert sense_topic_ids(topics, doc) == []
+    for topic in topics.topics:
+        assert learner_page_title(
+            topic_id=topic.id,
+            course_map=topics,
+            fallback_title=topic.title,
+            knowledge=doc,
+        ) == topic.title
+
+
 def test_english_intro_overview_do_not_consume_usage_ordinals():
     topics = course_map(
         [
             ("topic-intro", "Lesson Intro", 0.0, 10.0),
             ("topic-overview", "Grammar Overview", 10.0, 20.0),
             ("topic-chat", "Small talk warm-up", 20.0, 30.0),
-            ("topic-conn", "接续", 30.0, 40.0),
+            ("topic-conn", "接续・名词＋につき", 30.0, 40.0),
             ("topic-u1", "用法1", 40.0, 50.0),
             ("topic-u2", "用法2", 50.0, 60.0),
             ("topic-u3", "用法3", 60.0, 70.0),
@@ -54,7 +97,7 @@ def test_english_intro_overview_do_not_consume_usage_ordinals():
 
 
 def test_summary_prefers_rate_example_for_proportional_sense():
-    topics = course_map([("topic-u2", "比例単位", 40.0, 60.0)])
+    topics = course_map([("topic-u2", "～につき：比例単位", 40.0, 60.0)])
     topic = usage_topics(topics)[0]
     doc = knowledge(
         concept_unit(
