@@ -139,6 +139,104 @@ def test_rate_summary_from_knowledge_when_usage2_not_on_slides():
     assert "五百円" in joined or "一個につき" in joined
 
 
+def test_topic_kind_inferred_from_knowledge_when_title_is_opaque():
+    topics = course_map(
+        [
+            ("topic-block-0001-04", "讲解段B", 99.0, 135.0),
+        ]
+    )
+    doc = knowledge(
+        concept_unit(
+            "unit-rate",
+            "claim-rate",
+            "駐車場は1時間1500円、一個につき五百円の販売。",
+            ["cap-rate"],
+            topic_id="topic-block-0001-04",
+            start=99.0,
+            end=120.0,
+            kind="example",
+        ),
+    )
+    topic = topics.topics[0]
+    assert topic_for_sense_ordinal(topics, 2, knowledge=doc).id == "topic-block-0001-04"
+    assert sense_ordinal("topic-block-0001-04", topics, knowledge=doc) == 2
+
+
+def test_rate_content_and_summary_when_only_u1_u3_would_fit_budget():
+    from yt2class.stages.edit_deck import edit_deck
+    from yt2class.adapters.providers.base import FakeProvider
+    from tests.helpers.m2 import frames_caps, make_transcript, make_visual
+
+    topics = course_map(
+        [
+            ("topic-intro", "Lesson Overview", 0.0, 10.0),
+            ("topic-block-0001-02", "讲解段A", 10.0, 50.0),
+            ("topic-block-0001-04", "讲解段B", 99.0, 135.0),
+            ("topic-block-0001-06", "讲解段C", 135.0, 170.0),
+        ]
+    )
+    fillers = [
+        concept_unit(
+            f"unit-fill-{index}",
+            f"claim-fill-{index}",
+            f"补充说明{index}。",
+            [f"cap-fill-{index}"],
+            topic_id="topic-block-0001-02",
+            start=10.0 + index,
+            end=11.0 + index,
+        )
+        for index in range(8)
+    ]
+    doc = knowledge(
+        *fillers,
+        concept_unit(
+            "unit-cause",
+            "claim-cause",
+            "改装工事につき一時休業いたします。",
+            ["cap-cause"],
+            topic_id="topic-block-0001-02",
+            start=20.0,
+            end=45.0,
+            kind="example",
+        ),
+        concept_unit(
+            "unit-rate",
+            "claim-rate",
+            "一個につき五百円です。",
+            ["cap-rate"],
+            topic_id="topic-block-0001-04",
+            start=99.0,
+            end=120.0,
+            kind="example",
+        ),
+        concept_unit(
+            "unit-about",
+            "claim-about",
+            "自衛隊について発言した。",
+            ["cap-about"],
+            topic_id="topic-block-0001-06",
+            start=140.0,
+            end=160.0,
+            kind="example",
+        ),
+    )
+    plan = edit_deck(
+        doc,
+        course_map=topics,
+        transcript=make_transcript([], duration=170.0),
+        visual=make_visual([], duration=170.0),
+        provider=FakeProvider(frames_caps()),
+        target_pages=5,
+        max_pages=5,
+    )
+    content_titles = [page.title for page in plan.pages if page.type == "content"]
+    assert any("用法二" in title for title in content_titles)
+    summary = next(page for page in plan.pages if page.type == "summary")
+    joined = " ".join(summary.body_points)
+    assert "用法二" in joined
+    assert "五百円" in joined or "一個につき" in joined
+
+
 def test_summary_bullet_includes_sense_heading():
     line = summary_bullet_for_sense(1, "改装工事につき休業。")
     assert line.startswith("用法一：原因・理由")

@@ -62,7 +62,16 @@ _ORDINAL_TO_KIND = {1: "cause", 2: "rate", 3: "about"}
 
 _CN_ORDINALS = "一二三四五六七八九十"
 _USAGE_NUM_RE = re.compile(r"用法\s*([123一二三])")
-_RATE_EXAMPLE_HINTS = ("每", "一匹", "一個", "円", "ポイント", "割", "につき", "500", "1500", "1000")
+_RATE_EXAMPLE_HINTS = ("每", "一匹", "一個", "円", "ポイント", "割", "500", "1500", "1000")
+_RATE_EXAMPLE_RE = re.compile(
+    r"一[個匹本枚]につき|[0-9０-９]+円|ごとに|每[一個人匹本]"
+)
+
+
+def _text_signals_rate(text: str) -> bool:
+    if any(hint in text for hint in _RATE_EXAMPLE_HINTS):
+        return True
+    return _RATE_EXAMPLE_RE.search(text) is not None
 
 
 def is_connective_topic(title: str) -> bool:
@@ -106,37 +115,107 @@ def _topic_kind(topic: Topic) -> str:
     return "other"
 
 
-def is_grammar_usage_topic(topic: Topic) -> bool:
+def is_grammar_usage_topic(
+    topic: Topic,
+    knowledge: KnowledgeDocument | None = None,
+) -> bool:
     if is_connective_topic(topic.title):
         return False
-    return _topic_kind(topic) in _KIND_TO_ORDINAL
+    return topic_kind(topic, knowledge) in _KIND_TO_ORDINAL
 
 
-def usage_topics(course_map: CourseMap | None) -> list[Topic]:
+def usage_topics(
+    course_map: CourseMap | None,
+    *,
+    knowledge: KnowledgeDocument | None = None,
+) -> list[Topic]:
     if course_map is None or not course_map.topics:
         return []
-    return [topic for topic in course_map.topics if is_grammar_usage_topic(topic)]
+    return [
+        topic
+        for topic in course_map.topics
+        if is_grammar_usage_topic(topic, knowledge)
+    ]
 
 
-def topic_for_sense_ordinal(course_map: CourseMap | None, ordinal: int) -> Topic | None:
+def sense_topic_ids(
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument,
+) -> list[str]:
+    """Topic ids for ordinals 1..3 that have knowledge units (fixed sense order)."""
+
+    ids: list[str] = []
+    for ordinal in (1, 2, 3):
+        topic = topic_for_sense_ordinal(course_map, ordinal, knowledge=knowledge)
+        if topic is None:
+            continue
+        if any(unit.topic_id == topic.id for unit in knowledge.units):
+            ids.append(topic.id)
+    return ids
+
+
+def _infer_topic_kind_from_knowledge(topic_id: str, knowledge: KnowledgeDocument) -> str:
+    units = [unit for unit in knowledge.units if unit.topic_id == topic_id]
+    if not units:
+        return "other"
+    rate = about = cause = 0
+    for unit in units:
+        text = _unit_text(unit)
+        if "について" in text:
+            about += 4
+        if _text_signals_rate(text):
+            rate += 4
+        if re.search(r"単価|比例", text):
+            rate += 2
+        if "につき" in text and "について" not in text and not _text_signals_rate(text):
+            cause += 3
+    best = max(((rate, "rate"), (about, "about"), (cause, "cause")), key=lambda item: item[0])
+    if best[0] <= 0:
+        return "other"
+    return best[1]
+
+
+def topic_kind(
+    topic: Topic,
+    knowledge: KnowledgeDocument | None = None,
+) -> str:
+    kind = _topic_kind(topic)
+    if kind != "other":
+        return kind
+    if knowledge is not None:
+        return _infer_topic_kind_from_knowledge(topic.id, knowledge)
+    return "other"
+
+
+def topic_for_sense_ordinal(
+    course_map: CourseMap | None,
+    ordinal: int,
+    *,
+    knowledge: KnowledgeDocument | None = None,
+) -> Topic | None:
     if course_map is None or not course_map.topics or ordinal not in _ORDINAL_TO_KIND:
         return None
     want = _ORDINAL_TO_KIND[ordinal]
     for topic in course_map.topics:
         if is_connective_topic(topic.title):
             continue
-        if _topic_kind(topic) == want:
+        if topic_kind(topic, knowledge) == want:
             return topic
     return None
 
 
-def sense_ordinal(topic_id: str, course_map: CourseMap | None) -> int | None:
+def sense_ordinal(
+    topic_id: str,
+    course_map: CourseMap | None,
+    *,
+    knowledge: KnowledgeDocument | None = None,
+) -> int | None:
     if course_map is None or not course_map.topics:
         return None
     topic = next((item for item in course_map.topics if item.id == topic_id), None)
     if topic is None or is_connective_topic(topic.title):
         return None
-    kind = _topic_kind(topic)
+    kind = topic_kind(topic, knowledge)
     if kind in _KIND_TO_ORDINAL:
         return _KIND_TO_ORDINAL[kind]
     return None
@@ -155,8 +234,9 @@ def learner_page_title(
     topic_id: str,
     course_map: CourseMap | None,
     fallback_title: str,
+    knowledge: KnowledgeDocument | None = None,
 ) -> str:
-    ordinal = sense_ordinal(topic_id, course_map)
+    ordinal = sense_ordinal(topic_id, course_map, knowledge=knowledge)
     if ordinal is not None:
         return sense_heading(ordinal)
     return fallback_title
@@ -193,16 +273,16 @@ def pick_summary_unit(
         [unit for unit in units if unit.kind == "concept"],
         key=lambda item: (item.start_seconds, item.id),
     )
-    kind = _topic_kind(topic)
+    kind = topic_kind(topic, knowledge)
     if kind == "rate":
         for unit in examples:
-            if any(hint in _unit_text(unit) for hint in _RATE_EXAMPLE_HINTS):
+            if _text_signals_rate(_unit_text(unit)):
                 return unit
         for unit in concepts:
-            if any(hint in _unit_text(unit) for hint in _RATE_EXAMPLE_HINTS):
+            if _text_signals_rate(_unit_text(unit)):
                 return unit
         for unit in units:
-            if any(hint in _unit_text(unit) for hint in _RATE_EXAMPLE_HINTS):
+            if _text_signals_rate(_unit_text(unit)):
                 return unit
     if examples:
         return examples[0]
@@ -211,14 +291,51 @@ def pick_summary_unit(
     return units[0]
 
 
+def pick_summary_unit_for_topic(
+    topic: Topic,
+    knowledge: KnowledgeDocument,
+    *,
+    course_map: CourseMap | None,
+) -> KnowledgeUnit | None:
+    """Best learner-safe unit for summary, trying alternates if the first is meta-only."""
+
+    units = [unit for unit in knowledge.units if unit.topic_id == topic.id]
+    if not units:
+        return None
+    ranked = sorted(
+        units,
+        key=lambda item: (
+            0 if item.kind == "example" else 1 if item.kind == "concept" else 2,
+            item.start_seconds,
+            item.id,
+        ),
+    )
+    primary = pick_summary_unit(topic, knowledge, course_map=course_map)
+    if primary is not None:
+        ranked = [primary] + [unit for unit in ranked if unit.id != primary.id]
+    from yt2class.stages.student_copy import contains_student_meta, sanitize_student_copy
+
+    for unit in ranked:
+        if not unit.claims:
+            continue
+        text = sanitize_student_copy(unit.claims[0].text)
+        if not text.strip() or contains_student_meta(text):
+            continue
+        return unit
+    return primary
+
+
 __all__ = [
     "is_connective_topic",
     "is_grammar_usage_topic",
     "learner_page_title",
     "pick_summary_unit",
+    "pick_summary_unit_for_topic",
     "sense_heading",
     "sense_ordinal",
+    "sense_topic_ids",
     "summary_bullet_for_sense",
     "topic_for_sense_ordinal",
+    "topic_kind",
     "usage_topics",
 ]
