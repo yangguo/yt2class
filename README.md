@@ -18,7 +18,7 @@ Default analysis mode is **frames**, and the default provider is `fake`. OpenRou
 
 - Python 3.11+
 - [uv](https://github.com/astral-sh/uv)
-- Node.js (PptxGenJS renderer)
+- Node.js 18+ (PptxGenJS renderer)
 - `ffmpeg`, `ffprobe`
 - `yt-dlp` (for YouTube ingest)
 
