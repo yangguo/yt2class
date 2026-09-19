@@ -121,9 +121,15 @@ def is_grammar_usage_topic(
     topic: Topic,
     knowledge: KnowledgeDocument | None = None,
 ) -> bool:
-    if is_connective_topic(topic.title):
-        return False
-    return topic_kind(topic, knowledge) in _KIND_TO_ORDINAL
+    kind = topic_kind(topic, knowledge)
+    if kind in _KIND_TO_ORDINAL:
+        return True
+    if knowledge is not None and max(
+        _topic_sense_strength(topic, sense, knowledge)
+        for sense in ("cause", "rate", "about")
+    ) >= 6.0:
+        return True
+    return not is_connective_topic(topic.title) and kind in _KIND_TO_ORDINAL
 
 
 def _synthetic_topic(topic_id: str, units: list[KnowledgeUnit]) -> Topic:
@@ -225,6 +231,33 @@ def topic_kind(
     return "other"
 
 
+def _topic_sense_strength(
+    topic: Topic,
+    want: str,
+    knowledge: KnowledgeDocument,
+) -> float:
+    units = [unit for unit in knowledge.units if unit.topic_id == topic.id]
+    if not units:
+        return 0.0
+    score = 0.0
+    for unit in units:
+        text = _unit_text(unit)
+        if want == "rate":
+            if _text_signals_rate(text):
+                score += 8.0 if unit.kind == "example" else 4.0
+            elif re.search(r"単価|比例", text):
+                score += 2.0
+        elif want == "about":
+            if "について" in text:
+                score += 8.0 if unit.kind == "example" else 4.0
+        elif want == "cause":
+            if "につき" in text and "について" not in text and not _text_signals_rate(text):
+                score += 6.0 if unit.kind == "example" else 3.0
+            elif any(h in text for h in _CAUSE_TOPIC_HINTS):
+                score += 2.0
+    return score
+
+
 def topic_for_sense_ordinal(
     course_map: CourseMap | None,
     ordinal: int,
@@ -236,12 +269,24 @@ def topic_for_sense_ordinal(
     if knowledge is None and (course_map is None or not course_map.topics):
         return None
     want = _ORDINAL_TO_KIND[ordinal]
+    best_topic: Topic | None = None
+    best_score = 0.0
     for topic in iter_topics(course_map, knowledge):
-        if is_connective_topic(topic.title):
+        kind = topic_kind(topic, knowledge) if knowledge is not None else _topic_kind(topic)
+        strength = _topic_sense_strength(topic, want, knowledge) if knowledge is not None else 0.0
+        if kind != want and strength <= 0:
             continue
-        if topic_kind(topic, knowledge) == want:
-            return topic
-    return None
+        if (
+            is_connective_topic(topic.title)
+            and kind != want
+            and strength < 6.0
+        ):
+            continue
+        rank = strength + (12.0 if kind == want else 0.0)
+        if rank > best_score:
+            best_score = rank
+            best_topic = topic
+    return best_topic
 
 
 def sense_ordinal(
@@ -253,9 +298,11 @@ def sense_ordinal(
     if knowledge is None and (course_map is None or not course_map.topics):
         return None
     topic = next((item for item in iter_topics(course_map, knowledge) if item.id == topic_id), None)
-    if topic is None or is_connective_topic(topic.title):
+    if topic is None:
         return None
     kind = topic_kind(topic, knowledge)
+    if is_connective_topic(topic.title) and kind not in _KIND_TO_ORDINAL:
+        return None
     if kind in _KIND_TO_ORDINAL:
         return _KIND_TO_ORDINAL[kind]
     return None
