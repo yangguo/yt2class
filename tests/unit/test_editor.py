@@ -777,9 +777,9 @@ def test_summary_lists_each_course_topic():
     )
     summary = next(page for page in plan.pages if page.type == "summary")
     joined = " ".join(summary.body_points)
-    assert "用法1" in joined
-    assert "用法2" in joined
-    assert "用法3" in joined
+    assert "用法一" in joined
+    assert "用法二" in joined
+    assert "用法三" in joined
 
 
 def test_meta_transition_units_are_not_selected_for_slides():

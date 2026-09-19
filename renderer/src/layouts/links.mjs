@@ -47,8 +47,18 @@ export function primarySeekSeconds(page, assets, evidenceByAsset, evidenceById =
   return 0;
 }
 
-export function buildSeekLink(spec, page, assets, evidenceByAsset, evidenceById = {}) {
-  const seconds = primarySeekSeconds(page, assets, evidenceByAsset, evidenceById);
+export function buildSeekLink(
+  spec,
+  page,
+  assets,
+  evidenceByAsset,
+  evidenceById = {},
+  secondsOverride = null,
+) {
+  const seconds =
+    secondsOverride != null
+      ? secondsOverride
+      : primarySeekSeconds(page, assets, evidenceByAsset, evidenceById);
   if (spec.source?.kind === "youtube" && spec.source.url) {
     const url = floorYoutubeSeek(spec.source.url, seconds);
     if (url) return { url, label: `来源视频 ${Math.floor(seconds)}s` };

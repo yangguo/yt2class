@@ -5,8 +5,8 @@ from __future__ import annotations
 import re
 
 _META_INLINE_RE = re.compile(
-    r"(ASR\s*[→\->]|OCR\s*[→\->]|误听|老师过渡|板书对应|板书写了|过渡语|"
-    r"ASR\s*only|字幕不足|metadata/|source_time=)",
+    r"(ASR\s*[→\->]|OCR\s*[→\->]|误听|老师过渡|老师确认|板书对应|板书写了|板书同步|过渡语|"
+    r"\btimed\b|ASR\s*only|字幕不足|metadata/|source_time=)",
     re.I,
 )
 _META_PAREN_RE = re.compile(

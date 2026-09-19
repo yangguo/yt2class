@@ -36,3 +36,34 @@ console.log(JSON.stringify({ seconds }));
     )
     payload = json.loads(result.stdout.strip())
     assert payload["seconds"] == 42.5
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node required")
+def test_summary_seek_uses_monotonic_floor():
+    root = renderer_root()
+    script = """
+import { buildSeekLink } from "./src/layouts/links.mjs";
+let deckSeekSeconds = 120;
+const page = { type: "summary", citation_ids: ["ev-cap-1"] };
+const evidenceById = {
+  "ev-cap-1": { id: "ev-cap-1", kind: "transcript", start_seconds: 10.0 },
+};
+const link = buildSeekLink(
+  { source: { kind: "local", media_path: "media/lesson.mp4" } },
+  page,
+  {},
+  {},
+  evidenceById,
+  deckSeekSeconds,
+);
+console.log(JSON.stringify({ label: link.label }));
+"""
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(result.stdout.strip())
+    assert "02:00" in payload["label"]

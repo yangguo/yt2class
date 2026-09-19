@@ -40,6 +40,7 @@ export async function renderSpec(spec, runRoot, outputPath) {
     evidenceById[item.id] = item;
     if (item.kind === "frame") frameEvidence[item.asset_id] = item;
   }
+  let deckSeekSeconds = 0;
   const ctx = {
     spec,
     fontFace,
@@ -58,7 +59,24 @@ export async function renderSpec(spec, runRoot, outputPath) {
       return ev?.timestamp_seconds ?? 0;
     },
     seekLinkForPage(page) {
-      return buildSeekLink(spec, page, assets, frameEvidence, evidenceById);
+      const raw = primarySeekSeconds(page, assets, frameEvidence, evidenceById);
+      let seconds = raw;
+      if (page.type === "summary" || page.type === "quiz") {
+        seconds = deckSeekSeconds;
+      } else if (page.type === "cover") {
+        seconds = raw;
+      } else {
+        seconds = Math.max(raw, deckSeekSeconds);
+        deckSeekSeconds = seconds;
+      }
+      return buildSeekLink(
+        spec,
+        page,
+        assets,
+        frameEvidence,
+        evidenceById,
+        seconds,
+      );
     },
   };
   const pageMap = [];

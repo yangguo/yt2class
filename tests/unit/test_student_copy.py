@@ -24,3 +24,11 @@ def test_headword_display_normalizes_tsuki():
 
 def test_meta_does_not_flag_legitimate_month_usage():
     assert not contains_student_meta("2月1日から改定します。")
+
+
+def test_sanitize_strips_board_sync_and_teacher_confirm():
+    raw = "板书同步 timed 老师确认用法二"
+    cleaned = sanitize_student_copy(raw)
+    assert "板书同步" not in cleaned
+    assert "老师确认" not in cleaned
+    assert "timed" not in cleaned.lower()

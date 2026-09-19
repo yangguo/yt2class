@@ -29,6 +29,14 @@ from yt2class.stages.llm_util import (
     load_prompt,
     model_request,
 )
+from yt2class.stages.grammar_sense import (
+    learner_page_title,
+    pick_summary_unit,
+    sense_heading,
+    sense_ordinal,
+    summary_bullet_for_sense,
+    usage_topics,
+)
 from yt2class.stages.student_copy import contains_student_meta, sanitize_student_copy
 
 KIND_IMPORTANCE = {
@@ -589,13 +597,15 @@ def _summary_units_for_topics(
     knowledge: KnowledgeDocument,
     selected: list[PageCandidate],
 ) -> list[tuple[str, str, str]]:
-    """Return (topic_title, claim_id, bullet) per course-map topic when possible."""
+    """Return (topic_title, claim_id, bullet) per grammar usage sense."""
 
     selected_by_topic: dict[str, list[PageCandidate]] = {}
     for item in selected:
         selected_by_topic.setdefault(item.topic_id, []).append(item)
     rows: list[tuple[str, str, str]] = []
-    topics = list(course_map.topics) if course_map and course_map.topics else []
+    topics = usage_topics(course_map) or (
+        list(course_map.topics) if course_map and course_map.topics else []
+    )
     for topic in topics:
         pool = selected_by_topic.get(topic.id) or []
         unit: KnowledgeUnit | None = None
@@ -610,28 +620,25 @@ def _summary_units_for_topics(
             )[0]
             unit = _unit_by_id(knowledge, picked.unit_id)
         if unit is None:
-            topic_units = [item for item in knowledge.units if item.topic_id == topic.id]
-            examples = sorted(
-                [item for item in topic_units if item.kind == "example"],
-                key=lambda item: (item.start_seconds, item.id),
-            )
-            concepts = sorted(
-                [item for item in topic_units if item.kind == "concept"],
-                key=lambda item: (item.start_seconds, item.id),
-            )
-            unit = (
-                examples[0]
-                if examples
-                else (concepts[0] if concepts else (topic_units[0] if topic_units else None))
-            )
+            unit = pick_summary_unit(topic, knowledge, course_map=course_map)
         if unit is None or not unit.claims or _meta_filler_penalty(unit) >= 2.0:
             continue
         claim = unit.claims[0]
         bullet = sanitize_student_copy(claim.text)[:200]
         if not bullet.strip():
             continue
-        label = sanitize_student_copy(topic.title)[:80] or topic.title[:80]
-        rows.append((label, claim.id, f"{label}：{bullet}"))
+        ordinal = sense_ordinal(topic.id, course_map)
+        if ordinal is not None:
+            rows.append(
+                (
+                    sense_heading(ordinal) if ordinal else topic.title,
+                    claim.id,
+                    summary_bullet_for_sense(ordinal, bullet),
+                )
+            )
+        else:
+            label = sanitize_student_copy(topic.title)[:80] or topic.title[:80]
+            rows.append((label, claim.id, f"{label}：{bullet}"))
     if rows:
         return rows
     fallback: list[tuple[str, str, str]] = []
@@ -669,12 +676,23 @@ def _summary_page(
     )
 
 
-def _content_page(item: PageCandidate, *, page_type: str = "content") -> PageIntent:
+def _content_page(
+    item: PageCandidate,
+    *,
+    page_type: str = "content",
+    course_map: CourseMap | None = None,
+) -> PageIntent:
+    fallback = sanitize_student_copy(item.title)[:80] or item.title[:80]
+    title = learner_page_title(
+        topic_id=item.topic_id,
+        course_map=course_map,
+        fallback_title=fallback,
+    )
     return PageIntent(
         id=item.id,
         type=page_type,  # type: ignore[arg-type]
         layout=item.layout,
-        title=sanitize_student_copy(item.title)[:80] or item.title[:80],
+        title=title,
         claim_ids=item.claim_ids[:8],
         frame_ids=item.frame_ids[:3],
         notes=item.notes,
@@ -698,7 +716,7 @@ def build_deterministic_plan(
     pages = [_cover_page(course_map, source_id)]
     for item in selected:
         page_type = "quiz" if _is_practice(knowledge, item.claim_ids) else "content"
-        pages.append(_content_page(item, page_type=page_type))
+        pages.append(_content_page(item, page_type=page_type, course_map=course_map))
     if any(item.claim_ids for item in selected):
         pages.append(_summary_page(selected, course_map=course_map, knowledge=knowledge))
     if len(pages) > max_pages:
