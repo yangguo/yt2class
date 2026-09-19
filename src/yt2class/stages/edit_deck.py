@@ -35,7 +35,7 @@ from yt2class.stages.grammar_sense import (
     sense_heading,
     sense_ordinal,
     summary_bullet_for_sense,
-    usage_topics,
+    topic_for_sense_ordinal,
 )
 from yt2class.stages.student_copy import contains_student_meta, sanitize_student_copy
 
@@ -603,10 +603,10 @@ def _summary_units_for_topics(
     for item in selected:
         selected_by_topic.setdefault(item.topic_id, []).append(item)
     rows: list[tuple[str, str, str]] = []
-    topics = usage_topics(course_map) or (
-        list(course_map.topics) if course_map and course_map.topics else []
-    )
-    for topic in topics:
+    for ordinal in (1, 2, 3):
+        topic = topic_for_sense_ordinal(course_map, ordinal)
+        if topic is None:
+            continue
         pool = selected_by_topic.get(topic.id) or []
         unit: KnowledgeUnit | None = None
         if pool:
@@ -627,18 +627,13 @@ def _summary_units_for_topics(
         bullet = sanitize_student_copy(claim.text)[:200]
         if not bullet.strip():
             continue
-        ordinal = sense_ordinal(topic.id, course_map)
-        if ordinal is not None:
-            rows.append(
-                (
-                    sense_heading(ordinal) if ordinal else topic.title,
-                    claim.id,
-                    summary_bullet_for_sense(ordinal, bullet),
-                )
+        rows.append(
+            (
+                sense_heading(ordinal),
+                claim.id,
+                summary_bullet_for_sense(ordinal, bullet),
             )
-        else:
-            label = sanitize_student_copy(topic.title)[:80] or topic.title[:80]
-            rows.append((label, claim.id, f"{label}：{bullet}"))
+        )
     if rows:
         return rows
     fallback: list[tuple[str, str, str]] = []
