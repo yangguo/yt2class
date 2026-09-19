@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -62,3 +63,19 @@ def test_renderer_package_json_and_entry_exist():
     root = renderer_root()
     assert (root / "package.json").is_file()
     assert (root / "src" / "render.mjs").is_file()
+
+
+def test_renderer_uses_fixed_image_size_release():
+    from yt2class.adapters.render.pptxgenjs import renderer_root
+
+    root = renderer_root()
+    manifest = json.loads((root / "package.json").read_text(encoding="utf-8"))
+    assert manifest["overrides"]["image-size"] == "2.0.4"
+    lock = json.loads((root / "package-lock.json").read_text(encoding="utf-8"))
+    assert lock["packages"]["node_modules/image-size"]["version"] == "2.0.4"
+
+    package_json = root / "node_modules" / "image-size" / "package.json"
+    if not package_json.is_file():
+        pytest.skip("renderer node_modules missing")
+    version = json.loads(package_json.read_text(encoding="utf-8"))["version"]
+    assert version == "2.0.4"
