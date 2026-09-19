@@ -2,16 +2,17 @@
 
 Turn course videos into source-faithful PPTX lecture notes: transcript and visual evidence, full-timeline LLM understanding, claim verification, human review, and SlideSpec 3.0 rendering via PptxGenJS.
 
-**Shipped (M0–M6):** versioned contracts, evidence extraction, analysis, editorial/verify/review, bind/render, `build-run` / `batch` / `resume` / `doctor`, and opt-in `native-video` / `hybrid` analysis modes (with **fake** transports in CI).  
-**M7:** evaluation harness, fixture scorecards, release checklist — annotated live quality gates are **not** claimed met ([docs/examples/m7-known-limits.md](docs/examples/m7-known-limits.md)).
+**Shipped (M0–M7 foundation):** versioned contracts, evidence extraction, analysis, editorial/verify/review, bind/render, `build-run` / `batch` / `resume` / `doctor`, OpenRouter and Volcengine Ark Agent Plan vision providers, OCR/ASR fallbacks, and opt-in `native-video` / `hybrid` analysis modes.
 
-**Roadmap:** wire real HTTP vision providers on the M5 path, dated live evals, vendor adapters — see [implementation plan](docs/plans/2026-08-11-youtube-to-ppt-implementation.md).
+**Quality status:** pull-request and `master` CI run the full offline suite. A dated Ark Plan VGQ6 run passed structural checks for 用法一/二/三, the 用法二 summary, monotonic seek links, and mandatory-sense selection. Visual QA, gold-outline compression, and final human review remain open; see [known limits](docs/examples/m7-known-limits.md).
+
+**Roadmap:** complete dated live scorecards, visual QA, human-review closure, and release hardening — see the [implementation plan](docs/plans/2026-08-11-youtube-to-ppt-implementation.md).
 
 ```text
 ingest → evidence → analyze → plan → verify → review → bind → render
 ```
 
-Default analysis mode is **frames**. Hybrid and native-video are **opt-in**; offline CLI uses `FakeProvider` / `FakeNativeVideoBackend` unless you run `@pytest.mark.live` tests.
+Default analysis mode is **frames**, and the default provider is `fake`. OpenRouter and Ark Plan are opt-in real HTTP providers; hybrid and native-video remain opt-in. Offline CLI and CI use `FakeProvider` / `FakeNativeVideoBackend` unless you configure a real provider or run `@pytest.mark.live` tests.
 
 ## Requirements
 
@@ -66,6 +67,21 @@ uv run yt2class build-run \
 ```
 
 Default model is **`google/gemma-4-31b-it:free`** (free-tier vision on OpenRouter). Billing and rate limits are controlled by your OpenRouter account and chosen model; yt2class does not cap spend beyond the run `budget` section in config.
+
+**Volcengine Ark Agent Plan (frames mode)**
+
+Use [docs/examples/course.volcengine.ark-plan.json](docs/examples/course.volcengine.ark-plan.json) with the `ark-plan` provider. Set `VOLCENGINE_ARK_API_KEY` (or the `ARK_API_KEY` alias) in the environment; `yt2class doctor --json` reports whether it is set without printing the secret.
+
+```bash
+export VOLCENGINE_ARK_API_KEY="..."
+uv run yt2class build-run \
+  --video path/to/lesson.mp4 \
+  --subtitles path/to/lesson.vtt \
+  --config docs/examples/course.volcengine.ark-plan.json \
+  --output runs
+```
+
+The default model is `ark-code-latest` and the default endpoint is the Ark Agent Plan `/api/plan/v3/chat/completions` route. The example config enables JSON-mode fallback, a wall-clock request deadline, bounded image/OCR/evidence payloads, and a length-truncation retry. `volcengine` is accepted as an alias for `ark-plan`.
 
 **Local video + subtitles (fake / CI)**
 
@@ -126,9 +142,9 @@ uv run yt2class batch --inputs courses.txt --output runs --config docs/examples/
 
 Exit codes: `0` success, `1` failure, `2` review/budget pause, `3` batch partial failure.
 
-### Stage-level commands (fake or openrouter)
+### Stage-level commands (fake, openrouter, or ark-plan)
 
-Set `OPENROUTER_API_KEY` when using `--provider openrouter` or `analysis.provider: openrouter` in config.
+Set `OPENROUTER_API_KEY` or `VOLCENGINE_ARK_API_KEY` when using the corresponding real provider. `ARK_API_KEY` is accepted as an alias for the Ark key.
 
 ```bash
 uv run yt2class analyze \
@@ -144,7 +160,7 @@ uv run yt2class review --knowledge ... --plan ... --report ... --transcript ... 
 uv run yt2class render --run runs/<run-id>
 ```
 
-**Analysis modes:** `frames` (default), `native-video`, `hybrid`. In the shipped CLI, native/hybrid use the **fake** native video backend when `provider` is `fake`; no real vendor upload occurs. A `media-privacy-audit.json` is still written for mode auditing. Fixture-only mode comparison numbers: [docs/examples/m6-mode-comparison.json](docs/examples/m6-mode-comparison.json) (not measured hybrid gain).
+**Analysis modes:** `frames` (default), `native-video`, `hybrid`. Native/hybrid use the **fake** native video backend when `provider` is `fake`; no real vendor upload occurs on that path. A `media-privacy-audit.json` is still written for mode auditing. Fixture-only mode comparison numbers: [docs/examples/m6-mode-comparison.json](docs/examples/m6-mode-comparison.json) (not measured hybrid gain).
 
 ## Copyright-safe fixtures
 
@@ -164,7 +180,7 @@ runs/<run-id>/
   previews/
 ```
 
-`doctor --json` checks tools and renderer bundle without printing secrets.
+`doctor --json` checks tools, renderer bundle, ASR/OCR availability, fonts, and configured Ark credentials without printing secrets.
 
 ## Legacy prototype: `build --links`
 
@@ -193,7 +209,7 @@ uv run pytest -q
 uv run pytest tests/contract/test_eval_contract.py -q
 ```
 
-Live: `tests/live/` (`@pytest.mark.live`). M5 matrix: [docs/examples/m5-mvp-matrix.md](docs/examples/m5-mvp-matrix.md). Recoverability coverage is split across `tests/integration/test_resume.py`, `tests/integration/test_render_cache_validation.py`, `tests/unit/test_runtime_policy.py`, and incremental checks in `tests/integration/test_m7_recoverability.py`.
+GitHub Actions runs the same full suite on pull requests and pushes to `master` ([workflow](.github/workflows/ci.yml)). Live: `tests/live/` (`@pytest.mark.live`) and dated provider runs are kept separate from the offline gate. M5 matrix: [docs/examples/m5-mvp-matrix.md](docs/examples/m5-mvp-matrix.md). Recoverability coverage is split across `tests/integration/test_resume.py`, `tests/integration/test_render_cache_validation.py`, `tests/unit/test_runtime_policy.py`, and incremental checks in `tests/integration/test_m7_recoverability.py`.
 
 ## M7 evaluation
 

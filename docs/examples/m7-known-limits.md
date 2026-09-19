@@ -15,8 +15,8 @@ CI proves contracts and fixture behavior; semantic and visual gates need dated l
 | Truncated PPTX cache | `validate_pptx_package`, `test_render_cache_validation.py`, `test_m7_recoverability.py` | **Verified** on delivery validator stack |
 | Wall-clock / cost vs realtime video | `evals/performance.py` linear **estimates** | **Not a speed guarantee** |
 | Hybrid default | **Opt-in** (`analysis.mode` default `frames`) | Real vendor upload not on shipped CLI |
-| Live YouTube / vendor adapters | `@pytest.mark.live` only | **Excluded** from default `pytest` |
+| Live YouTube / vendor adapters | OpenRouter and Ark Plan adapters plus dated `@pytest.mark.live` runs | **Excluded** from default `pytest`; full gold/visual/human gates remain open |
 | Root `LICENSE` file | Not present in repository | **Add before public release**; verify notices manually |
-| GitHub Actions / CI workflow | Not defined in-repo at M7 | **Local `pytest` gate only** until CI is added |
+| GitHub Actions / CI workflow | `.github/workflows/ci.yml` runs `uv run pytest -q` on PRs and `master` | **Offline gate only**; live provider calls remain opt-in |
 
 Update this table when live eval scorecards land under `evals/reports/` with `generated_at` dates.
