@@ -29,7 +29,11 @@ from yt2class.orchestration.edit import (
     verify_plan,
     write_editorial_artifacts,
 )
-from yt2class.config import BuildSource, CourseConfig, load_config
+from yt2class.adapters.providers.factory import (
+    SUPPORTED_ANALYSIS_PROVIDERS,
+    resolve_course_provider,
+)
+from yt2class.config import AnalysisConfig, BuildSource, CourseConfig, load_config
 from yt2class.orchestration.batch import BatchItem, run_batch as run_product_batch
 from yt2class.orchestration.doctor import run_doctor
 from yt2class.orchestration.manifest_io import load_manifest
@@ -142,7 +146,7 @@ def analyze(
     provider_name: str = typer.Option(
         "fake",
         "--provider",
-        help="Only the tested FakeProvider path is available ('fake').",
+        help=f"Analysis provider ({', '.join(sorted(SUPPORTED_ANALYSIS_PROVIDERS))}).",
     ),
     mode: AnalysisMode = typer.Option(
         "frames",
@@ -150,14 +154,9 @@ def analyze(
         help="Analysis input mode. Default frames; native-video and hybrid are opt-in.",
     ),
 ) -> None:
-    """Analyze an EvidenceBundle with FakeProvider. Not a live LLM."""
+    """Analyze an EvidenceBundle with the configured analysis provider."""
 
-    if provider_name != "fake":
-        typer.echo(
-            "analyze only supports --provider fake; live models are opt-in via tests/live.",
-            err=True,
-        )
-        raise typer.Exit(code=2)
+    _reject_unsupported_provider(provider_name, "analyze")
     try:
         bundle = EvidenceBundle.model_validate_json(evidence.read_text(encoding="utf-8"))
         native_adapter = None
@@ -165,31 +164,59 @@ def analyze(
             from yt2class.adapters.providers.native_video import fake_native_adapter
 
             native_adapter = fake_native_adapter()
+        provider = None
+        if provider_name != "fake":
+            provider = resolve_course_provider(
+                provider_name,
+                CourseConfig().analysis,
+                run_root=output.parent,
+                visual=bundle.visual,
+            )
         result = analyze_evidence_bundle(
             bundle,
             output_dir=output,
             analysis_mode=mode,
             native_adapter=native_adapter,
+            provider=provider,
         )
         paths = write_analysis_artifacts(result, output)
     except (OSError, ValueError) as error:
         typer.echo(f"Analyze failed: {error}", err=True)
         raise typer.Exit(code=1) from error
     typer.echo(
-        f"OK fake analysis -> {paths['knowledge']} "
+        f"OK {provider_name} analysis -> {paths['knowledge']} "
         f"(coverage={'complete' if result.coverage_complete else 'gaps'}; "
         f"topics={len(result.course_map.topics)}; claims={len(result.knowledge.iter_claims())}; "
         f"mode={mode})"
     )
 
 
-def _reject_live_provider(provider_name: str, command: str) -> None:
-    if provider_name != "fake":
-        typer.echo(
-            f"{command} only supports --provider fake; live models are opt-in via tests/live.",
-            err=True,
-        )
-        raise typer.Exit(code=2)
+def _reject_unsupported_provider(provider_name: str, command: str) -> None:
+    if provider_name in SUPPORTED_ANALYSIS_PROVIDERS:
+        return
+    supported = ", ".join(sorted(SUPPORTED_ANALYSIS_PROVIDERS))
+    typer.echo(
+        f"{command} supports --provider {supported}; got {provider_name!r}.",
+        err=True,
+    )
+    raise typer.Exit(code=2)
+
+
+def _resolve_cli_provider(
+    provider_name: str,
+    analysis: AnalysisConfig,
+    *,
+    run_root: Path | None,
+    visual: VisualCatalogue | None,
+):
+    if provider_name == "fake":
+        return None
+    return resolve_course_provider(
+        provider_name,
+        analysis,
+        run_root=run_root,
+        visual=visual,
+    )
 
 
 @app.command()
@@ -206,7 +233,7 @@ def plan(
 ) -> None:
     """Build an EditorialPlan with FakeProvider. Not a live LLM."""
 
-    _reject_live_provider(provider_name, "plan")
+    _reject_unsupported_provider(provider_name, "plan")
     try:
         doc = KnowledgeDocument.model_validate_json(knowledge.read_text(encoding="utf-8"))
         speech = TranscriptDocument.model_validate_json(transcript.read_text(encoding="utf-8"))
@@ -216,6 +243,12 @@ def plan(
             if course_map is not None
             else None
         )
+        provider = _resolve_cli_provider(
+            provider_name,
+            CourseConfig().analysis,
+            run_root=output.parent if (output.parent / "evidence").is_dir() else None,
+            visual=frames,
+        )
         result = plan_deck(
             doc,
             transcript=speech,
@@ -224,6 +257,7 @@ def plan(
             target_pages=target_pages,
             max_pages=max_pages,
             order=order,  # type: ignore[arg-type]
+            provider=provider,
         )
         paths = write_editorial_artifacts(result, output)
     except (OSError, ValueError) as error:
@@ -244,12 +278,18 @@ def verify(
 ) -> None:
     """Verify claims with FakeProvider. Not a live LLM."""
 
-    _reject_live_provider(provider_name, "verify")
+    _reject_unsupported_provider(provider_name, "verify")
     try:
         doc = KnowledgeDocument.model_validate_json(knowledge.read_text(encoding="utf-8"))
         planned = EditorialPlan.model_validate_json(plan_path.read_text(encoding="utf-8"))
         speech = TranscriptDocument.model_validate_json(transcript.read_text(encoding="utf-8"))
         frames = VisualCatalogue.model_validate_json(visual.read_text(encoding="utf-8"))
+        provider = _resolve_cli_provider(
+            provider_name,
+            CourseConfig().analysis,
+            run_root=output.parent if (output.parent / "evidence").is_dir() else None,
+            visual=frames,
+        )
         doc = load_persisted_knowledge(output, doc)
         existing = load_persisted_report(output, doc.source_id)
         outcome = verify_plan(
@@ -259,6 +299,7 @@ def verify(
             visual=frames,
             quality_mode=quality_mode,
             existing=existing,
+            provider=provider,
         )
         paths = write_editorial_artifacts(
             outcome.plan, output, report=outcome.report, knowledge=outcome.knowledge
@@ -304,7 +345,7 @@ def review(
 ) -> None:
     """Write offline review.html/json, or apply review edits (--apply; use --run for M4 delivery)."""
 
-    _reject_live_provider(provider_name, "review")
+    _reject_unsupported_provider(provider_name, "review")
     try:
         doc = KnowledgeDocument.model_validate_json(knowledge.read_text(encoding="utf-8"))
         planned = EditorialPlan.model_validate_json(plan_path.read_text(encoding="utf-8"))

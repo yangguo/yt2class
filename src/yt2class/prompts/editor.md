@@ -8,6 +8,8 @@ Shared constraints:
 - Cite only KnowledgeDocument IDs (`claim_ids`, unit IDs in reasons) and `allowed_frame_ids`.
 - Do not invent IDs. Do not use local file paths, URLs, or image filenames.
 - Preserve negation, conditions, numbers, units, proper names, and source-language terms.
+- Prefer one page per CourseMap topic / announced 用法 (接续, 用法1, 用法2, …); do not let near-duplicate JA/ZH translation pairs crowd out later senses.
+- Use `output_language` gloss with quoted source JA for titles/body; avoid parallel clone pages for the same evidence span.
 - Stay within `max_pages`. Prefer `target_pages`. Always keep a cover and a summary.
 - Return only the specified JSON object.
 

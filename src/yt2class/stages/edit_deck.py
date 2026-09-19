@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+import re
 from threading import Event
 from typing import Any, Iterable
 
 from pydantic import ValidationError
 
 from yt2class.adapters.providers.base import Provider
-from yt2class.domain.course_map import CourseMap
+from yt2class.domain.course_map import CourseMap, Topic
 from yt2class.domain.editorial import (
     DeckOrder,
     EditorialPlan,
@@ -28,15 +29,30 @@ from yt2class.stages.llm_util import (
     load_prompt,
     model_request,
 )
+from yt2class.stages.grammar_sense import (
+    is_fixed_sense_heading,
+    is_fixed_sense_summary_line,
+    learner_page_title,
+    pick_summary_unit,
+    pick_summary_unit_for_topic,
+    sense_heading,
+    sense_ordinal,
+    sense_topic_ids,
+    summary_bullet_for_sense,
+    topic_for_sense_ordinal,
+)
+from yt2class.stages.student_copy import contains_student_meta, sanitize_student_copy
 
 KIND_IMPORTANCE = {
     "concept": 1.0,
     "warning": 0.95,
     "procedure": 0.92,
     "comparison": 0.88,
-    "example": 0.55,
-    "recap": 0.22,
+    "example": 0.84,
+    "recap": 0.18,
 }
+
+_MAX_EXAMPLES_PER_TOPIC = 2
 
 
 class EditorContractError(ValueError):
@@ -83,22 +99,36 @@ def prerequisite_parents(knowledge: KnowledgeDocument) -> dict[str, set[str]]:
     return parents
 
 
+def _unit_display_text(unit: KnowledgeUnit) -> str:
+    return " ".join(claim.text for claim in unit.claims)
+
+
+def _meta_filler_penalty(unit: KnowledgeUnit) -> float:
+    if contains_student_meta(_unit_display_text(unit)):
+        return 2.5
+    if unit.kind == "recap":
+        return 1.0
+    return 0.0
+
+
 def _score_unit(unit: KnowledgeUnit) -> tuple[float, str]:
     importance = KIND_IMPORTANCE.get(unit.kind, 0.5)
     evidence = min(1.0, sum(len(claim.evidence_ids) for claim in unit.claims) / 3.0)
     topic_gain = 1.0
     new_info = 1.0
     redundancy = 0.0
+    meta_penalty = _meta_filler_penalty(unit)
     score = (
         0.35 * topic_gain
         + 0.25 * importance
         + 0.20 * evidence
         + 0.20 * new_info
         - 0.30 * redundancy
+        - meta_penalty
     )
     reason = (
         f"coverage={topic_gain:.2f} importance={importance:.2f} "
-        f"evidence={evidence:.2f} novelty={new_info:.2f}"
+        f"evidence={evidence:.2f} novelty={new_info:.2f} meta_penalty={meta_penalty:.2f}"
     )
     return score, reason
 
@@ -188,9 +218,14 @@ def score_candidates(
     candidates: list[PageCandidate] = []
     for unit in knowledge.units:
         score, reason = _score_unit(unit)
-        title = (unit.claims[0].text if unit.claims else unit.kind)[:80]
+        raw_title = unit.claims[0].text if unit.claims else unit.kind
+        title = sanitize_student_copy(raw_title)[:80] or raw_title[:80]
         notes = " ".join(claim.text for claim in unit.claims)[:4000]
-        body = [claim.text[:200] for claim in unit.claims[:4]]
+        body = [
+            sanitize_student_copy(claim.text)[:200]
+            for claim in unit.claims[:4]
+            if sanitize_student_copy(claim.text).strip()
+        ]
         candidates.append(
             PageCandidate(
                 id=f"intent-{unit.id}",
@@ -214,14 +249,442 @@ def score_candidates(
 
 
 def _example_keep(candidates: Iterable[PageCandidate]) -> set[str]:
-    best: dict[str, PageCandidate] = {}
+    per_topic: dict[str, list[PageCandidate]] = {}
     for item in candidates:
         if item.kind != "example":
             continue
-        current = best.get(item.topic_id)
-        if current is None or item.score > current.score:
-            best[item.topic_id] = item
-    return {item.unit_id for item in best.values()}
+        per_topic.setdefault(item.topic_id, []).append(item)
+    kept: set[str] = set()
+    for rows in per_topic.values():
+        ranked = sorted(rows, key=lambda row: (-row.score, row.start_seconds, row.id))
+        for row in ranked[:_MAX_EXAMPLES_PER_TOPIC]:
+            kept.add(row.unit_id)
+    return kept
+
+
+_KANA_RE = re.compile(r"[\u3040-\u30ff\u3100-\u312f]")
+
+
+def _script_profile(text: str) -> str:
+    if _KANA_RE.search(text):
+        return "ja"
+    if re.search(r"[\u4e00-\u9fff]", text):
+        return "zh"
+    return "other"
+
+
+def _time_overlap_ratio(
+    a_start: float,
+    a_end: float,
+    b_start: float,
+    b_end: float,
+) -> float:
+    start = max(a_start, b_start)
+    end = min(a_end, b_end)
+    if end <= start:
+        return 0.0
+    span = max(1e-6, min(a_end - a_start, b_end - b_start))
+    return (end - start) / span
+
+
+def _evidence_jaccard(ids_a: list[str], ids_b: list[str]) -> float:
+    a, b = set(ids_a), set(ids_b)
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+def _claim_evidence_ids(unit: KnowledgeUnit) -> list[str]:
+    return [item for claim in unit.claims for item in claim.evidence_ids]
+
+
+def _translation_duplicate_pair(unit_a: KnowledgeUnit, unit_b: KnowledgeUnit) -> bool:
+    if unit_a.id == unit_b.id or unit_a.topic_id != unit_b.topic_id:
+        return False
+    if _time_overlap_ratio(
+        unit_a.start_seconds,
+        unit_a.end_seconds,
+        unit_b.start_seconds,
+        unit_b.end_seconds,
+    ) < 0.45:
+        return False
+    if _evidence_jaccard(_claim_evidence_ids(unit_a), _claim_evidence_ids(unit_b)) < 0.45:
+        return False
+    text_a = " ".join(claim.text for claim in unit_a.claims)
+    text_b = " ".join(claim.text for claim in unit_b.claims)
+    profile_a, profile_b = _script_profile(text_a), _script_profile(text_b)
+    if {profile_a, profile_b} == {"ja", "zh"}:
+        return True
+    if profile_a == profile_b and profile_a != "other":
+        normalized_a = re.sub(r"\s+", "", text_a)
+        normalized_b = re.sub(r"\s+", "", text_b)
+        if normalized_a and normalized_b:
+            shorter, longer = (
+                (normalized_a, normalized_b)
+                if len(normalized_a) <= len(normalized_b)
+                else (normalized_b, normalized_a)
+            )
+            if shorter in longer or longer in shorter:
+                return True
+    return False
+
+
+def _demote_translation_duplicate_units(
+    candidates: list[PageCandidate],
+    knowledge: KnowledgeDocument,
+) -> set[str]:
+    demoted: set[str] = set()
+    units = {
+        item.unit_id: _unit_by_id(knowledge, item.unit_id)
+        for item in candidates
+    }
+    for index, left in enumerate(candidates):
+        unit_left = units.get(left.unit_id)
+        if unit_left is None or left.unit_id in demoted:
+            continue
+        for right in candidates[index + 1 :]:
+            unit_right = units.get(right.unit_id)
+            if unit_right is None or right.unit_id in demoted:
+                continue
+            if not _translation_duplicate_pair(unit_left, unit_right):
+                continue
+            if left.score > right.score:
+                loser = right
+            elif right.score > left.score:
+                loser = left
+            elif unit_left.kind == "example" and unit_right.kind != "example":
+                loser = left
+            elif unit_right.kind == "example" and unit_left.kind != "example":
+                loser = right
+            else:
+                loser = right if left.start_seconds <= right.start_seconds else left
+            demoted.add(loser.unit_id)
+    return demoted
+
+
+def _topic_by_id(
+    topic_id: str,
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument,
+) -> Topic | None:
+    if course_map and course_map.topics:
+        found = next((item for item in course_map.topics if item.id == topic_id), None)
+        if found is not None:
+            return found
+    units = [unit for unit in knowledge.units if unit.topic_id == topic_id]
+    if not units:
+        return None
+    return Topic(
+        id=topic_id,
+        title=topic_id,
+        goal=topic_id,
+        start_seconds=min(unit.start_seconds for unit in units),
+        end_seconds=max(unit.end_seconds for unit in units),
+        evidence_ids=[],
+    )
+
+
+def _claim_topic_ids(knowledge: KnowledgeDocument) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for unit in knowledge.units:
+        for claim in unit.claims:
+            mapping[claim.id] = unit.topic_id
+    return mapping
+
+
+def _restore_sense_content_titles(
+    plan: EditorialPlan,
+    *,
+    knowledge: KnowledgeDocument,
+    course_map: CourseMap | None,
+) -> EditorialPlan:
+    claim_topics = _claim_topic_ids(knowledge)
+    pages: list[PageIntent] = []
+    for page in plan.pages:
+        if page.type != "content":
+            pages.append(page)
+            continue
+        topic_id = next(
+            (claim_topics[claim_id] for claim_id in page.claim_ids if claim_id in claim_topics),
+            None,
+        )
+        if topic_id is None:
+            pages.append(page)
+            continue
+        ordinal = sense_ordinal(topic_id, course_map, knowledge=knowledge)
+        if ordinal is None:
+            pages.append(page)
+            continue
+        pages.append(page.model_copy(update={"title": sense_heading(ordinal)}))
+    return plan.model_copy(update={"pages": pages})
+
+
+def _merge_summary_body_points(base: PageIntent, incoming: PageIntent) -> list[str]:
+    merged: list[str] = []
+    for index, base_point in enumerate(base.body_points):
+        incoming_point = (
+            incoming.body_points[index] if index < len(incoming.body_points) else ""
+        )
+        cleaned = sanitize_student_copy(incoming_point).strip()
+        if cleaned and is_fixed_sense_summary_line(base_point) and not is_fixed_sense_summary_line(
+            cleaned
+        ):
+            merged.append(sanitize_student_copy(base_point)[:200])
+        elif cleaned:
+            merged.append(cleaned[:200])
+        else:
+            merged.append(base_point)
+    return merged or list(base.body_points)
+
+
+def _reserved_topic_ids(
+    candidates: list[PageCandidate],
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument,
+) -> list[str]:
+    mandatory = sense_topic_ids(course_map, knowledge)
+    seen = set(mandatory)
+    if course_map and course_map.topics:
+        rest = [topic.id for topic in course_map.topics if topic.id not in seen]
+        return mandatory + rest
+    return mandatory + sorted(
+        {item.topic_id for item in candidates if item.topic_id not in seen}
+    )
+
+
+def _is_meta_page_candidate(item: PageCandidate, knowledge: KnowledgeDocument) -> bool:
+    unit = _unit_by_id(knowledge, item.unit_id)
+    if unit is None:
+        return contains_student_meta(item.title) or contains_student_meta(item.notes)
+    return _meta_filler_penalty(unit) >= 2.0
+
+
+def _candidate_from_unit(
+    unit: KnowledgeUnit,
+    knowledge: KnowledgeDocument,
+    *,
+    ranked: list[PageCandidate],
+    lock_note: str = "mandatory-sense lock",
+) -> PageCandidate:
+    existing = next((row for row in ranked if row.unit_id == unit.id), None)
+    if existing is not None:
+        return replace(
+            existing,
+            selection_reason=f"{lock_note}; {existing.selection_reason}"[:400],
+        )
+    parents = prerequisite_parents(knowledge)
+    required_children = {parent for child, items in parents.items() for parent in items}
+    score, reason = _score_unit(unit)
+    raw_title = unit.claims[0].text if unit.claims else unit.kind
+    title = sanitize_student_copy(raw_title)[:80] or raw_title[:80]
+    body = [
+        sanitize_student_copy(claim.text)[:200]
+        for claim in unit.claims[:4]
+        if sanitize_student_copy(claim.text).strip() or claim.text.strip()
+    ]
+    if not body and unit.claims:
+        body = [unit.claims[0].text[:200]]
+    return PageCandidate(
+        id=f"intent-{unit.id}",
+        unit_id=unit.id,
+        topic_id=unit.topic_id,
+        kind=unit.kind,
+        claim_ids=[claim.id for claim in unit.claims],
+        frame_ids=[],
+        layout="text",
+        start_seconds=unit.start_seconds,
+        end_seconds=unit.end_seconds,
+        score=score,
+        required_prerequisite=unit.id in required_children,
+        selection_reason=f"{lock_note}; {reason}"[:400],
+        title=title,
+        notes=" ".join(claim.text for claim in unit.claims)[:4000],
+        body_points=body,
+    )
+
+
+def _mandatory_unit_for_topic(
+    topic: Topic,
+    knowledge: KnowledgeDocument,
+    *,
+    course_map: CourseMap | None,
+) -> KnowledgeUnit | None:
+    unit = pick_summary_unit_for_topic(topic, knowledge, course_map=course_map)
+    if unit is not None:
+        return unit
+    units = sorted(
+        [item for item in knowledge.units if item.topic_id == topic.id],
+        key=lambda item: (
+            0 if item.kind == "example" else 1,
+            item.start_seconds,
+            item.id,
+        ),
+    )
+    for candidate in units:
+        if not candidate.claims:
+            continue
+        if sanitize_student_copy(candidate.claims[0].text).strip() or candidate.claims[0].text.strip():
+            return candidate
+    return units[0] if units else None
+
+
+def _pick_mandatory_sense_candidate(
+    topic_id: str,
+    ranked: list[PageCandidate],
+    *,
+    demoted: set[str],
+    knowledge: KnowledgeDocument,
+    course_map: CourseMap | None,
+) -> PageCandidate | None:
+    lock_note = "mandatory-sense lock"
+    pools = [
+        [
+            item
+            for item in ranked
+            if item.topic_id == topic_id
+            and item.unit_id not in demoted
+            and not _is_meta_page_candidate(item, knowledge)
+        ],
+        [item for item in ranked if item.topic_id == topic_id and item.unit_id not in demoted],
+        [item for item in ranked if item.topic_id == topic_id],
+    ]
+    for pool in pools:
+        examples = sorted(
+            [row for row in pool if row.kind == "example"],
+            key=lambda row: (-row.score, row.start_seconds, row.id),
+        )
+        if examples:
+            row = examples[0]
+            return replace(
+                row,
+                selection_reason=f"{lock_note}; {row.selection_reason}"[:400],
+            )
+        if pool:
+            pick = sorted(pool, key=lambda row: (-row.score, row.start_seconds, row.id))[0]
+            return replace(
+                pick,
+                selection_reason=f"{lock_note}; {pick.selection_reason}"[:400],
+            )
+    topic = _topic_by_id(topic_id, course_map, knowledge)
+    if topic is None:
+        return None
+    unit = _mandatory_unit_for_topic(topic, knowledge, course_map=course_map)
+    if unit is None:
+        return None
+    return _candidate_from_unit(unit, knowledge, ranked=ranked, lock_note=lock_note)
+
+
+def _selected_sense_ordinals(
+    selected: list[PageCandidate],
+    *,
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument,
+) -> set[int]:
+    ordinals: set[int] = set()
+    for item in selected:
+        ordinal = sense_ordinal(item.topic_id, course_map, knowledge=knowledge)
+        if ordinal is not None:
+            ordinals.add(ordinal)
+    return ordinals
+
+
+def _drop_weakest_page_for_sense(
+    selected: list[PageCandidate],
+    ordinal: int,
+    *,
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument,
+    protected_unit_ids: set[str],
+) -> list[PageCandidate]:
+    matches = [
+        item
+        for item in selected
+        if sense_ordinal(item.topic_id, course_map, knowledge=knowledge) == ordinal
+        and item.unit_id not in protected_unit_ids
+        and "mandatory-sense lock" not in item.selection_reason
+    ]
+    if len(matches) < 2:
+        return selected
+    weakest = min(matches, key=lambda row: (row.score, row.start_seconds, row.id))
+    return [item for item in selected if item.unit_id != weakest.unit_id]
+
+
+def _enforce_mandatory_sense_pages(
+    selected: list[PageCandidate],
+    *,
+    ranked: list[PageCandidate],
+    demoted: set[str],
+    knowledge: KnowledgeDocument,
+    course_map: CourseMap | None,
+    content_max: int,
+) -> list[PageCandidate]:
+    selected_ids = {item.unit_id for item in selected}
+    updated = list(selected)
+    for ordinal in (1, 2, 3):
+        if ordinal in _selected_sense_ordinals(
+            updated, course_map=course_map, knowledge=knowledge
+        ):
+            continue
+        topic = topic_for_sense_ordinal(course_map, ordinal, knowledge=knowledge)
+        if topic is None:
+            continue
+        if not any(unit.topic_id == topic.id for unit in knowledge.units):
+            continue
+        pick = _pick_mandatory_sense_candidate(
+            topic.id,
+            ranked,
+            demoted=demoted,
+            knowledge=knowledge,
+            course_map=course_map,
+        )
+        if pick is None:
+            continue
+        if len(updated) >= content_max:
+            if ordinal == 2:
+                updated = _drop_weakest_page_for_sense(
+                    updated,
+                    1,
+                    course_map=course_map,
+                    knowledge=knowledge,
+                    protected_unit_ids=selected_ids,
+                )
+            elif len(updated) >= content_max:
+                updated = sorted(
+                    updated,
+                    key=lambda row: (row.score, row.start_seconds, row.id),
+                )[1:]
+        if pick.unit_id in {item.unit_id for item in updated}:
+            continue
+        updated.append(pick)
+        selected_ids.add(pick.unit_id)
+    return updated
+
+
+def _pick_topic_representative(
+    pool: list[PageCandidate],
+    *,
+    keep_examples: set[str],
+    knowledge: KnowledgeDocument,
+) -> PageCandidate | None:
+    usable = [row for row in pool if not _is_meta_page_candidate(row, knowledge)]
+    if not usable:
+        return None
+    examples = [
+        row
+        for row in usable
+        if row.kind == "example" and row.unit_id in keep_examples
+    ]
+    if examples:
+        return sorted(examples, key=lambda row: (-row.score, row.start_seconds, row.id))[0]
+    non_recap = [row for row in usable if row.kind != "recap"]
+    if non_recap:
+        return non_recap[0]
+    return usable[0]
+
+
+def _rank_key(item: PageCandidate, *, demoted: set[str]) -> tuple[float, float, str]:
+    penalty = 5.0 if item.unit_id in demoted else 0.0
+    return (-(item.score - penalty), item.start_seconds, item.id)
 
 
 def select_candidates(
@@ -232,35 +695,110 @@ def select_candidates(
     knowledge: KnowledgeDocument,
     course_map: CourseMap | None = None,
 ) -> tuple[list[PageCandidate], list[Omission]]:
-    del course_map
+    sense_slots = len(sense_topic_ids(course_map, knowledge))
     content_target = max(1, min(target_pages, max_pages) - 2)
-    content_max = max(1, max_pages - 2)
+    content_max = max(1, max_pages - 2, sense_slots)
     parents = prerequisite_parents(knowledge)
     keep_examples = _example_keep(candidates)
-    ranked = sorted(candidates, key=lambda item: (-item.score, item.start_seconds, item.id))
+    demoted = _demote_translation_duplicate_units(candidates, knowledge)
+    ranked = sorted(candidates, key=lambda item: _rank_key(item, demoted=demoted))
     selected: list[PageCandidate] = []
     selected_ids: set[str] = set()
 
-    def add(item: PageCandidate) -> None:
+    def add(item: PageCandidate, *, force: bool = False) -> None:
         if item.unit_id in selected_ids:
             return
-        if len(selected) >= content_max:
+        if item.unit_id in demoted and not force:
+            return
+        if len(selected) >= content_max and not force:
             return
         selected.append(item)
         selected_ids.add(item.unit_id)
 
-    for item in ranked:
-        if item.kind == "example" and item.unit_id not in keep_examples:
-            continue
+    def add_with_prerequisites(item: PageCandidate, *, force: bool = False) -> None:
         for parent_id in sorted(parents.get(item.unit_id, set())):
             parent = next((row for row in ranked if row.unit_id == parent_id), None)
             if parent is not None:
-                add(parent)
+                add(parent, force=force)
+        add(item, force=force)
+
+    for topic_id in sense_topic_ids(course_map, knowledge):
+        if any(row.topic_id == topic_id for row in selected):
+            continue
+        pick = _pick_mandatory_sense_candidate(
+            topic_id,
+            ranked,
+            demoted=demoted,
+            knowledge=knowledge,
+            course_map=course_map,
+        )
+        if pick is not None:
+            add_with_prerequisites(pick, force=True)
+
+    selected = _enforce_mandatory_sense_pages(
+        selected,
+        ranked=ranked,
+        demoted=demoted,
+        knowledge=knowledge,
+        course_map=course_map,
+        content_max=content_max,
+    )
+    selected_ids = {item.unit_id for item in selected}
+
+    for topic_id in _reserved_topic_ids(candidates, course_map, knowledge):
+        pool = [
+            item
+            for item in ranked
+            if item.topic_id == topic_id
+            and item.unit_id not in selected_ids
+            and item.unit_id not in demoted
+        ]
+        if not pool:
+            continue
+        pick = _pick_topic_representative(pool, keep_examples=keep_examples, knowledge=knowledge)
+        if pick is None:
+            continue
+        if pick.kind == "example" and pick.unit_id not in keep_examples:
+            non_example = next(
+                (
+                    row
+                    for row in pool
+                    if row.kind != "example" and not _is_meta_page_candidate(row, knowledge)
+                ),
+                None,
+            )
+            if non_example is not None:
+                pick = non_example
+        add_with_prerequisites(pick)
+        topic_examples = sorted(
+            [
+                row
+                for row in pool
+                if row.kind == "example"
+                and row.unit_id in keep_examples
+                and row.unit_id not in selected_ids
+            ],
+            key=lambda row: (row.start_seconds, row.id),
+        )
+        for extra in topic_examples:
+            if extra.unit_id == pick.unit_id:
+                continue
+            add_with_prerequisites(extra)
+            if len(selected) >= content_max:
+                break
+
+    for item in ranked:
+        if _is_meta_page_candidate(item, knowledge):
+            continue
+        if item.kind == "example" and item.unit_id not in keep_examples:
+            continue
+        if item.unit_id in selected_ids:
+            continue
         if len(selected) >= content_target and item.unit_id not in selected_ids:
             if item.required_prerequisite:
-                add(item)
+                add_with_prerequisites(item)
             continue
-        add(item)
+        add_with_prerequisites(item)
 
     selected_ids = {item.unit_id for item in selected}
     omissions: list[Omission] = []
@@ -364,27 +902,104 @@ def _cover_page(course_map: CourseMap | None, source_id: str) -> PageIntent:
     )
 
 
-def _summary_page(selected: list[PageCandidate]) -> PageIntent:
-    claims = [claim_id for item in selected for claim_id in item.claim_ids][:8]
+def _summary_units_for_topics(
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument,
+    selected: list[PageCandidate],
+) -> list[tuple[str, str, str]]:
+    """Return (topic_title, claim_id, bullet) per grammar usage sense."""
+
+    selected_by_topic: dict[str, list[PageCandidate]] = {}
+    for item in selected:
+        selected_by_topic.setdefault(item.topic_id, []).append(item)
+    rows: list[tuple[str, str, str]] = []
+    for ordinal in (1, 2, 3):
+        topic = topic_for_sense_ordinal(course_map, ordinal, knowledge=knowledge)
+        if topic is None:
+            continue
+        pool = selected_by_topic.get(topic.id) or []
+        unit: KnowledgeUnit | None = None
+        if pool:
+            picked = sorted(
+                pool,
+                key=lambda row: (
+                    0 if row.kind == "example" else 1,
+                    row.start_seconds,
+                    row.id,
+                ),
+            )[0]
+            unit = _unit_by_id(knowledge, picked.unit_id)
+        if unit is None:
+            unit = pick_summary_unit_for_topic(topic, knowledge, course_map=course_map)
+        if unit is None or not unit.claims:
+            continue
+        claim = unit.claims[0]
+        bullet = sanitize_student_copy(claim.text)[:200]
+        if not bullet.strip():
+            continue
+        rows.append(
+            (
+                sense_heading(ordinal),
+                claim.id,
+                summary_bullet_for_sense(ordinal, bullet),
+            )
+        )
+    if rows:
+        return rows
+    fallback: list[tuple[str, str, str]] = []
+    for item in selected:
+        if not item.claim_ids:
+            continue
+        bullet = sanitize_student_copy(item.title)[:200]
+        if bullet.strip():
+            fallback.append((item.topic_id, item.claim_ids[0], bullet))
+    return fallback[:8]
+
+
+def _summary_page(
+    selected: list[PageCandidate],
+    *,
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument,
+) -> PageIntent:
+    rows = _summary_units_for_topics(course_map, knowledge, selected)
+    claims = [claim_id for _, claim_id, _ in rows][:12]
+    body_points = [bullet for _, _, bullet in rows][:4]
+    if not claims:
+        claims = [claim_id for item in selected for claim_id in item.claim_ids][:8]
+        body_points = [sanitize_student_copy(item.title)[:200] for item in selected[:4]]
     return PageIntent(
         id="intent-summary",
         type="summary",
         title="本课总结",
         claim_ids=claims,
         frame_ids=[],
-        notes="总结复用已选 claim。",
+        notes="总结按课程主题覆盖各用法，并附代表性例句。",
         selection_reason="总结",
         quality_label="draft",
-        body_points=[item.title[:200] for item in selected[:4]],
+        body_points=body_points,
     )
 
 
-def _content_page(item: PageCandidate, *, page_type: str = "content") -> PageIntent:
+def _content_page(
+    item: PageCandidate,
+    *,
+    page_type: str = "content",
+    course_map: CourseMap | None = None,
+    knowledge: KnowledgeDocument | None = None,
+) -> PageIntent:
+    fallback = sanitize_student_copy(item.title)[:80] or item.title[:80]
+    title = learner_page_title(
+        topic_id=item.topic_id,
+        course_map=course_map,
+        fallback_title=fallback,
+        knowledge=knowledge,
+    )
     return PageIntent(
         id=item.id,
         type=page_type,  # type: ignore[arg-type]
         layout=item.layout,
-        title=item.title[:80],
+        title=title,
         claim_ids=item.claim_ids[:8],
         frame_ids=item.frame_ids[:3],
         notes=item.notes,
@@ -392,6 +1007,50 @@ def _content_page(item: PageCandidate, *, page_type: str = "content") -> PageInt
         quality_label="draft",
         body_points=item.body_points[:4],
     )
+
+
+def _trim_content_pages(
+    content_pages: list[PageIntent],
+    selected: list[PageCandidate],
+    *,
+    max_content: int,
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument,
+) -> list[PageIntent]:
+    if len(content_pages) <= max_content:
+        return content_pages
+    by_id = {page.id: page for page in content_pages}
+    ordered = [by_id[item.id] for item in selected if item.id in by_id]
+    protected: list[PageIntent] = []
+    optional: list[PageIntent] = []
+    for page in ordered:
+        item = next((row for row in selected if row.id == page.id), None)
+        ordinal = (
+            sense_ordinal(item.topic_id, course_map, knowledge=knowledge) if item else None
+        )
+        if ordinal in {1, 2, 3}:
+            protected.append(page)
+        else:
+            optional.append(page)
+    if len(protected) > max_content:
+        max_content = len(protected)
+    body = list(protected)
+    for page in optional:
+        if len(body) >= max_content:
+            break
+        if page not in body:
+            body.append(page)
+    if len(body) > max_content:
+        protected_ids = {page.id for page in protected}
+        body = [page for page in body if page.id in protected_ids]
+        for page in optional:
+            if len(body) >= max_content:
+                break
+            if page.id not in protected_ids:
+                body.append(page)
+    order_map = {item.id: (item.start_seconds, item.id) for item in selected}
+    body.sort(key=lambda page: order_map.get(page.id, (0.0, page.id)))
+    return body
 
 
 def build_deterministic_plan(
@@ -408,22 +1067,49 @@ def build_deterministic_plan(
     pages = [_cover_page(course_map, source_id)]
     for item in selected:
         page_type = "quiz" if _is_practice(knowledge, item.claim_ids) else "content"
-        pages.append(_content_page(item, page_type=page_type))
+        pages.append(
+            _content_page(
+                item,
+                page_type=page_type,
+                course_map=course_map,
+                knowledge=knowledge,
+            )
+        )
     if any(item.claim_ids for item in selected):
-        pages.append(_summary_page(selected))
+        pages.append(_summary_page(selected, course_map=course_map, knowledge=knowledge))
     if len(pages) > max_pages:
-        body = pages[1:-1][: max(0, max_pages - 2)]
+        body = _trim_content_pages(
+            pages[1:-1],
+            selected,
+            max_content=max(0, max_pages - 2),
+            course_map=course_map,
+            knowledge=knowledge,
+        )
         pages = [pages[0], *body, pages[-1]]
         if len(pages) > max_pages:
             pages = pages[:max_pages]
-    return EditorialPlan(
+    summary_claims = {
+        claim_id
+        for page in pages
+        if page.type == "summary"
+        for claim_id in page.claim_ids
+    }
+    filtered_omissions = [
+        item for item in omissions if item.claim_id not in summary_claims
+    ]
+    plan = EditorialPlan(
         schema_version="1.0",
         source_id=source_id,
         target_pages=target_pages,
         max_pages=max_pages,
         order=order,
         pages=pages,
-        omissions=omissions,
+        omissions=filtered_omissions,
+    )
+    return _restore_sense_content_titles(
+        plan,
+        knowledge=knowledge,
+        course_map=course_map,
     )
 
 
@@ -548,11 +1234,26 @@ def apply_model_organization(
         model_body_order = [page.id for page in body]
 
     def overlay(base: PageIntent, incoming: PageIntent) -> PageIntent:
+        incoming_title = sanitize_student_copy(incoming.title)[:80].strip()
+        if is_fixed_sense_heading(base.title):
+            title = base.title
+        elif incoming_title:
+            title = incoming_title
+        else:
+            title = base.title
+        if base.type == "summary":
+            body_points = _merge_summary_body_points(base, incoming)
+        else:
+            body_points = [
+                sanitize_student_copy(point)[:200]
+                for point in incoming.body_points
+                if sanitize_student_copy(point).strip()
+            ] or base.body_points
         return base.model_copy(
             update={
-                "title": incoming.title,
+                "title": title,
                 "notes": incoming.notes,
-                "body_points": incoming.body_points,
+                "body_points": body_points,
             }
         )
 
@@ -645,6 +1346,11 @@ def edit_deck(
         )
     except (EditorContractError, ValidationError):
         planned = fallback
+    planned = _restore_sense_content_titles(
+        planned,
+        knowledge=knowledge,
+        course_map=course_map,
+    )
     labeled = []
     for page in planned.pages:
         labeled.append(relabel_page(page, quality_label) if quality_label != "verified" else page)

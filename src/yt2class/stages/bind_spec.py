@@ -38,6 +38,7 @@ from yt2class.domain.transcript import TranscriptDocument
 from yt2class.domain.verification import QualityMode, VerificationReport, require_strict_closure
 from yt2class.domain.visual import OcrRegion, VisualCatalogue, is_accepted_visual_occurrence
 from yt2class.orchestration.workspace import Workspace, WorkspacePathError
+from yt2class.stages.student_copy import sanitize_student_copy
 from yt2class.stages.verify_claims import _is_practice
 
 PRODUCER_VERSION = "yt2class-bind-1.0"
@@ -166,9 +167,10 @@ def _collect_claims(
         if source_claim is None:
             raise BindError(f"unknown editorial claim {claim_id!r}")
         evidence_ids = _evidence_ids_for_knowledge_claim(source_claim)
+        display = sanitize_student_copy(source_claim.text) or source_claim.text
         built[claim_id] = SlideClaim(
             id=claim_id,
-            text=source_claim.text,
+            text=display,
             evidence_ids=evidence_ids,
             verdict=_claim_verdict(claim_id, report, knowledge),
             provenance=source_claim.provenance,
@@ -178,6 +180,26 @@ def _collect_claims(
 
 def _evidence_ids_for_knowledge_claim(claim: KnowledgeClaim) -> list[str]:
     return [f"ev-{item}" for item in claim.evidence_ids]
+
+
+def _retain_ocr_parent_frames(
+    visual: VisualCatalogue,
+    used_frames: set[str],
+    *,
+    evidence_refs: Iterable[str],
+) -> None:
+    """Ensure OCR-cited regions keep their parent frame in the asset closure."""
+
+    occurrences = {item.id: item for item in visual.occurrences}
+    regions = {region.id: region for region in visual.ocr_regions}
+    for ref in evidence_refs:
+        key = ref.removeprefix("ev-")
+        region = regions.get(key)
+        if region is None:
+            continue
+        parent_id = region.parent_occurrence_id
+        if parent_id in occurrences:
+            used_frames.add(parent_id)
 
 
 def _frame_assets(
@@ -441,6 +463,21 @@ def _bind_content_pages(
     return pages
 
 
+def _summary_display_bullets(
+    page: PageIntent,
+    chunk: list[str],
+    *,
+    claims: dict[str, SlideClaim],
+) -> list[str]:
+    bullets: list[str] = []
+    for index, claim_id in enumerate(chunk):
+        if index < len(page.body_points) and page.body_points[index].strip():
+            bullets.append(sanitize_student_copy(page.body_points[index])[:200])
+        else:
+            bullets.append(claims[claim_id].text)
+    return bullets
+
+
 def _bind_summary(page: PageIntent, *, claims: dict[str, SlideClaim]) -> list[SlidePage]:
     if not page.claim_ids:
         raise BindError(f"summary page {page.id!r} requires at least one claim")
@@ -448,12 +485,17 @@ def _bind_summary(page: PageIntent, *, claims: dict[str, SlideClaim]) -> list[Sl
     pages: list[SlidePage] = []
     for index, chunk in enumerate(chunks):
         page_id = page.id if index == 0 else f"{page.id}-{index + 1}"
+        offset = index * 4
+        body_slice = page.body_points[offset : offset + len(chunk)]
+        slice_page = page.model_copy(update={"body_points": body_slice})
+        bullets = _summary_display_bullets(slice_page, chunk, claims=claims)
         pages.append(
             SlidePage(
                 id=page_id,
                 type="summary",
                 title=page.title if index == 0 else f"{page.title} ({index + 1})",
                 claim_ids=chunk,
+                bullets=bullets,
                 citation_ids=[ev for cid in chunk for ev in claims[cid].evidence_ids],
                 notes=_page_notes(page),
                 continuation_of=page.id if index > 0 else None,
@@ -541,11 +583,16 @@ def bind_editorial_plan(
     for page in plan.pages:
         used_frames.update(page.frame_ids)
     occurrences = {item.id: item for item in visual.occurrences}
+    knowledge_by_id = {claim.id: claim for claim in knowledge.iter_claims()}
     for claim in slide_claims.values():
         for ref in claim.evidence_ids:
             key = ref.removeprefix("ev-")
             if key in occurrences:
                 used_frames.add(key)
+        _retain_ocr_parent_frames(visual, used_frames, evidence_refs=claim.evidence_ids)
+        source_claim = knowledge_by_id.get(claim.id)
+        if source_claim is not None:
+            _retain_ocr_parent_frames(visual, used_frames, evidence_refs=source_claim.evidence_ids)
 
     frame_assets = _frame_assets(visual, used_frames)
     slide_assets: dict[str, SlideAsset] = dict(frame_assets)

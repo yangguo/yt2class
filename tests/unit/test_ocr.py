@@ -6,8 +6,36 @@ from types import SimpleNamespace
 
 import pytest
 
-from yt2class.adapters.ocr import OCRCancelled, OCRContractError, OCRStatus, run_ocr
+from yt2class.adapters.ocr import (
+    OCRCancelled,
+    OCRContractError,
+    OCRStatus,
+    build_ocr_command,
+    resolve_ocr_engine,
+    run_ocr,
+)
 from yt2class.adapters.process import ProcessCancelled
+
+
+def test_resolve_ocr_engine_auto_uses_tesseract_when_present(monkeypatch):
+    monkeypatch.setattr("yt2class.adapters.ocr.shutil.which", lambda name: "/bin/tesseract" if name == "tesseract" else None)
+    engine, reason = resolve_ocr_engine("auto")
+    assert engine == "tesseract"
+    assert reason is None
+
+
+def test_resolve_ocr_engine_auto_reports_missing_tesseract(monkeypatch):
+    monkeypatch.setattr("yt2class.adapters.ocr.shutil.which", lambda _name: None)
+    engine, reason = resolve_ocr_engine("auto")
+    assert engine == "none"
+    assert reason and "tesseract" in reason
+
+
+def test_tesseract_command_includes_language_pack():
+    command = build_ocr_command(Path("frame.jpg"), engine="tesseract", languages="jpn+eng")
+    assert "-l" in command
+    assert "jpn+eng" in command
+    assert command[-1] == "tsv"
 
 
 def test_ocr_runner_binds_regions_to_same_asset_and_occurrence(tmp_path: Path):

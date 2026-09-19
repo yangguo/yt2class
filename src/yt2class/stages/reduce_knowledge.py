@@ -15,6 +15,7 @@ from yt2class.domain.knowledge import (
     KnowledgeUnit,
     Uncertainty,
 )
+from yt2class.stages.structured_coerce import uniquify_knowledge_units
 
 NEGATION_RE = re.compile(
     r"(不是|不会|不能|不要|并非|并未|没有|从未|绝不|\bnot\b|\bnever\b|\bno\b|n't)",
@@ -381,7 +382,8 @@ def reduce_knowledge(
     source_id: str,
     course_map: CourseMap | None = None,
 ) -> KnowledgeDocument:
-    merged = _merge_group(units)
+    merged = uniquify_knowledge_units(units)
+    merged = _merge_group(merged)
     merged = retain_conflicts(merged)
     merged = link_cross_segment_relations(merged)
     merged = _owning_relations(merged)

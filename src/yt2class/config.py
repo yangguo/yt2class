@@ -33,17 +33,38 @@ class BudgetConfig(BaseModel):
         )
 
 AnalysisMode = Literal["frames", "native-video", "hybrid"]
+OcrEngineMode = Literal["auto", "none", "tesseract"]
+AsrEngineMode = Literal["auto", "none", "faster-whisper", "whisperx"]
 PreviewPolicy = Literal["off", "optional", "required"]
 
 
 class AnalysisConfig(BaseModel):
     mode: AnalysisMode = "frames"
     model_profile: str = "vision-primary"
+    model: str | None = None
     segment_seconds: float = 120.0
     overlap_seconds: float = 10.0
     max_images_per_batch: int = 8
     max_evidence_rounds: int = 2
     provider: str = "fake"
+    openrouter_json_mode: Literal["auto", "on", "off"] = "auto"
+    openrouter_timeout_seconds: float = 300.0
+    ark_json_mode: Literal["auto", "on", "off"] | None = None
+    ark_timeout_seconds: float | None = None
+    ark_max_images_per_batch: int | None = None
+    ark_outline_max_visual_overview: int | None = None
+    ark_segment_max_ocr_regions: int | None = None
+    ark_segment_max_evidence_ids: int | None = None
+    ark_segment_ocr_text_chars: int | None = None
+    ark_max_tokens: int | None = None
+    ark_max_tokens_length_retry: int | None = None
+    ark_reasoning_effort: str | None = None
+    ocr_engine: OcrEngineMode = "auto"
+    ocr_languages: str = "jpn+eng"
+    asr_engine: AsrEngineMode = "auto"
+    asr_model: str = "medium"
+    asr_language: str | None = None
+    asr_device: str = "cpu"
 
 
 class EditorConfig(BaseModel):

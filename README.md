@@ -30,11 +30,44 @@ Build the bundled renderer before packaging wheels (hatch build hook or `scripts
 
 ## Quick start (M5 product CLI)
 
-The product path (`build-run`, `batch`, `resume`, and stage commands below) currently wires **`analysis.provider: fake` only**. Requests for any other provider fail closed with `PipelineError` until real adapters are integrated on this path. Use `tests/live/` for opt-in real-model runs.
+The product path (`build-run`, `batch`, `resume`, and stage commands below) supports **`analysis.provider: fake`** (default, offline/CI), **`openrouter`** for [OpenRouter](https://openrouter.ai/) vision models, and **`ark-plan`** (alias **`volcengine`**) for Volcengine Ark **Agent Plan** chat/completions. Other provider names fail closed. Opt-in real-model experiments also live under `tests/live/`.
 
-Example config: [docs/examples/course.fixture.json](docs/examples/course.fixture.json) (keep `"provider": "fake"` for offline/CI).
+Example configs:
 
-**Local video + subtitles**
+- Offline/CI: [docs/examples/course.fixture.json](docs/examples/course.fixture.json) (`"provider": "fake"`)
+- OpenRouter frames mode: [docs/examples/course.openrouter.json](docs/examples/course.openrouter.json) (requires `OPENROUTER_API_KEY` in the environment; no secrets in git)
+- Ling VL free (no API `response_format`): [docs/examples/course.openrouter.ling.json](docs/examples/course.openrouter.ling.json) — or keep default `openrouter_json_mode: auto` to retry once without structured outputs on HTTP 400
+
+**OpenRouter (frames mode)**
+
+```bash
+export OPENROUTER_API_KEY="sk-or-..."
+# optional overrides:
+# export YT2CLASS_OPENROUTER_MODEL="google/gemma-4-31b-it:free"
+# export OPENROUTER_MODEL="google/gemma-4-31b-it:free"
+# export OPENROUTER_JSON_MODE="auto"   # auto | on | off — auto retries without response_format on structured-output 400s
+
+uv run yt2class build-run \
+  --video path/to/lesson.mp4 \
+  --subtitles path/to/lesson.vtt \
+  --config docs/examples/course.openrouter.json \
+  --output runs
+```
+
+For **`inclusionai/ling-3.0-flash-vl:free`**, use [docs/examples/course.openrouter.ling.json](docs/examples/course.openrouter.ling.json) or set `"openrouter_json_mode": "off"` (env `OPENROUTER_JSON_MODE=off`). Default **`auto`** still works: first request uses `response_format`, then yt2class retries once with prompt-only JSON if the upstream rejects structured outputs.
+
+```bash
+export OPENROUTER_API_KEY="sk-or-..."
+uv run yt2class build-run \
+  --video path/to/lesson.mp4 \
+  --subtitles path/to/lesson.vtt \
+  --config docs/examples/course.openrouter.ling.json \
+  --output runs
+```
+
+Default model is **`google/gemma-4-31b-it:free`** (free-tier vision on OpenRouter). Billing and rate limits are controlled by your OpenRouter account and chosen model; yt2class does not cap spend beyond the run `budget` section in config.
+
+**Local video + subtitles (fake / CI)**
 
 ```bash
 uv run yt2class build-run \
@@ -44,7 +77,7 @@ uv run yt2class build-run \
   --output runs
 ```
 
-**YouTube URL** (needs `yt-dlp`; still uses fake analysis unless you extend the pipeline)
+**YouTube URL** (needs `yt-dlp`; use fake config for offline runs or OpenRouter config above for live analysis)
 
 ```bash
 uv run yt2class build-run \
@@ -59,9 +92,16 @@ and then auto captions. Within each group it tries the video's declared language
 languages. The caption and its language/origin record stay beside the media in
 the run workspace and are picked up automatically by evidence extraction;
 `--subtitles` takes precedence. Caption content changes invalidate extraction's
-cache. If no supported captions or ASR evidence exist, the transcript remains
-degraded with the explicit gap `no subtitle or ASR evidence`. A selected caption
-that fails to download fails ingest rather than silently producing an empty transcript.
+cache. When no usable caption track exists, `build-run` runs local ASR via
+**faster-whisper** (`analysis.asr_engine: auto`, model **`medium`** by default).
+Leave `analysis.asr_language` unset (`null`) so Whisper autodetects language —
+recommended for mixed Japanese/Chinese lessons instead of forcing `ja` only.
+Install ASR support with `pip install 'yt2class[asr]'` or `pip install faster-whisper`
+(ffmpeg is still required for audio extraction). `yt2class doctor` reports whether
+faster-whisper is importable. Set `analysis.asr_engine: none` to skip ASR entirely.
+If neither captions nor ASR produce segments, the transcript stays degraded with
+`no subtitle or ASR evidence`. A selected caption that fails to download fails
+ingest rather than silently producing an empty transcript.
 
 `build-run` and `resume` report pipeline, bind, and validation failures with exit
 code `1`. When logging through `tee`, use `set -o pipefail` so the shell preserves
@@ -86,7 +126,9 @@ uv run yt2class batch --inputs courses.txt --output runs --config docs/examples/
 
 Exit codes: `0` success, `1` failure, `2` review/budget pause, `3` batch partial failure.
 
-### Stage-level commands (fake provider)
+### Stage-level commands (fake or openrouter)
+
+Set `OPENROUTER_API_KEY` when using `--provider openrouter` or `analysis.provider: openrouter` in config.
 
 ```bash
 uv run yt2class analyze \

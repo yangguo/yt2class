@@ -176,7 +176,7 @@ def test_representative_examples_are_preferred_over_all_examples():
         if claim_id.startswith("claim-ex-")
     ]
     assert "claim-concept" in {item for page in plan.pages for item in page.claim_ids}
-    assert len(example_claims) == 1
+    assert 1 <= len(example_claims) <= 2
 
 
 def test_duplicate_images_are_not_repeated():
@@ -581,3 +581,238 @@ def test_empty_knowledge_does_not_emit_empty_summary():
     plan = edit_deck(knowledge(), transcript=make_transcript([], duration=10),
                      visual=make_visual([], duration=10), provider=_provider())
     assert not any(page.type == "summary" for page in plan.pages)
+
+
+def test_select_candidates_reserves_one_page_per_course_map_topic():
+    topics = course_map(
+        [
+            ("topic-conn", "接续", 0.0, 20.0),
+            ("topic-u1", "用法1", 20.0, 40.0),
+            ("topic-u2", "用法2", 40.0, 60.0),
+            ("topic-u3", "用法3", 60.0, 80.0),
+        ]
+    )
+    units = [
+        concept_unit(
+            "unit-conn-main",
+            "claim-conn-main",
+            "名词＋につき",
+            ["cap-conn-main", "frame-conn-main"],
+            topic_id="topic-conn",
+            start=0.0,
+            end=20.0,
+            frames=["frame-conn-main"],
+        ),
+        concept_unit(
+            "unit-conn-filler",
+            "claim-conn-filler",
+            "接续补充说明",
+            ["cap-conn-filler", "frame-conn-filler"],
+            topic_id="topic-conn",
+            start=0.0,
+            end=20.0,
+            frames=["frame-conn-filler"],
+        ),
+        concept_unit(
+            "unit-u1",
+            "claim-u1",
+            "用法1：原因理由",
+            ["cap-u1", "frame-u1"],
+            topic_id="topic-u1",
+            start=20.0,
+            end=40.0,
+            frames=["frame-u1"],
+        ),
+        concept_unit(
+            "unit-u2",
+            "claim-u2",
+            "用法2：比例单位",
+            ["cap-u2", "frame-u2"],
+            topic_id="topic-u2",
+            start=40.0,
+            end=60.0,
+            frames=["frame-u2"],
+        ),
+        concept_unit(
+            "unit-u3",
+            "claim-u3",
+            "用法3：について中止形",
+            ["cap-u3", "frame-u3"],
+            topic_id="topic-u3",
+            start=60.0,
+            end=80.0,
+            frames=["frame-u3"],
+        ),
+    ]
+    doc = knowledge(*units)
+    visual = make_visual(
+        [
+            ("frame-conn-main", 2.0, "scene-001"),
+            ("frame-conn-filler", 4.0, "scene-001"),
+            ("frame-u1", 22.0, "scene-001"),
+            ("frame-u2", 42.0, "scene-001"),
+            ("frame-u3", 62.0, "scene-001"),
+        ],
+        duration=80.0,
+    )
+    scored = score_candidates(doc, visual=visual, course_map=topics)
+    selected, _ = select_candidates(
+        scored,
+        target_pages=6,
+        max_pages=8,
+        knowledge=doc,
+        course_map=topics,
+    )
+    covered = {item.topic_id for item in selected}
+    assert covered == {"topic-conn", "topic-u1", "topic-u2", "topic-u3"}
+
+
+def test_select_candidates_demotes_ja_zh_translation_pair_units():
+    topics = course_map(
+        [
+            ("topic-u2", "用法2", 40.0, 60.0),
+            ("topic-u3", "用法3", 60.0, 80.0),
+        ]
+    )
+    shared_evidence = ["cap-shared", "frame-shared"]
+    doc = knowledge(
+        concept_unit(
+            "unit-u2-ja",
+            "claim-u2-ja",
+            "一個につき五百円です。",
+            shared_evidence,
+            topic_id="topic-u2",
+            start=40.0,
+            end=60.0,
+            frames=["frame-shared"],
+        ),
+        concept_unit(
+            "unit-u2-zh",
+            "claim-u2-zh",
+            "每个五百日元。",
+            shared_evidence,
+            topic_id="topic-u2",
+            start=40.0,
+            end=60.0,
+            frames=["frame-shared"],
+        ),
+        concept_unit(
+            "unit-u3",
+            "claim-u3",
+            "用法3：についてを使う。",
+            ["cap-u3", "frame-u3"],
+            topic_id="topic-u3",
+            start=60.0,
+            end=80.0,
+            frames=["frame-u3"],
+        ),
+    )
+    visual = make_visual(
+        [("frame-shared", 45.0, "scene-001"), ("frame-u3", 65.0, "scene-001")],
+        duration=80.0,
+    )
+    scored = score_candidates(doc, visual=visual, course_map=topics)
+    selected, _ = select_candidates(
+        scored,
+        target_pages=5,
+        max_pages=6,
+        knowledge=doc,
+        course_map=topics,
+    )
+    picked_u2 = [item for item in selected if item.topic_id == "topic-u2"]
+    assert len(picked_u2) == 1
+    assert picked_u2[0].unit_id == "unit-u2-ja"
+    assert any(item.topic_id == "topic-u3" for item in selected)
+
+
+def test_summary_lists_each_course_topic():
+    topics = course_map(
+        [
+            ("topic-u1", "用法1", 0.0, 30.0),
+            ("topic-u2", "用法2", 30.0, 60.0),
+            ("topic-u3", "用法3", 60.0, 90.0),
+        ]
+    )
+    units = [
+        concept_unit(
+            "unit-u1",
+            "claim-u1",
+            "用法1：原因理由の例。",
+            ["cap-u1"],
+            topic_id="topic-u1",
+            start=0.0,
+            end=30.0,
+        ),
+        concept_unit(
+            "unit-u2",
+            "claim-u2",
+            "用法2：一個につき五百円。",
+            ["cap-u2"],
+            topic_id="topic-u2",
+            start=30.0,
+            end=60.0,
+            kind="example",
+        ),
+        concept_unit(
+            "unit-u3",
+            "claim-u3",
+            "用法3：自衛隊について。",
+            ["cap-u3"],
+            topic_id="topic-u3",
+            start=60.0,
+            end=90.0,
+            kind="example",
+        ),
+    ]
+    doc = knowledge(*units)
+    visual = make_visual([], duration=90.0)
+    plan = edit_deck(
+        doc,
+        course_map=topics,
+        transcript=make_transcript([], duration=90.0),
+        visual=visual,
+        provider=_provider(),
+        target_pages=8,
+        max_pages=10,
+    )
+    summary = next(page for page in plan.pages if page.type == "summary")
+    joined = " ".join(summary.body_points)
+    assert "用法一" in joined
+    assert "用法二" in joined
+    assert "用法三" in joined
+
+
+def test_meta_transition_units_are_not_selected_for_slides():
+    topics = course_map([("topic-u1", "用法1", 0.0, 40.0)])
+    doc = knowledge(
+        concept_unit(
+            "unit-good",
+            "claim-good",
+            "改装工事につき一時休業。",
+            ["cap-good"],
+            topic_id="topic-u1",
+            start=5.0,
+            end=20.0,
+            kind="example",
+        ),
+        concept_unit(
+            "unit-meta",
+            "claim-meta",
+            "老师过渡：板书对应 ASR→误听",
+            ["cap-meta"],
+            topic_id="topic-u1",
+            start=1.0,
+            end=4.0,
+            kind="recap",
+        ),
+    )
+    visual = make_visual([], duration=40.0)
+    scored = score_candidates(doc, visual=visual, course_map=topics)
+    selected, _ = select_candidates(
+        scored,
+        target_pages=4,
+        max_pages=6,
+        knowledge=doc,
+        course_map=topics,
+    )
+    assert all(item.unit_id != "unit-meta" for item in selected)

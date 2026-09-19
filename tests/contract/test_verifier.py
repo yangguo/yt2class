@@ -747,3 +747,117 @@ def test_repair_requires_fresh_provider_grounding(repaired_verdict):
     assert checked[:2] == ["Original", "Repaired"]
     assert outcome.report.verdicts[0].verdict == repaired_verdict
     assert outcome.report.repaired_claim_ids == ["claim"]
+
+
+def test_pedagogical_ordinals_soften_number_checks():
+    from yt2class.stages.verify_claims import check_numbers
+
+    claim = KnowledgeClaim(
+        id="claim-ped",
+        text="用法2 表示比例；第2条是公告体。",
+        evidence_ids=["cap-ped"],
+        status="draft",
+    )
+    result = check_numbers(claim, "这是书面公告中的比例用法说明。")
+    assert result.passed
+
+
+def test_caption_citations_require_temporal_overlap_with_unit():
+    from yt2class.domain.knowledge import KnowledgeUnit
+    from yt2class.stages.verify_claims import run_claim_checks
+
+    unit = KnowledgeUnit(
+        id="unit-sense",
+        topic_id="topic-u2",
+        segment_ids=["seg-1"],
+        start_seconds=40.0,
+        end_seconds=60.0,
+        kind="concept",
+        claims=[
+            KnowledgeClaim(
+                id="claim-sense",
+                text="用法2 表示比例单位。",
+                evidence_ids=["cap-far"],
+                status="draft",
+                modality="audio",
+            )
+        ],
+        relations=[],
+        visual_candidates=[],
+    )
+    transcript = make_transcript(
+        [("cap-far", 0.0, 10.0, "用法2 是比例单位。")],
+        duration=60.0,
+    )
+    visual = make_visual([], duration=60.0)
+    checks = run_claim_checks(
+        unit.claims[0],
+        unit=unit,
+        transcript=transcript,
+        visual=visual,
+        allowed={"cap-far"},
+        index={"cap-far": "用法2 是比例单位。"},
+        provider=None,
+    )
+    temporal = next(item for item in checks if item.note.startswith("caption"))
+    assert not temporal.passed
+
+
+def test_draft_mode_keeps_insufficient_examples_when_sense_concept_supported():
+    concept = concept_unit(
+        "unit-sense",
+        "claim-sense",
+        "用法2 表示比例单位。",
+        ["cap-sense"],
+        topic_id="topic-u2",
+        start=40.0,
+        end=60.0,
+    )
+    example = concept_unit(
+        "unit-ex",
+        "claim-ex",
+        "例：一個につき五百円。",
+        ["cap-ex"],
+        topic_id="topic-u2",
+        start=40.0,
+        end=60.0,
+        kind="example",
+    )
+    doc = knowledge(concept, example)
+    topics = course_map([("topic-u2", "用法2", 40.0, 60.0)])
+    transcript = make_transcript(
+        [
+            ("cap-sense", 40.0, 55.0, "用法2 是比例单位。"),
+            ("cap-ex", 40.0, 55.0, "五百円です。"),
+        ],
+        duration=60.0,
+    )
+    visual = make_visual([], duration=60.0)
+    plan = _plan_for(doc, topics, transcript, visual, target_pages=5, max_pages=6)
+
+    def respond(provider, request):
+        payload = provider.last_payload or {}
+        rows = []
+        for claim in payload.get("claims") or []:
+            verdict = "supported" if claim["id"] == "claim-sense" else "insufficient"
+            rows.append(
+                {
+                    "claim_id": claim["id"],
+                    "verdict": verdict,
+                    "supporting_ids": claim["evidence_ids"] if verdict == "supported" else [],
+                    "contradicting_ids": [],
+                    "reason": "scripted",
+                }
+            )
+        return {"verdicts": rows}
+
+    outcome = verify_claims(
+        doc,
+        plan=plan,
+        transcript=transcript,
+        visual=visual,
+        provider=FakeProvider(frames_caps(), responder=respond),
+        quality_mode="draft",
+    )
+    assert "claim-ex" not in outcome.report.removed_from_formal
+    assert any("claim-ex" in page.claim_ids for page in outcome.plan.pages)

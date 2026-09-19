@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from threading import Event
+from typing import Any
 
 from yt2class.adapters.providers.base import ModelRequest, ModelResult, Provider, RequestCancelled
 from yt2class.orchestration.budget import BudgetExceeded, RunBudget
@@ -11,6 +12,8 @@ from yt2class.orchestration.retry import RetryPolicy, call_with_retry
 
 class BudgetedProvider(Provider):
     """Wrap a provider to enforce run budgets and optional retry."""
+
+    _FORWARDED_ATTRS = frozenset({"last_payload", "bind_run_context"})
 
     def __init__(
         self,
@@ -25,6 +28,20 @@ class BudgetedProvider(Provider):
         self._budget = budget
         self._cancel_event = cancel_event
         self._retry_policy = retry_policy
+
+    def __getattr__(self, name: str) -> Any:
+        if name in self._FORWARDED_ATTRS and hasattr(self._inner, name):
+            return getattr(self._inner, name)
+        raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in {"_inner", "_budget", "_cancel_event", "_retry_policy", "capabilities", "_completed"}:
+            super().__setattr__(name, value)
+            return
+        if name in self._FORWARDED_ATTRS and hasattr(self, "_inner") and hasattr(self._inner, name):
+            setattr(self._inner, name, value)
+            return
+        super().__setattr__(name, value)
 
     def complete(
         self,

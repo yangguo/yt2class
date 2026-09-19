@@ -15,7 +15,16 @@ export function formatLocalSeek(mediaPath, seconds) {
   return `${name} @ ${mm}:${ss}`;
 }
 
-export function primarySeekSeconds(page, assets, evidenceByAsset) {
+export function evidenceStartSeconds(evidenceId, evidenceById) {
+  const ev = evidenceById?.[evidenceId];
+  if (!ev) return null;
+  if (ev.timestamp_seconds != null) return ev.timestamp_seconds;
+  if (ev.start_seconds != null) return ev.start_seconds;
+  return null;
+}
+
+export function primarySeekSeconds(page, assets, evidenceByAsset, evidenceById = {}) {
+  const times = [];
   const assetIds = [];
   if (page.type === "content" && page.layout === "sequence") {
     for (const step of page.steps || []) assetIds.push(step.asset_id);
@@ -26,15 +35,30 @@ export function primarySeekSeconds(page, assets, evidenceByAsset) {
   }
   for (const assetId of assetIds) {
     const asset = assets[assetId];
-    if (asset?.timestamp_seconds != null) return asset.timestamp_seconds;
+    if (asset?.timestamp_seconds != null) times.push(Number(asset.timestamp_seconds));
     const ev = evidenceByAsset[assetId];
-    if (ev?.timestamp_seconds != null) return ev.timestamp_seconds;
+    if (ev?.timestamp_seconds != null) times.push(Number(ev.timestamp_seconds));
   }
+  for (const evidenceId of page.citation_ids || []) {
+    const stamp = evidenceStartSeconds(evidenceId, evidenceById);
+    if (stamp != null) times.push(Number(stamp));
+  }
+  if (times.length) return Math.min(...times);
   return 0;
 }
 
-export function buildSeekLink(spec, page, assets, evidenceByAsset) {
-  const seconds = primarySeekSeconds(page, assets, evidenceByAsset);
+export function buildSeekLink(
+  spec,
+  page,
+  assets,
+  evidenceByAsset,
+  evidenceById = {},
+  secondsOverride = null,
+) {
+  const seconds =
+    secondsOverride != null
+      ? secondsOverride
+      : primarySeekSeconds(page, assets, evidenceByAsset, evidenceById);
   if (spec.source?.kind === "youtube" && spec.source.url) {
     const url = floorYoutubeSeek(spec.source.url, seconds);
     if (url) return { url, label: `来源视频 ${Math.floor(seconds)}s` };

@@ -168,6 +168,7 @@ class SlidePage(StrictModel):
     captions: list[str] = Field(default_factory=list, max_length=3)
     steps: list[SequenceStep] = Field(default_factory=list)
     claim_ids: list[Identifier] = Field(default_factory=list, max_length=4)
+    bullets: list[str] = Field(default_factory=list, max_length=4)
     questions: list[QuizQuestion] = Field(default_factory=list)
     citation_ids: list[Identifier] = Field(default_factory=list)
     notes_claim_ids: list[Identifier] = Field(default_factory=list)
@@ -225,9 +226,11 @@ class SlidePage(StrictModel):
                 if not 2 <= len(self.steps) <= 3:
                     raise ValueError("sequence layout requires 2-3 steps")
         elif self.type == "summary":
-            allowed_fields.add("claim_ids")
+            allowed_fields.update({"claim_ids", "bullets"})
             if not 1 <= len(self.claim_ids) <= 4:
                 raise ValueError("summary slide requires 1-4 claim_ids")
+            if self.bullets and len(self.bullets) != len(self.claim_ids):
+                raise ValueError("summary bullets must align with claim_ids")
         elif self.type == "quiz":
             allowed_fields.add("questions")
             if not 1 <= len(self.questions) <= 3:
@@ -243,6 +246,7 @@ class SlidePage(StrictModel):
             "captions",
             "steps",
             "claim_ids",
+            "bullets",
             "questions",
         ):
             if field_name not in allowed_fields and has_value(getattr(self, field_name)):

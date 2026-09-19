@@ -557,6 +557,14 @@
           "title": "Claim Ids",
           "type": "array"
         },
+        "bullets": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 4,
+          "title": "Bullets",
+          "type": "array"
+        },
         "questions": {
           "items": {
             "$ref": "#/$defs/QuizQuestion"

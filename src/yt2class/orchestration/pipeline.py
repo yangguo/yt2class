@@ -9,7 +9,12 @@ from typing import Any
 
 from yt2class.adapters.ytdlp import downloaded_subtitle
 from yt2class.adapters.providers.base import Provider
-from yt2class.adapters.providers.synthetic import fake_course_provider
+from yt2class.adapters.providers.factory import (
+    UnsupportedAnalysisProvider,
+    resolve_course_provider,
+)
+from yt2class.adapters.providers.openrouter import OpenRouterProvider
+from yt2class.adapters.providers.volcengine_ark_plan import VolcengineArkPlanProvider
 from yt2class.config import BuildSource, CourseConfig, write_desensitized_snapshot
 from yt2class.domain.evidence import EvidenceBundle
 from yt2class.domain.run_manifest import RunManifest, StageName
@@ -21,7 +26,6 @@ from yt2class.orchestration.analyze import (
     AnalysisCheckpoint,
     analyze_evidence_bundle,
     resolve_native_adapter,
-    default_capabilities,
     write_analysis_artifacts,
 )
 from yt2class.orchestration.budget import BudgetExceeded, RunBudget
@@ -65,6 +69,8 @@ from yt2class.orchestration.manifest_io import (
     stage_record,
 )
 from yt2class.orchestration.workspace import Workspace
+from yt2class.adapters.ocr import resolve_ocr_engine
+from yt2class.orchestration.asr_policy import build_asr_request
 from yt2class.stages.extract_evidence import extract_evidence_locked
 from yt2class.stages.ingest import ingest_source_locked
 
@@ -128,12 +134,24 @@ class RunContext:
 def _provider(ctx: RunContext) -> Provider:
     if ctx.provider is not None:
         inner = ctx.provider
-    elif ctx.config.analysis.provider != "fake":
-        raise PipelineError(
-            "only fake provider is wired in the MVP CLI; use tests/live for real models"
-        )
     else:
-        inner = fake_course_provider(default_capabilities())
+        visual = ctx.evidence.visual if ctx.evidence is not None else None
+        if ctx.analysis is not None:
+            visual = ctx.analysis.visual
+        try:
+            inner = resolve_course_provider(
+                ctx.config.analysis.provider,
+                ctx.config.analysis,
+                run_root=ctx.workspace.root,
+                visual=visual,
+            )
+        except UnsupportedAnalysisProvider as error:
+            raise PipelineError(str(error)) from error
+    if isinstance(inner, (OpenRouterProvider, VolcengineArkPlanProvider)):
+        visual = ctx.evidence.visual if ctx.evidence is not None else None
+        if ctx.analysis is not None:
+            visual = ctx.analysis.visual
+        inner.bind_run_context(ctx.workspace.root, visual=visual)
     retry_policy = None if ctx.config.analysis.provider == "fake" else RetryPolicy()
     return wrap_provider(
         inner,
@@ -301,10 +319,22 @@ def run_extract_evidence(ctx: RunContext, source: SourceManifest) -> EvidenceBun
     try:
         with ctx.workspace.write_lock():
             sidecar = ctx.build.subtitles if ctx.build and ctx.build.subtitles else None
+            ocr_engine, ocr_unavailable_reason = resolve_ocr_engine(
+                ctx.config.analysis.ocr_engine
+            )
+            asr_request, _asr_unavailable = build_asr_request(
+                source,
+                workspace_root=ctx.workspace.root,
+                analysis=ctx.config.analysis,
+            )
             bundle = extract_evidence_locked(
                 source,
                 workspace=ctx.workspace,
                 sidecar=sidecar,
+                ocr_engine=ocr_engine,
+                ocr_languages=ctx.config.analysis.ocr_languages,
+                ocr_unavailable_reason=ocr_unavailable_reason,
+                asr_request=asr_request,
                 cancel_event=ctx.cancel_event,
             )
     except Exception as error:  # noqa: BLE001
@@ -406,6 +436,7 @@ def run_analysis_stages(ctx: RunContext, bundle: EvidenceBundle) -> AnalysisResu
         result = analyze_evidence_bundle(
             bundle,
             provider=provider,
+            capabilities=provider.capabilities,
             cancel_event=ctx.cancel_event,
             output_dir=ctx.workspace.root,
             analysis_mode=ctx.config.analysis.mode,

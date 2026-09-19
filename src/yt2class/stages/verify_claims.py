@@ -37,6 +37,10 @@ from yt2class.stages.llm_util import (
 )
 
 NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
+_PEDAGOGICAL_NUMBER_RE = re.compile(
+    r"(?:第\s*\d+|\d+\s*例|用法\s*\d+|例\s*\d+)",
+    re.IGNORECASE,
+)
 CRITICAL_KINDS = {
     "number",
     "negation",
@@ -214,15 +218,22 @@ def _grounding_failure(note: str = "no affirmative provider evidence support") -
     )
 
 
-def _grounding_from_row(claim: KnowledgeClaim, index: dict[str, str], row: dict[str, Any]) -> CheckResult:
+def _grounding_from_row(
+    claim: KnowledgeClaim,
+    index: dict[str, str],
+    row: dict[str, Any],
+    *,
+    evidence_ids: list[str] | None = None,
+) -> CheckResult:
     failure = _grounding_failure()
+    cited_ids = list(evidence_ids or claim.evidence_ids)
     try:
         result = ClaimVerdict.model_validate(row)
     except (ValueError, TypeError):
         return failure
     refs = result.supporting_ids + result.contradicting_ids
     if result.claim_id != claim.id or any(
-        item not in claim.evidence_ids or not index.get(item, "").strip() for item in refs
+        item not in cited_ids or not index.get(item, "").strip() for item in refs
     ):
         return failure
     if result.verdict == "supported" and not result.supporting_ids:
@@ -245,14 +256,16 @@ def check_grounding_batch(
     *,
     provider: Provider | None = None,
     cancel_event: Event | None = None,
+    evidence_ids_by_claim: dict[str, list[str]] | None = None,
 ) -> dict[str, CheckResult]:
     """Batch grounding checks using the verifier contract's multi-claim payload."""
 
     results: dict[str, CheckResult] = {}
     eligible: list[KnowledgeClaim] = []
     for claim in claims:
-        if not claim.text.strip() or not claim.evidence_ids or not any(
-            index.get(item, "").strip() for item in claim.evidence_ids
+        cited_ids = list((evidence_ids_by_claim or {}).get(claim.id, claim.evidence_ids))
+        if not claim.text.strip() or not cited_ids or not any(
+            index.get(item, "").strip() for item in cited_ids
         ):
             results[claim.id] = _grounding_failure("missing or empty cited evidence")
         else:
@@ -264,10 +277,19 @@ def check_grounding_batch(
 
     for offset in range(0, len(eligible), VERIFIER_GROUNDING_BATCH_SIZE):
         chunk = eligible[offset : offset + VERIFIER_GROUNDING_BATCH_SIZE]
-        evidence_ids = sorted({item for claim in chunk for item in claim.evidence_ids})
+        cited_by_id = {
+            claim.id: list((evidence_ids_by_claim or {}).get(claim.id, claim.evidence_ids))
+            for claim in chunk
+        }
+        evidence_ids = sorted({item for ids in cited_by_id.values() for item in ids})
         payload = {
             "prompt": load_prompt("verifier.md"),
-            "claims": [claim.model_dump(mode="json") for claim in chunk],
+            "claims": [
+                claim.model_copy(update={"evidence_ids": cited_by_id[claim.id]}).model_dump(
+                    mode="json"
+                )
+                for claim in chunk
+            ],
             "evidence": {item: index.get(item, "") for item in evidence_ids},
             "allowed_evidence_ids": evidence_ids,
         }
@@ -281,7 +303,11 @@ def check_grounding_batch(
         if not isinstance(rows, list) or len(rows) != len(chunk):
             for claim in chunk:
                 results[claim.id] = _check_grounding_single(
-                    claim, index, provider=provider, cancel_event=cancel_event
+                    claim,
+                    index,
+                    provider=provider,
+                    cancel_event=cancel_event,
+                    evidence_ids=cited_by_id[claim.id],
                 )
             continue
         by_id = {str(row.get("claim_id")): row for row in rows if isinstance(row, dict)}
@@ -290,7 +316,12 @@ def check_grounding_batch(
             if row is None:
                 results[claim.id] = _grounding_failure()
             else:
-                results[claim.id] = _grounding_from_row(claim, index, row)
+                results[claim.id] = _grounding_from_row(
+                    claim,
+                    index,
+                    row,
+                    evidence_ids=cited_by_id[claim.id],
+                )
     return results
 
 
@@ -300,19 +331,21 @@ def _check_grounding_single(
     *,
     provider: Provider | None = None,
     cancel_event: Event | None = None,
+    evidence_ids: list[str] | None = None,
 ) -> CheckResult:
     """One claim, one verifier request (batch fallback and public single-check API)."""
-    if not claim.text.strip() or not claim.evidence_ids or not any(
-        index.get(item, "").strip() for item in claim.evidence_ids
+    cited_ids = list(evidence_ids or claim.evidence_ids)
+    if not claim.text.strip() or not cited_ids or not any(
+        index.get(item, "").strip() for item in cited_ids
     ):
         return _grounding_failure("missing or empty cited evidence")
     if provider is None:
         return _grounding_failure()
     payload = {
         "prompt": load_prompt("verifier.md"),
-        "claims": [claim.model_dump(mode="json")],
-        "evidence": {item: index.get(item, "") for item in claim.evidence_ids},
-        "allowed_evidence_ids": list(claim.evidence_ids),
+        "claims": [claim.model_copy(update={"evidence_ids": cited_ids}).model_dump(mode="json")],
+        "evidence": {item: index.get(item, "") for item in cited_ids},
+        "allowed_evidence_ids": cited_ids,
     }
     structured = _complete_verifier(
         provider,
@@ -323,7 +356,7 @@ def _check_grounding_single(
     rows = structured.get("verdicts") if structured else None
     if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
         return _grounding_failure()
-    return _grounding_from_row(claim, index, rows[0])
+    return _grounding_from_row(claim, index, rows[0], evidence_ids=cited_ids)
 
 
 def check_grounding(
@@ -332,15 +365,63 @@ def check_grounding(
     *,
     provider: Provider | None = None,
     cancel_event: Event | None = None,
+    evidence_ids: list[str] | None = None,
 ) -> CheckResult:
     """Only a structured provider verdict can affirm free-text entailment."""
     return _check_grounding_single(
-        claim, index, provider=provider, cancel_event=cancel_event
+        claim,
+        index,
+        provider=provider,
+        cancel_event=cancel_event,
+        evidence_ids=evidence_ids,
     )
 
 
+def _pedagogical_number_literals(text: str) -> set[str]:
+    literals: set[str] = set()
+    for match in _PEDAGOGICAL_NUMBER_RE.finditer(text):
+        for token in NUMBER_RE.findall(match.group(0)):
+            literals.add(token)
+    return literals
+
+
+def _material_numbers(text: str) -> list[str]:
+    claimed = NUMBER_RE.findall(text)
+    ignore = _pedagogical_number_literals(text)
+    return [item for item in claimed if item not in ignore]
+
+
+def _segment_overlaps_unit(
+    segment_id: str,
+    unit: KnowledgeUnit,
+    transcript: TranscriptDocument,
+) -> bool:
+    for segment in transcript.segments:
+        if segment.id != segment_id:
+            continue
+        return (
+            segment.end_seconds > unit.start_seconds
+            and segment.start_seconds < unit.end_seconds
+        )
+    return True
+
+
+def _aligned_claim_evidence_ids(
+    claim: KnowledgeClaim,
+    unit: KnowledgeUnit,
+    transcript: TranscriptDocument,
+) -> list[str]:
+    segment_ids = {segment.id for segment in transcript.segments}
+    aligned: list[str] = []
+    for item in claim.evidence_ids:
+        if item in segment_ids and not _segment_overlaps_unit(item, unit, transcript):
+            continue
+        aligned.append(item)
+    return aligned
+
+
 def check_numbers(claim: KnowledgeClaim, evidence_text: str) -> CheckResult:
-    claimed = NUMBER_RE.findall(claim.text)
+    claimed = _material_numbers(claim.text)
     if not claimed:
         return CheckResult(kind="number", passed=True, note="no numbers")
     present = set(NUMBER_RE.findall(evidence_text))
@@ -418,10 +499,32 @@ def run_claim_checks(
     provider: Provider | None = None,
     cancel_event: Event | None = None,
 ) -> list[CheckResult]:
-    evidence_text = _join(claim.evidence_ids, index)
+    aligned_ids = _aligned_claim_evidence_ids(claim, unit, transcript)
+    temporal = CheckResult(kind="translation", passed=True, note="caption times align with unit")
+    segment_ids = {segment.id for segment in transcript.segments}
+    misaligned = [
+        item
+        for item in claim.evidence_ids
+        if item in segment_ids and item not in aligned_ids
+    ]
+    if misaligned and not aligned_ids:
+        temporal = CheckResult(
+            kind="translation",
+            passed=False,
+            note="caption citations lack temporal overlap with unit span",
+            verdict="insufficient",
+        )
+    evidence_text = _join(aligned_ids or claim.evidence_ids, index)
     return [
         check_unknown_refs(claim, allowed),
-        check_grounding(claim, index, provider=provider, cancel_event=cancel_event),
+        temporal,
+        check_grounding(
+            claim,
+            index,
+            provider=provider,
+            cancel_event=cancel_event,
+            evidence_ids=aligned_ids or claim.evidence_ids,
+        ),
         check_numbers(claim, evidence_text),
         check_steps(claim, unit, transcript, visual),
     ]
@@ -453,6 +556,28 @@ def _unit_for_claim(knowledge: KnowledgeDocument, claim_id: str) -> KnowledgeUni
         if any(claim.id == claim_id for claim in unit.claims):
             return unit
     raise KeyError(claim_id)
+
+
+def _keep_insufficient_example_in_draft(
+    claim_id: str,
+    *,
+    knowledge: KnowledgeDocument,
+    verdicts: dict[str, ClaimVerdict],
+    quality_mode: QualityMode,
+) -> bool:
+    if quality_mode != "draft":
+        return False
+    unit = _unit_for_claim(knowledge, claim_id)
+    if unit.kind != "example":
+        return False
+    for sibling in knowledge.units:
+        if sibling.topic_id != unit.topic_id or sibling.kind == "example":
+            continue
+        for claim in sibling.claims:
+            verdict = verdicts.get(claim.id)
+            if verdict is not None and verdict.verdict == "supported":
+                return True
+    return False
 
 
 def _is_critical(claim: KnowledgeClaim, checks: list[CheckResult]) -> bool:
@@ -713,48 +838,67 @@ def verify_claims(
 
     def _structural_row(
         row: tuple[str, KnowledgeClaim, KnowledgeUnit],
-    ) -> tuple[str, CheckResult, CheckResult, CheckResult]:
+    ) -> tuple[str, CheckResult, CheckResult, CheckResult, CheckResult, list[str]]:
         claim_id, claim, unit = row
         if cancel_event is not None and cancel_event.is_set():
             raise RequestCancelled(f"verify cancelled before {claim_id}")
-        ref_check, numbers, steps = structural_claim_checks(
-            claim,
-            unit=unit,
-            transcript=transcript,
-            visual=visual,
-            allowed=allowed,
-            index=index,
+        ref_check = check_unknown_refs(claim, allowed)
+        aligned_ids = _aligned_claim_evidence_ids(claim, unit, transcript)
+        segment_ids = {segment.id for segment in transcript.segments}
+        misaligned = [
+            item
+            for item in claim.evidence_ids
+            if item in segment_ids and item not in aligned_ids
+        ]
+        temporal = CheckResult(
+            kind="translation",
+            passed=True,
+            note="caption times align with unit",
         )
-        return claim_id, ref_check, numbers, steps
+        if misaligned and not aligned_ids:
+            temporal = CheckResult(
+                kind="translation",
+                passed=False,
+                note="caption citations lack temporal overlap with unit span",
+                verdict="insufficient",
+            )
+        cited_ids = aligned_ids or list(claim.evidence_ids)
+        numbers = check_numbers(claim, _join(cited_ids, index))
+        steps = check_steps(claim, unit, transcript, visual)
+        return claim_id, ref_check, temporal, numbers, steps, cited_ids
 
     grounding_targets: list[KnowledgeClaim] = []
+    grounding_evidence_ids: dict[str, list[str]] = {}
     preliminary: dict[str, list[CheckResult]] = {}
     claim_by_id = {claim_id: claim for claim_id, claim, _unit in claim_rows}
-    for claim_id, ref_check, numbers, steps in map_parallel(
+    for claim_id, ref_check, temporal, numbers, steps, cited_ids in map_parallel(
         claim_rows, _structural_row, cancel_event=cancel_event
     ):
         if not ref_check.passed:
             preliminary[claim_id] = [
                 ref_check,
+                temporal,
                 _grounding_failure("skipped after unknown evidence ref"),
                 numbers,
                 steps,
             ]
         else:
-            preliminary[claim_id] = [ref_check, numbers, steps]
+            preliminary[claim_id] = [ref_check, temporal, numbers, steps]
             grounding_targets.append(claim_by_id[claim_id])
+            grounding_evidence_ids[claim_id] = cited_ids
 
     grounding_map = check_grounding_batch(
         grounding_targets,
         index,
         provider=provider,
         cancel_event=cancel_event,
+        evidence_ids_by_claim=grounding_evidence_ids,
     )
 
     for claim_id, claim, unit in claim_rows:
         parts = preliminary[claim_id]
-        if len(parts) == 3:
-            checks = [parts[0], grounding_map[claim_id], parts[1], parts[2]]
+        if len(parts) == 4:
+            checks = [parts[0], parts[1], grounding_map[claim_id], parts[2], parts[3]]
         else:
             checks = parts
         check_by_claim[claim_id] = checks
@@ -849,6 +993,13 @@ def verify_claims(
 
     for claim_id, verdict in list(verdicts.items()):
         if verdict.verdict == "supported":
+            continue
+        if _keep_insufficient_example_in_draft(
+            claim_id,
+            knowledge=current_knowledge,
+            verdicts=verdicts,
+            quality_mode=quality_mode,
+        ):
             continue
         if claim_id not in removed:
             removed.append(claim_id)
