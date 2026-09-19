@@ -36,7 +36,9 @@ def contains_student_meta(text: str) -> bool:
 def normalize_headword_display(text: str) -> str:
     if not text:
         return text
-    if _HEADWORD_TSUKI_RE.search(text):
+    if re.match(r"用法[一二三四五六七八九十]+：", text.strip()):
+        return text
+    if _HEADWORD_TSUKI_RE.search(text) and not re.search(r"時間につき", text):
         return _HEADWORD_TSUKI_RE.sub("～につき", text, count=1)
     if "用法" in text or "文法" in text or "助詞" in text:
         text = _TSUKI_MISHEAR_RE.sub("～につき", text)

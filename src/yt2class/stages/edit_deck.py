@@ -10,7 +10,7 @@ from typing import Any, Iterable
 from pydantic import ValidationError
 
 from yt2class.adapters.providers.base import Provider
-from yt2class.domain.course_map import CourseMap
+from yt2class.domain.course_map import CourseMap, Topic
 from yt2class.domain.editorial import (
     DeckOrder,
     EditorialPlan,
@@ -30,6 +30,8 @@ from yt2class.stages.llm_util import (
     model_request,
 )
 from yt2class.stages.grammar_sense import (
+    is_fixed_sense_heading,
+    is_fixed_sense_summary_line,
     learner_page_title,
     pick_summary_unit,
     pick_summary_unit_for_topic,
@@ -360,6 +362,81 @@ def _demote_translation_duplicate_units(
     return demoted
 
 
+def _topic_by_id(
+    topic_id: str,
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument,
+) -> Topic | None:
+    if course_map and course_map.topics:
+        found = next((item for item in course_map.topics if item.id == topic_id), None)
+        if found is not None:
+            return found
+    units = [unit for unit in knowledge.units if unit.topic_id == topic_id]
+    if not units:
+        return None
+    return Topic(
+        id=topic_id,
+        title=topic_id,
+        goal=topic_id,
+        start_seconds=min(unit.start_seconds for unit in units),
+        end_seconds=max(unit.end_seconds for unit in units),
+        evidence_ids=[],
+    )
+
+
+def _claim_topic_ids(knowledge: KnowledgeDocument) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for unit in knowledge.units:
+        for claim in unit.claims:
+            mapping[claim.id] = unit.topic_id
+    return mapping
+
+
+def _restore_sense_content_titles(
+    plan: EditorialPlan,
+    *,
+    knowledge: KnowledgeDocument,
+    course_map: CourseMap | None,
+) -> EditorialPlan:
+    claim_topics = _claim_topic_ids(knowledge)
+    pages: list[PageIntent] = []
+    for page in plan.pages:
+        if page.type != "content":
+            pages.append(page)
+            continue
+        topic_id = next(
+            (claim_topics[claim_id] for claim_id in page.claim_ids if claim_id in claim_topics),
+            None,
+        )
+        if topic_id is None:
+            pages.append(page)
+            continue
+        ordinal = sense_ordinal(topic_id, course_map, knowledge=knowledge)
+        if ordinal is None:
+            pages.append(page)
+            continue
+        pages.append(page.model_copy(update={"title": sense_heading(ordinal)}))
+    return plan.model_copy(update={"pages": pages})
+
+
+def _merge_summary_body_points(base: PageIntent, incoming: PageIntent) -> list[str]:
+    merged: list[str] = []
+    for index, base_point in enumerate(base.body_points):
+        incoming_point = (
+            incoming.body_points[index] if index < len(incoming.body_points) else ""
+        )
+        cleaned = sanitize_student_copy(incoming_point).strip()
+        if cleaned and is_fixed_sense_summary_line(base_point) and not is_fixed_sense_summary_line(
+            cleaned
+        ):
+            merged.append(sanitize_student_copy(base_point)[:200])
+        elif cleaned:
+            merged.append(cleaned[:200])
+        else:
+            merged.append(base_point)
+    return merged or list(base.body_points)
+
+
 def _reserved_topic_ids(
     candidates: list[PageCandidate],
     course_map: CourseMap | None,
@@ -405,10 +482,7 @@ def _pick_mandatory_sense_candidate(
         return examples[0]
     if pool:
         return sorted(pool, key=lambda row: (-row.score, row.start_seconds, row.id))[0]
-    topic = next(
-        (item for item in (course_map.topics if course_map else []) if item.id == topic_id),
-        None,
-    )
+    topic = _topic_by_id(topic_id, course_map, knowledge)
     if topic is None:
         return None
     unit = pick_summary_unit(topic, knowledge, course_map=course_map)
@@ -976,16 +1050,26 @@ def apply_model_organization(
         model_body_order = [page.id for page in body]
 
     def overlay(base: PageIntent, incoming: PageIntent) -> PageIntent:
+        incoming_title = sanitize_student_copy(incoming.title)[:80].strip()
+        if is_fixed_sense_heading(base.title):
+            title = base.title
+        elif incoming_title:
+            title = incoming_title
+        else:
+            title = base.title
+        if base.type == "summary":
+            body_points = _merge_summary_body_points(base, incoming)
+        else:
+            body_points = [
+                sanitize_student_copy(point)[:200]
+                for point in incoming.body_points
+                if sanitize_student_copy(point).strip()
+            ] or base.body_points
         return base.model_copy(
             update={
-                "title": sanitize_student_copy(incoming.title)[:80] or base.title,
+                "title": title,
                 "notes": incoming.notes,
-                "body_points": [
-                    sanitize_student_copy(point)[:200]
-                    for point in incoming.body_points
-                    if sanitize_student_copy(point).strip()
-                ]
-                or base.body_points,
+                "body_points": body_points,
             }
         )
 
@@ -1078,6 +1162,11 @@ def edit_deck(
         )
     except (EditorContractError, ValidationError):
         planned = fallback
+    planned = _restore_sense_content_titles(
+        planned,
+        knowledge=knowledge,
+        course_map=course_map,
+    )
     labeled = []
     for page in planned.pages:
         labeled.append(relabel_page(page, quality_label) if quality_label != "verified" else page)

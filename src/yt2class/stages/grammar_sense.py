@@ -64,7 +64,9 @@ _CN_ORDINALS = "一二三四五六七八九十"
 _USAGE_NUM_RE = re.compile(r"用法\s*([123一二三])")
 _RATE_EXAMPLE_HINTS = ("每", "一匹", "一個", "円", "ポイント", "割", "500", "1500", "1000")
 _RATE_EXAMPLE_RE = re.compile(
-    r"一[個匹本枚]につき|[0-9０-９]+円|ごとに|每[一個人匹本]"
+    r"一[個匹本枚]につき|"
+    r"[0-9０-９]+時間(?:につき|当たり)|"
+    r"時間につき[0-9０-９]+|[0-9０-９]+円|ごとに|每[一個人匹本]"
 )
 
 
@@ -124,16 +126,52 @@ def is_grammar_usage_topic(
     return topic_kind(topic, knowledge) in _KIND_TO_ORDINAL
 
 
+def _synthetic_topic(topic_id: str, units: list[KnowledgeUnit]) -> Topic:
+    return Topic(
+        id=topic_id,
+        title=topic_id,
+        goal=topic_id,
+        start_seconds=min(unit.start_seconds for unit in units),
+        end_seconds=max(unit.end_seconds for unit in units),
+        evidence_ids=[],
+    )
+
+
+def iter_topics(
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument | None = None,
+) -> list[Topic]:
+    """Course-map topics in order, then knowledge-only topic ids by earliest unit."""
+
+    topics: list[Topic] = []
+    seen: set[str] = set()
+    if course_map and course_map.topics:
+        for topic in course_map.topics:
+            seen.add(topic.id)
+            topics.append(topic)
+    if knowledge is not None:
+        by_topic: dict[str, list[KnowledgeUnit]] = {}
+        for unit in knowledge.units:
+            by_topic.setdefault(unit.topic_id, []).append(unit)
+        extra_ids = sorted(
+            by_topic,
+            key=lambda topic_id: min(unit.start_seconds for unit in by_topic[topic_id]),
+        )
+        for topic_id in extra_ids:
+            if topic_id in seen:
+                continue
+            topics.append(_synthetic_topic(topic_id, by_topic[topic_id]))
+    return topics
+
+
 def usage_topics(
     course_map: CourseMap | None,
     *,
     knowledge: KnowledgeDocument | None = None,
 ) -> list[Topic]:
-    if course_map is None or not course_map.topics:
-        return []
     return [
         topic
-        for topic in course_map.topics
+        for topic in iter_topics(course_map, knowledge)
         if is_grammar_usage_topic(topic, knowledge)
     ]
 
@@ -193,10 +231,12 @@ def topic_for_sense_ordinal(
     *,
     knowledge: KnowledgeDocument | None = None,
 ) -> Topic | None:
-    if course_map is None or not course_map.topics or ordinal not in _ORDINAL_TO_KIND:
+    if ordinal not in _ORDINAL_TO_KIND:
+        return None
+    if knowledge is None and (course_map is None or not course_map.topics):
         return None
     want = _ORDINAL_TO_KIND[ordinal]
-    for topic in course_map.topics:
+    for topic in iter_topics(course_map, knowledge):
         if is_connective_topic(topic.title):
             continue
         if topic_kind(topic, knowledge) == want:
@@ -210,15 +250,25 @@ def sense_ordinal(
     *,
     knowledge: KnowledgeDocument | None = None,
 ) -> int | None:
-    if course_map is None or not course_map.topics:
+    if knowledge is None and (course_map is None or not course_map.topics):
         return None
-    topic = next((item for item in course_map.topics if item.id == topic_id), None)
+    topic = next((item for item in iter_topics(course_map, knowledge) if item.id == topic_id), None)
     if topic is None or is_connective_topic(topic.title):
         return None
     kind = topic_kind(topic, knowledge)
     if kind in _KIND_TO_ORDINAL:
         return _KIND_TO_ORDINAL[kind]
     return None
+
+
+def is_fixed_sense_heading(title: str) -> bool:
+    text = title.strip()
+    return any(text.startswith(sense_heading(ordinal)) for ordinal in (1, 2, 3))
+
+
+def is_fixed_sense_summary_line(text: str) -> bool:
+    stripped = text.strip()
+    return any(stripped.startswith(f"{sense_heading(ordinal)}：") for ordinal in (1, 2, 3))
 
 
 def sense_heading(ordinal: int) -> str:
@@ -327,7 +377,10 @@ def pick_summary_unit_for_topic(
 
 __all__ = [
     "is_connective_topic",
+    "is_fixed_sense_heading",
+    "is_fixed_sense_summary_line",
     "is_grammar_usage_topic",
+    "iter_topics",
     "learner_page_title",
     "pick_summary_unit",
     "pick_summary_unit_for_topic",

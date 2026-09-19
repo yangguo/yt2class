@@ -463,6 +463,21 @@ def _bind_content_pages(
     return pages
 
 
+def _summary_display_bullets(
+    page: PageIntent,
+    chunk: list[str],
+    *,
+    claims: dict[str, SlideClaim],
+) -> list[str]:
+    bullets: list[str] = []
+    for index, claim_id in enumerate(chunk):
+        if index < len(page.body_points) and page.body_points[index].strip():
+            bullets.append(sanitize_student_copy(page.body_points[index])[:200])
+        else:
+            bullets.append(claims[claim_id].text)
+    return bullets
+
+
 def _bind_summary(page: PageIntent, *, claims: dict[str, SlideClaim]) -> list[SlidePage]:
     if not page.claim_ids:
         raise BindError(f"summary page {page.id!r} requires at least one claim")
@@ -470,12 +485,17 @@ def _bind_summary(page: PageIntent, *, claims: dict[str, SlideClaim]) -> list[Sl
     pages: list[SlidePage] = []
     for index, chunk in enumerate(chunks):
         page_id = page.id if index == 0 else f"{page.id}-{index + 1}"
+        offset = index * 4
+        body_slice = page.body_points[offset : offset + len(chunk)]
+        slice_page = page.model_copy(update={"body_points": body_slice})
+        bullets = _summary_display_bullets(slice_page, chunk, claims=claims)
         pages.append(
             SlidePage(
                 id=page_id,
                 type="summary",
                 title=page.title if index == 0 else f"{page.title} ({index + 1})",
                 claim_ids=chunk,
+                bullets=bullets,
                 citation_ids=[ev for cid in chunk for ev in claims[cid].evidence_ids],
                 notes=_page_notes(page),
                 continuation_of=page.id if index > 0 else None,
