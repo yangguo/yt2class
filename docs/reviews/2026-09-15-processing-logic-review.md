@@ -3,6 +3,7 @@
 - **审阅对象**：`master@cf950f4`（PR #9 合并后）
 - **审阅方式**：对 orchestration / stages / adapters 三层分别做全量静态深读；关键断言已在工作树中逐一复核（见文末"方法与置信度"）。
 - **结论速览**：架构骨架（契约分层、阶段缓存、原子写、幂等、预算门禁）达到业界水准；主要问题集中在四类——**Windows 可用性阻断（P0）、运行内串行与缓存粒度（P1 性能）、LLM 成本结构（P1 成本）、若干正确性风险（P2）**。逐条均附文件:行号与建议修法。
+- **Codex 复核（PR #11）**：已采纳 5 条行级意见——P1-5 降级（当前树无 wire 序列化）、P1-6 修正拷贝次数并保留 provenance 边界重哈希、P2-5 改写（不存在三次相同 JSON 重试）、删除原正确性风险 #8（verifier 幂等键含 payload digest）。详见文末修订记录。
 
 ---
 
@@ -60,17 +61,19 @@
 - **影响**：12 页 deck × ~100 claim ≈ 100–275 次小调用，每次重读并重发 `verifier.md`、重复传输 evidence 块。`verifier.md:12-13` 与解析器本就期望 `{"verdicts": [...]}` 批量结构。
 - **建议**：按共享 evidence 块分批（10–20 claim/次），校验器放宽到 N 行，批量失败的 claim 回退单条；`evidence_index` 每次校验运行构建一次并传入（:519 处已算过）；unknown-ref 已失败的 claim 短路跳过 grounding（:313-318 目前四项检查无条件全跑）；`load_prompt` 加缓存。
 
-### P1-5 请求体序列化方式废掉了 provider 前缀缓存
+### P1-5 编辑器 payload 近乎翻倍；前缀缓存是 live adapter 设计债，不是当前浪费
 
-- **位置**：`stages/llm_util.py:121,207`（`json.dumps(..., sort_keys=True)`，已核实）。
-- **影响**：按字母序，稳定的 `"prompt"` 字段被排到 `allowed_evidence_ids` / `frames` / `transcript` 等逐窗口变化字段之后——OpenAI 自动前缀缓存与 Anthropic `cache_control` 都需要稳定字节前缀，当前形态下每次调用为共享指令付全价。业界经验：prompt 缓存是当前 ROI 最高的成本杠杆（命中最高 ~90% 折扣，≥1024 稳定前缀 token 即可）。
-- **建议**：指令文本移入 system role（`prompts/*.md` 本身仅 19–27 行、极稳定）；若必须留在 payload，请求体不排序（digest 保留 `sort_keys`）。附带：`edit_deck.py:612-641` 的 `candidates` 与 `selected` 由同一列表构造、字段几乎相同——编辑调用输入近乎翻倍，发一份即可。
+- **位置**：`stages/edit_deck.py:612-641`（`candidates` 与 `selected` 由同一 `selected` 列表构造）；对照 `llm_util.py:56-63,121,207` 的 `sort_keys=True`。
+- **当前树事实**：`model_request()` 把 `json.dumps(..., sort_keys=True)` **只用于** token 估算和 `payload_digest`；`ModelRequest` 不含 payload 字段。FakeProvider 经 `last_payload` 接收原始 dict，不经排序 JSON。新编排路径尚未接入会把 payload 序列化成 HTTP body 的 live adapter（`pipeline.py:130-133` 明确只接线 fake）。因此 `sort_keys` **当前不会**废掉 OpenAI 自动前缀缓存或 Anthropic `cache_control`，改掉它也没有文档原先声称的即时省钱效果。
+- **仍成立的浪费**：editor 一次调用把近乎相同的页面表发两遍（`candidates` 比 `selected` 多 `unit_id` / `topic_id` / `kind` / `start_seconds`），输入近乎翻倍。
+- **建议**：现在就去掉 editor 的重复表。前缀缓存留作 live adapter 接入约束——指令进 system role（`prompts/*.md` 仅 19–27 行、极稳定）、稳定前缀 ≥1024 token、digest 继续 `sort_keys`。等真正的 wire 序列化路径落地后再作为成本 P1 跟踪。
 
-### P1-6 源视频一次运行被完整读盘哈希 5–7 次，外加一份全量拷贝
+### P1-6 源视频一次运行被完整读盘哈希 5–7 次；全量拷贝次数因路径而异
 
-- **位置**（本地视频完整链）：`orchestration/pipeline.py:190-195`（ingest 缓存键哈希）→ `stages/ingest.py:262`（原始文件）→ :284（`shutil.copy2` 整片拷入 workspace）→ :272（**再哈希副本**）→ `extract_evidence.py:199-203`（`resolve_manifest_media` 复验哈希）→ :281-291（`_snapshot_verified_media` 又拷贝一次 + 哈希临时副本）→ :513（提取后再哈希）→ `bind_spec.py:559-564`（交付再哈希）→ `render.py:43`（**又跑一遍** `validate_bound_assets`）。ASR 路径另加 `asr.py:180,228` 前后双哈希。
-- **影响**：2–4 GB 课程视频 = 每轮数分钟纯串行 IO + 磁盘占用翻倍。首次哈希已存入 `SourceManifest.sha256`，后续全部是重复推导。
-- **建议**：哈希一次（ingest），下游用 `(size, mtime_ns)` 的 `os.stat` 验证不变性（或按 `(path,size,mtime)` 进程内记忆化 `content_sha256`）；`_snapshot_verified_media` 在源已在 workspace `media/` 下时改硬链接（同 NTFS 卷）或直接记录现有路径；render 侧复用 bind 已验证的哈希快照。
+- **位置**（本地 `copy` 链的哈希，不是二次拷贝）：`orchestration/pipeline.py:190-195`（ingest 缓存键哈希原文件）→ `stages/ingest.py:262`（原文件）→ `_copy_local` `:52-65`（`shutil.copy2` 写入 `media/{hash[:16]}{suffix}`）→ `:272`（**再哈希副本**）→ `extract_evidence.py:199-203`（`resolve_manifest_media` 复验）→ `:273-280`（`_snapshot_verified_media` 发现源与目标 realpath 相同，**跳过拷贝**，仍再哈希 dest）→ `:513`（提取后再哈希）→ `bind_spec.py:559-564`（交付再哈希）→ `render.py:43` 与 `pptxgenjs.py:116`（同一次 render **连续两次** `validate_bound_assets`）。ASR 路径另加 `asr.py:180,228` 前后双哈希。
+- **拷贝事实**：本地 copy 模式只有 ingest 那一次 workspace 全量拷贝；提取阶段的 snapshot 与 ingest 目标路径相同，不会再复制一份。YouTube 路径例外：yt-dlp 按标题落盘（`ytdlp.py:57`），提取再拷到 `media/{sha256[:16]}{suffix}`，这时才有第二次全量拷贝。
+- **影响**：2–4 GB 课程视频 = 每轮数分钟纯串行 IO。磁盘占用翻倍只发生在 YouTube（以及 local `reference` 首次打进 workspace）路径，不是本地 copy 的必然结果。
+- **建议**：优化重复读盘，但**不要**用 `(size, mtime_ns)` 替代 provenance 边界上的 SHA-256。设计文档 §10.4（`:500-502`）要求绑定校验与嵌入前再哈希，防止校验后文件被改；同大小就地改写可以保住 size/mtime。可做的：ingest 拷贝后不必立刻重哈希（拷贝前后字节相同）；`content_sha256` 进程内可按 `(path, size, mtime, inode)` 记忆化**同一阶段内的重复读**，但 bind / render 仍必须对文件重读哈希；同一次 `render_bound_spec` 里 `render.py` 与 `pptxgenjs.py` 的两次 `validate_bound_assets` 留一次即可；YouTube/reference 的 snapshot 在已位于 workspace `media/` 时可硬链接。
 
 ### P1-7 yt-dlp：不设清晰度上限 + 字幕多次单独调用（相对 legacy 是退化）
 
@@ -94,7 +97,7 @@
 | P2-2 | **精修循环整窗重发**：模型只问一个 30s 空洞，修复却重发全部 140s 转写 + 所有帧 + 此前累积的全部 clip（`extra_clips` 永不裁剪）→ 单退化窗口 2–3x 成本；round 计数按"请求"而非"轮次"（docstring 语义为每段最多 2 轮）；帧/剪辑余量是**全 run 全局**的，早段吃光晚段的 | `evidence_refinement.py:312-414,195-245`；`orchestration/analyze.py:116` | 只下发增量证据 + 请求区间局部转写，复用既有 `merge_native_into_unit` 合并机制；round 按 outer 迭代计数；余量改按窗口 |
 | P2-3 | **OCR 三重浪费 + 生产 DAG 未接线**：按 occurrence 而非 asset 执行（同一静态幻灯片去重后仍 OCR 6 次）、严格串行、对 `reject_reason` 非空的暗帧/糊帧也 OCR；`measure_frame_quality` 纯 Python 遍历 800 万像素列表（两次全图 tobytes）；且 `AnalysisConfig` 无 ocr/asr 字段 → 帧模式永远拿不到 OCR 文本、缺字幕也永远不会触发 ASR | `extract_evidence.py:561-616`、`scenes.py:379-399,459-482`、`config.py:39-46`、`pipeline.py:303-308` | 按 asset_id OCR 一次再扇出到 occurrence；跳过已拒绝帧；`ImageStat`/numpy 提质；给 `AnalysisConfig` 加 ocr/asr 开关（openrouter 分支已在部分接线） |
 | P2-4 | **`reduce_knowledge` 的 O(n²)**：`normalize_concept`/`concept_key`（纯函数）在嵌套扫描内被重算数百万次（regex+分词）；`retain_conflicts` 对全量 unit 做 O(units²×claims²)，未按时间分桶 | `reduce_knowledge.py:81-90,154-174,184-191,238-251,319-337` | `normalize_concept` 加 `@lru_cache`（一行，预计本阶段 10–100x）；claim 键预计算入 dict；冲突扫描按时间重叠分桶 |
-| P2-5 | **坏 JSON 用字节相同的 payload 重试 3 次**（同输入→同错误，3x 花费），之后才做第 4 次带错误信息的修复（唯一有效的变体）；修复调用本身也全量重发 | `retry.py:26-27`、`provider_gate.py:53-55`、`analyze_segments.py:454-490` | `InvalidJsonResponse` 移出可重试集（`classify_http_status` 已能区分 429/5xx），让 stage 修复接管；修复可只发失败的结构化输出+错误+evidence id 清单 |
+| P2-5 | **`InvalidJsonResponse` 是死代码；坏 JSON 不会被 `call_with_retry` 连打 3 次**。全仓库无 raise 点。结构化校验在 `provider.complete()` **返回之后**抛 `SegmentContractError`，stage 恰好做 **一次** repair（`analyze_segments.py:454-490`）。非 fake 虽挂 `RetryPolicy(max_attempts=3)`，但只重试 `RetryableError`；现有 provider 抛的是 `ProviderError` 子类，连 timeout 都不会走这 3 次。原先"3 次相同 payload + 第 4 次修复"不成立。 | `retry.py:26-27`、`provider_gate.py:53-55`、`analyze_segments.py:454-490` | 删除或改写 `InvalidJsonResponse`，避免后人按"可重试 JSON"接线；repair 仍可改为只发失败输出+错误+evidence id。live adapter 接入时要把 HTTP 429/5xx 映射到 `RetryableError`，**不要**把 JSON 解析失败放进去 |
 | P2-6 | **场景检测解码全片、对取消盲、native-video 模式也跑全套视觉目录**；docstring 承诺检测失败回退"单一静态场景"，实际异常直接失败整个视觉模态 | `scenes.py:225-320`、`extract_evidence.py:498-511`、`pipeline.py:754` | 传 `frame_skip`/downscale；检测循环内检查 `cancel_event`；异常时回退均匀 30s 采样并标 degraded；`mode == "native-video"` 时跳过/懒加载视觉目录 |
 | P2-7 | **ASR 每次调用重新加载模型**（解释器启动 + torch import + 模型/对齐模型加载，CPU 上数十秒），批量模式每个视频重付 | `workers/whisperx_worker.py:71-84`、`asr.py:151-162` | 保持 JSON 契约，改常驻 worker（stdin 逐行请求/逐行响应），模型每会话加载一次 |
 | P2-8 | **ffmpeg 剪辑 `-ss {start} -to {end}` 均为输入选项**，相对语义跨 ffmpeg 版本漂移 → native 模式剪辑终点可能偏移 | `ffmpeg.py:285-296` | 改 `-ss {start} -i input -t {end-start}`；对固定 ffmpeg 版本加回归测试 |
@@ -119,9 +122,10 @@
 5. ingest 缓存仅按 URL 键控：媒体被删后重新下载到不同字节时，缓存命中返回旧 sha → 在 `resolve_manifest_media` 硬死而非重新摄取（`pipeline.py:196-197`、`ingest.py:199-203`）。
 6. editorial 磁盘优先策略可能悬空交付：有 plan 文件即跳过 `plan_deck` 且跳过写产物；若 `verification-report.json` 缺失，`run_delivery_stages` 以裸 `FileNotFoundError` 硬崩而非类型化恢复路径（`pipeline.py:486-488,569-576,593-595`）。
 7. `batch` fail-fast 会中断**进行中**的已计费调用（`batch.py:102-105`）——建议让在途 future 跑完、只阻止新任务。
-8. 验证请求 id 截断到 60 字符：长 claim id 共享前缀时在 provider 幂等槽冲突（`verify_claims.py:485-486`、`base.py:193-201`）。
-9. Windows 长路径：`ytdlp.py:57` 输出模板标题长度无上限，深层 run 目录 + 长 CJK 标题可能超 MAX_PATH 260——加 `--windows-filenames --trim-filenames 120`。
-10. 生产路径的精修默认死路：pipeline 不传 extractor → 每次精修 pull 必然失败、白耗一个 round（`pipeline.py:395-406`）——接线 `extract_frame_with_timestamp` 或 `extractor is None` 时快速跳过。
+8. Windows 长路径：`ytdlp.py:57` 输出模板标题长度无上限，深层 run 目录 + 长 CJK 标题可能超 MAX_PATH 260——加 `--windows-filenames --trim-filenames 120`。
+9. 生产路径的精修默认死路：pipeline 不传 extractor → 每次精修 pull 必然失败、白耗一个 round（`pipeline.py:395-406`）——接线 `extract_frame_with_timestamp` 或 `extractor is None` 时快速跳过。
+
+（原第 8 条"验证请求 id 截断到 60 字符会冲突"已删除：`verify_claims.py:486` 实际写成 `f"{request_id[:60]}:{request.payload_digest[:32]}"`，payload 含完整 claim id 与文本，前缀碰撞不会共用幂等槽。）
 
 ---
 
@@ -151,7 +155,7 @@
 |---|---|---|
 | 混合帧采样：均匀基线 + 场景检测 + 嵌入/感知哈希去重（60min 视频 ~7200 帧压到 50–200 关键帧） | 场景检测 + 帧质量采样 + sha256 字节级去重 + average-hash 已有雏形 | 方向正确；可升级为按感知哈希聚类（`_cluster_id` 目前只与各族代表比较，近似重复链会分裂） |
 | 层级化摘要与中间层缓存（segment → 场景 → 全片） | 两层（segment → reduce），阶段级缓存 | 可增加场景级中间产物，重跑时复用中间层 |
-| Prompt 前缀缓存（最高 ~90% 折扣，静态前缀 ≥1024 token） | 被 `sort_keys=True` 序列化废掉（P1-5） | 修法成本低、收益最大 |
+| Prompt 前缀缓存（最高 ~90% 折扣，静态前缀 ≥1024 token） | 当前无 live HTTP 序列化路径；`sort_keys` 只服务 digest/估算（见修订后的 P1-5） | live adapter 接入时把指令放进 system role，不要按字母序打乱稳定前缀 |
 | Batch API（离线任务 ~5 折） | 未使用 | 本项目纯离线，天然适配，provider 接入后即可启用 |
 | 结构化输出：provider 原生 JSON schema 约束解码 | 自研 `structured_coerce`（openrouter 分支）+ 错误回注修复 | 分支方案是业界上一代的加强版；接入 provider 后可评估原生 structured output |
 | 模型分级路由（便宜模型处理易片段，省 60%+） | M6 hybrid 已做"模式级"分级（frames vs native clip） | 可下沉到模型级：文本归并用便宜模型，图表密集帧用旗舰 |
@@ -164,8 +168,8 @@
 1. **P0 全部**（P0-1/P0-2 不修，Windows 上既跑不起来、跑起来结果也是坏的；P0-4 使交付 QA 名存实亡）。
 2. **Quick Wins 一批**（半天量级，无风险）。
 3. **P1-2 分段缓存 + P1-1 运行内并发**——这两项决定真实 provider 接入后的成本曲线与墙钟时间。
-4. **P1-3 / P1-4 / P1-5**——真实 LLM 上线前的成本三件套（估算失真、验证批量、前缀缓存）。
-5. 其余 P2 按表格逐项消化，正确性风险清单并行跟踪。
+4. **P1-3 / P1-4 + editor 去重（P1-5 仍成立部分）**——真实 LLM 上线前的成本件：估算失真、验证批量、编辑调用去掉重复表。前缀缓存等 live adapter 接线时做，不要当成当前 P1。
+5. 其余 P2 按表格逐项消化，正确性风险清单并行跟踪。P2-5 不再是"停掉三次 JSON 重试"，只是清掉死类型、收紧未来 HTTP 映射。
 
 ---
 
@@ -175,3 +179,4 @@
 - 以下关键断言已在工作树二次核实：`workspace.py:7` 裸 `import fcntl`（并实测 Windows 导入失败）；`config.py:42-45` 四配置项无读取点（全 src grep）；`llm_util.py:16-17,121,207` 常量与 `sort_keys` 双处序列化；`process.py:124-131` `Popen(text=True)` 无 `encoding=`。
 - P0-4 的 LibreOffice"PNG 仅导出首页"为上游已知行为描述，建议以 2+ 页 deck 实测确认后定性。
 - 未做运行时压测：各量化收益（IO 读写量、调用次数倍数）为静态推算，量级可信，精确倍数以实施时基准测试为准。
+- PR #11 Codex 行级审阅后二次核实并改写：`ModelRequest` 无 payload 字段；`InvalidJsonResponse` 全仓库无 raise；`_snapshot_verified_media` 在 dest==source 时不拷贝；`_complete_verifier` 的 request_id 含 `payload_digest[:32]`；设计文档 §10.4 要求 bind/render 重哈希。
