@@ -181,9 +181,29 @@ def _page_citations(
                     )
         aggregate.append(row)
     if page.type in {"summary", "quiz"}:
+        if aggregate:
+            for entry in aggregate:
+                intervals = entry.get("intervals") or []
+                entry["intervals"] = sorted(
+                    intervals,
+                    key=lambda item: float(
+                        item.get("seconds")
+                        or item.get("start_seconds")
+                        or 0.0
+                    ),
+                )
         return aggregate if aggregate else citations
     if aggregate:
         citations.extend(aggregate)
+    for entry in citations:
+        intervals = entry.get("intervals") or []
+        if intervals:
+            entry["intervals"] = sorted(
+                intervals,
+                key=lambda item: float(
+                    item.get("seconds") or item.get("start_seconds") or 0.0
+                ),
+            )
     return citations
 
 

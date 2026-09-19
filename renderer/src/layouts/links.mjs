@@ -24,6 +24,7 @@ export function evidenceStartSeconds(evidenceId, evidenceById) {
 }
 
 export function primarySeekSeconds(page, assets, evidenceByAsset, evidenceById = {}) {
+  const times = [];
   const assetIds = [];
   if (page.type === "content" && page.layout === "sequence") {
     for (const step of page.steps || []) assetIds.push(step.asset_id);
@@ -34,14 +35,15 @@ export function primarySeekSeconds(page, assets, evidenceByAsset, evidenceById =
   }
   for (const assetId of assetIds) {
     const asset = assets[assetId];
-    if (asset?.timestamp_seconds != null) return asset.timestamp_seconds;
+    if (asset?.timestamp_seconds != null) times.push(Number(asset.timestamp_seconds));
     const ev = evidenceByAsset[assetId];
-    if (ev?.timestamp_seconds != null) return ev.timestamp_seconds;
+    if (ev?.timestamp_seconds != null) times.push(Number(ev.timestamp_seconds));
   }
-  const citationTimes = (page.citation_ids || [])
-    .map((id) => evidenceStartSeconds(id, evidenceById))
-    .filter((value) => value != null);
-  if (citationTimes.length) return Math.min(...citationTimes);
+  for (const evidenceId of page.citation_ids || []) {
+    const stamp = evidenceStartSeconds(evidenceId, evidenceById);
+    if (stamp != null) times.push(Number(stamp));
+  }
+  if (times.length) return Math.min(...times);
   return 0;
 }
 

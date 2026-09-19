@@ -29,15 +29,18 @@ from yt2class.stages.llm_util import (
     load_prompt,
     model_request,
 )
+from yt2class.stages.student_copy import contains_student_meta, sanitize_student_copy
 
 KIND_IMPORTANCE = {
     "concept": 1.0,
     "warning": 0.95,
     "procedure": 0.92,
     "comparison": 0.88,
-    "example": 0.55,
-    "recap": 0.22,
+    "example": 0.84,
+    "recap": 0.18,
 }
+
+_MAX_EXAMPLES_PER_TOPIC = 2
 
 
 class EditorContractError(ValueError):
@@ -84,22 +87,36 @@ def prerequisite_parents(knowledge: KnowledgeDocument) -> dict[str, set[str]]:
     return parents
 
 
+def _unit_display_text(unit: KnowledgeUnit) -> str:
+    return " ".join(claim.text for claim in unit.claims)
+
+
+def _meta_filler_penalty(unit: KnowledgeUnit) -> float:
+    if contains_student_meta(_unit_display_text(unit)):
+        return 2.5
+    if unit.kind == "recap":
+        return 1.0
+    return 0.0
+
+
 def _score_unit(unit: KnowledgeUnit) -> tuple[float, str]:
     importance = KIND_IMPORTANCE.get(unit.kind, 0.5)
     evidence = min(1.0, sum(len(claim.evidence_ids) for claim in unit.claims) / 3.0)
     topic_gain = 1.0
     new_info = 1.0
     redundancy = 0.0
+    meta_penalty = _meta_filler_penalty(unit)
     score = (
         0.35 * topic_gain
         + 0.25 * importance
         + 0.20 * evidence
         + 0.20 * new_info
         - 0.30 * redundancy
+        - meta_penalty
     )
     reason = (
         f"coverage={topic_gain:.2f} importance={importance:.2f} "
-        f"evidence={evidence:.2f} novelty={new_info:.2f}"
+        f"evidence={evidence:.2f} novelty={new_info:.2f} meta_penalty={meta_penalty:.2f}"
     )
     return score, reason
 
@@ -189,9 +206,14 @@ def score_candidates(
     candidates: list[PageCandidate] = []
     for unit in knowledge.units:
         score, reason = _score_unit(unit)
-        title = (unit.claims[0].text if unit.claims else unit.kind)[:80]
+        raw_title = unit.claims[0].text if unit.claims else unit.kind
+        title = sanitize_student_copy(raw_title)[:80] or raw_title[:80]
         notes = " ".join(claim.text for claim in unit.claims)[:4000]
-        body = [claim.text[:200] for claim in unit.claims[:4]]
+        body = [
+            sanitize_student_copy(claim.text)[:200]
+            for claim in unit.claims[:4]
+            if sanitize_student_copy(claim.text).strip()
+        ]
         candidates.append(
             PageCandidate(
                 id=f"intent-{unit.id}",
@@ -215,14 +237,17 @@ def score_candidates(
 
 
 def _example_keep(candidates: Iterable[PageCandidate]) -> set[str]:
-    best: dict[str, PageCandidate] = {}
+    per_topic: dict[str, list[PageCandidate]] = {}
     for item in candidates:
         if item.kind != "example":
             continue
-        current = best.get(item.topic_id)
-        if current is None or item.score > current.score:
-            best[item.topic_id] = item
-    return {item.unit_id for item in best.values()}
+        per_topic.setdefault(item.topic_id, []).append(item)
+    kept: set[str] = set()
+    for rows in per_topic.values():
+        ranked = sorted(rows, key=lambda row: (-row.score, row.start_seconds, row.id))
+        for row in ranked[:_MAX_EXAMPLES_PER_TOPIC]:
+            kept.add(row.unit_id)
+    return kept
 
 
 _KANA_RE = re.compile(r"[\u3040-\u30ff\u3100-\u312f]")
@@ -334,6 +359,35 @@ def _reserved_topic_ids(
     return sorted({item.topic_id for item in candidates})
 
 
+def _is_meta_page_candidate(item: PageCandidate, knowledge: KnowledgeDocument) -> bool:
+    unit = _unit_by_id(knowledge, item.unit_id)
+    if unit is None:
+        return contains_student_meta(item.title) or contains_student_meta(item.notes)
+    return _meta_filler_penalty(unit) >= 2.0
+
+
+def _pick_topic_representative(
+    pool: list[PageCandidate],
+    *,
+    keep_examples: set[str],
+    knowledge: KnowledgeDocument,
+) -> PageCandidate | None:
+    usable = [row for row in pool if not _is_meta_page_candidate(row, knowledge)]
+    if not usable:
+        return None
+    examples = [
+        row
+        for row in usable
+        if row.kind == "example" and row.unit_id in keep_examples
+    ]
+    if examples:
+        return sorted(examples, key=lambda row: (-row.score, row.start_seconds, row.id))[0]
+    non_recap = [row for row in usable if row.kind != "recap"]
+    if non_recap:
+        return non_recap[0]
+    return usable[0]
+
+
 def _rank_key(item: PageCandidate, *, demoted: set[str]) -> tuple[float, float, str]:
     penalty = 5.0 if item.unit_id in demoted else 0.0
     return (-(item.score - penalty), item.start_seconds, item.id)
@@ -383,14 +437,41 @@ def select_candidates(
         ]
         if not pool:
             continue
-        pick = pool[0]
+        pick = _pick_topic_representative(pool, keep_examples=keep_examples, knowledge=knowledge)
+        if pick is None:
+            continue
         if pick.kind == "example" and pick.unit_id not in keep_examples:
-            non_example = next((row for row in pool if row.kind != "example"), None)
+            non_example = next(
+                (
+                    row
+                    for row in pool
+                    if row.kind != "example" and not _is_meta_page_candidate(row, knowledge)
+                ),
+                None,
+            )
             if non_example is not None:
                 pick = non_example
         add_with_prerequisites(pick)
+        topic_examples = sorted(
+            [
+                row
+                for row in pool
+                if row.kind == "example"
+                and row.unit_id in keep_examples
+                and row.unit_id not in selected_ids
+            ],
+            key=lambda row: (row.start_seconds, row.id),
+        )
+        for extra in topic_examples:
+            if extra.unit_id == pick.unit_id:
+                continue
+            add_with_prerequisites(extra)
+            if len(selected) >= content_max:
+                break
 
     for item in ranked:
+        if _is_meta_page_candidate(item, knowledge):
+            continue
         if item.kind == "example" and item.unit_id not in keep_examples:
             continue
         if item.unit_id in selected_ids:
@@ -503,18 +584,88 @@ def _cover_page(course_map: CourseMap | None, source_id: str) -> PageIntent:
     )
 
 
-def _summary_page(selected: list[PageCandidate]) -> PageIntent:
-    claims = [claim_id for item in selected for claim_id in item.claim_ids][:8]
+def _summary_units_for_topics(
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument,
+    selected: list[PageCandidate],
+) -> list[tuple[str, str, str]]:
+    """Return (topic_title, claim_id, bullet) per course-map topic when possible."""
+
+    selected_by_topic: dict[str, list[PageCandidate]] = {}
+    for item in selected:
+        selected_by_topic.setdefault(item.topic_id, []).append(item)
+    rows: list[tuple[str, str, str]] = []
+    topics = list(course_map.topics) if course_map and course_map.topics else []
+    for topic in topics:
+        pool = selected_by_topic.get(topic.id) or []
+        unit: KnowledgeUnit | None = None
+        if pool:
+            picked = sorted(
+                pool,
+                key=lambda row: (
+                    0 if row.kind == "example" else 1,
+                    row.start_seconds,
+                    row.id,
+                ),
+            )[0]
+            unit = _unit_by_id(knowledge, picked.unit_id)
+        if unit is None:
+            topic_units = [item for item in knowledge.units if item.topic_id == topic.id]
+            examples = sorted(
+                [item for item in topic_units if item.kind == "example"],
+                key=lambda item: (item.start_seconds, item.id),
+            )
+            concepts = sorted(
+                [item for item in topic_units if item.kind == "concept"],
+                key=lambda item: (item.start_seconds, item.id),
+            )
+            unit = (
+                examples[0]
+                if examples
+                else (concepts[0] if concepts else (topic_units[0] if topic_units else None))
+            )
+        if unit is None or not unit.claims or _meta_filler_penalty(unit) >= 2.0:
+            continue
+        claim = unit.claims[0]
+        bullet = sanitize_student_copy(claim.text)[:200]
+        if not bullet.strip():
+            continue
+        label = sanitize_student_copy(topic.title)[:80] or topic.title[:80]
+        rows.append((label, claim.id, f"{label}：{bullet}"))
+    if rows:
+        return rows
+    fallback: list[tuple[str, str, str]] = []
+    for item in selected:
+        if not item.claim_ids:
+            continue
+        bullet = sanitize_student_copy(item.title)[:200]
+        if bullet.strip():
+            fallback.append((item.topic_id, item.claim_ids[0], bullet))
+    return fallback[:8]
+
+
+def _summary_page(
+    selected: list[PageCandidate],
+    *,
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument,
+) -> PageIntent:
+    rows = _summary_units_for_topics(course_map, knowledge, selected)
+    claims = [claim_id for _, claim_id, _ in rows][:12]
+    body_points = [bullet for _, _, bullet in rows][:4]
+    if not claims:
+        claims = [claim_id for item in selected for claim_id in item.claim_ids][:8]
+        body_points = [sanitize_student_copy(item.title)[:200] for item in selected[:4]]
     return PageIntent(
         id="intent-summary",
         type="summary",
         title="本课总结",
         claim_ids=claims,
         frame_ids=[],
-        notes="总结复用已选 claim。",
+        notes="总结按课程主题覆盖各用法，并附代表性例句。",
         selection_reason="总结",
         quality_label="draft",
-        body_points=[item.title[:200] for item in selected[:4]],
+        body_points=body_points,
     )
 
 
@@ -523,7 +674,7 @@ def _content_page(item: PageCandidate, *, page_type: str = "content") -> PageInt
         id=item.id,
         type=page_type,  # type: ignore[arg-type]
         layout=item.layout,
-        title=item.title[:80],
+        title=sanitize_student_copy(item.title)[:80] or item.title[:80],
         claim_ids=item.claim_ids[:8],
         frame_ids=item.frame_ids[:3],
         notes=item.notes,
@@ -549,12 +700,21 @@ def build_deterministic_plan(
         page_type = "quiz" if _is_practice(knowledge, item.claim_ids) else "content"
         pages.append(_content_page(item, page_type=page_type))
     if any(item.claim_ids for item in selected):
-        pages.append(_summary_page(selected))
+        pages.append(_summary_page(selected, course_map=course_map, knowledge=knowledge))
     if len(pages) > max_pages:
         body = pages[1:-1][: max(0, max_pages - 2)]
         pages = [pages[0], *body, pages[-1]]
         if len(pages) > max_pages:
             pages = pages[:max_pages]
+    summary_claims = {
+        claim_id
+        for page in pages
+        if page.type == "summary"
+        for claim_id in page.claim_ids
+    }
+    filtered_omissions = [
+        item for item in omissions if item.claim_id not in summary_claims
+    ]
     return EditorialPlan(
         schema_version="1.0",
         source_id=source_id,
@@ -562,7 +722,7 @@ def build_deterministic_plan(
         max_pages=max_pages,
         order=order,
         pages=pages,
-        omissions=omissions,
+        omissions=filtered_omissions,
     )
 
 
@@ -689,9 +849,14 @@ def apply_model_organization(
     def overlay(base: PageIntent, incoming: PageIntent) -> PageIntent:
         return base.model_copy(
             update={
-                "title": incoming.title,
+                "title": sanitize_student_copy(incoming.title)[:80] or base.title,
                 "notes": incoming.notes,
-                "body_points": incoming.body_points,
+                "body_points": [
+                    sanitize_student_copy(point)[:200]
+                    for point in incoming.body_points
+                    if sanitize_student_copy(point).strip()
+                ]
+                or base.body_points,
             }
         )
 

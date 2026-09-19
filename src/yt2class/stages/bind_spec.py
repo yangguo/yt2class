@@ -38,6 +38,7 @@ from yt2class.domain.transcript import TranscriptDocument
 from yt2class.domain.verification import QualityMode, VerificationReport, require_strict_closure
 from yt2class.domain.visual import OcrRegion, VisualCatalogue, is_accepted_visual_occurrence
 from yt2class.orchestration.workspace import Workspace, WorkspacePathError
+from yt2class.stages.student_copy import sanitize_student_copy
 from yt2class.stages.verify_claims import _is_practice
 
 PRODUCER_VERSION = "yt2class-bind-1.0"
@@ -166,9 +167,10 @@ def _collect_claims(
         if source_claim is None:
             raise BindError(f"unknown editorial claim {claim_id!r}")
         evidence_ids = _evidence_ids_for_knowledge_claim(source_claim)
+        display = sanitize_student_copy(source_claim.text) or source_claim.text
         built[claim_id] = SlideClaim(
             id=claim_id,
-            text=source_claim.text,
+            text=display,
             evidence_ids=evidence_ids,
             verdict=_claim_verdict(claim_id, report, knowledge),
             provenance=source_claim.provenance,
