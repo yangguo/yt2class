@@ -69,6 +69,14 @@ _RATE_EXAMPLE_RE = re.compile(
     r"時間につき[0-9０-９]+|[0-9０-９]+円|ごとに|每[一個人匹本]"
 )
 _TSUKI_LESSON_RE = re.compile(r"(?:～|〜)?につき")
+CONNECTIVE_HEADING = "接续：名詞／数量詞＋につき"
+_EXPLICIT_CONNECTIVE_RE = re.compile(r"接续|接続|连接")
+_CONNECTIVE_PATTERN_RE = re.compile(
+    r"(?:名词|名詞|数量词|数量詞).{0,12}につき|"
+    r"につき.{0,16}(?:接续|接続|连接|名词|名詞|数量词|数量詞)"
+)
+_CONNECTIVE_MIN_SCORE = 4.0
+_SENSE_DOMINANCE = 6.0
 
 
 def _is_tsuki_lesson(
@@ -109,6 +117,87 @@ def is_connective_topic(title: str) -> bool:
     return False
 
 
+def _is_connective_gloss(text: str) -> bool:
+    """Grammatical attachment note (接续 / 名詞＋につき), not a usage sentence."""
+
+    if not text or not text.strip():
+        return False
+    if _EXPLICIT_CONNECTIVE_RE.search(text):
+        return True
+    return _CONNECTIVE_PATTERN_RE.search(text) is not None
+
+
+def _non_gloss_cause_strength(topic: Topic, knowledge: KnowledgeDocument) -> float:
+    score = 0.0
+    for unit in knowledge.units:
+        if unit.topic_id != topic.id:
+            continue
+        text = _unit_text(unit)
+        if _is_connective_gloss(text):
+            continue
+        if "につき" in text and "について" not in text and not _text_signals_rate(text):
+            score += 6.0 if unit.kind == "example" else 3.0
+    return score
+
+
+def connective_topic_score(topic: Topic, knowledge: KnowledgeDocument) -> float:
+    """How strongly this topic teaches 名詞／数量詞＋につき attachment."""
+
+    units = [unit for unit in knowledge.units if unit.topic_id == topic.id]
+    if not units:
+        return 0.0
+    if _topic_kind(topic) in _KIND_TO_ORDINAL:
+        return 0.0
+    if _topic_sense_strength(topic, "rate", knowledge) >= _SENSE_DOMINANCE:
+        return 0.0
+    if _topic_sense_strength(topic, "about", knowledge) >= _SENSE_DOMINANCE:
+        return 0.0
+    explicit = bool(
+        _EXPLICIT_CONNECTIVE_RE.search(topic.title)
+        or _EXPLICIT_CONNECTIVE_RE.search(topic.goal)
+    )
+    gloss_units = 0
+    for unit in units:
+        text = _unit_text(unit)
+        if _EXPLICIT_CONNECTIVE_RE.search(text):
+            explicit = True
+        if _is_connective_gloss(text):
+            gloss_units += 1
+    if _non_gloss_cause_strength(topic, knowledge) >= _SENSE_DOMINANCE and not explicit:
+        return 0.0
+    score = 5.0 if explicit else 1.0 if is_connective_topic(topic.title) else 0.0
+    score += 4.0 * gloss_units
+    return score
+
+
+def is_grammar_connective_topic(
+    topic: Topic,
+    knowledge: KnowledgeDocument | None,
+    course_map: CourseMap | None = None,
+) -> bool:
+    if knowledge is None or not _is_tsuki_lesson(course_map, knowledge):
+        return False
+    return connective_topic_score(topic, knowledge) >= _CONNECTIVE_MIN_SCORE
+
+
+def topic_for_connective(
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument | None,
+) -> Topic | None:
+    """Best topic that teaches the ～につき attachment pattern."""
+
+    if knowledge is None or not _is_tsuki_lesson(course_map, knowledge):
+        return None
+    best_topic: Topic | None = None
+    best_score = 0.0
+    for topic in iter_topics(course_map, knowledge):
+        score = connective_topic_score(topic, knowledge)
+        if score >= _CONNECTIVE_MIN_SCORE and score > best_score:
+            best_score = score
+            best_topic = topic
+    return best_topic
+
+
 def _topic_kind(topic: Topic) -> str:
     title = topic.title
     lowered = title.lower()
@@ -140,6 +229,8 @@ def is_grammar_usage_topic(
     topic: Topic,
     knowledge: KnowledgeDocument | None = None,
 ) -> bool:
+    if is_grammar_connective_topic(topic, knowledge):
+        return False
     kind = topic_kind(topic, knowledge)
     if kind in _KIND_TO_ORDINAL:
         return True
@@ -247,9 +338,11 @@ def topic_kind(
     kind = _topic_kind(topic)
     if kind != "other":
         return kind
-    if knowledge is not None:
-        return _infer_topic_kind_from_knowledge(topic.id, knowledge)
-    return "other"
+    if knowledge is None:
+        return "other"
+    if is_grammar_connective_topic(topic, knowledge):
+        return "other"
+    return _infer_topic_kind_from_knowledge(topic.id, knowledge)
 
 
 def _topic_sense_strength(
@@ -300,6 +393,12 @@ def topic_for_sense_ordinal(
         if kind != want and strength <= 0:
             continue
         if (
+            want == "cause"
+            and knowledge is not None
+            and is_grammar_connective_topic(topic, knowledge, course_map)
+        ):
+            continue
+        if (
             is_connective_topic(topic.title)
             and kind != want
             and strength < 6.0
@@ -335,6 +434,8 @@ def sense_ordinal(
 
 def is_fixed_sense_heading(title: str) -> bool:
     text = title.strip()
+    if text.startswith(CONNECTIVE_HEADING):
+        return True
     return any(text.startswith(sense_heading(ordinal)) for ordinal in (1, 2, 3))
 
 
@@ -358,6 +459,9 @@ def learner_page_title(
     fallback_title: str,
     knowledge: KnowledgeDocument | None = None,
 ) -> str:
+    connective = topic_for_connective(course_map, knowledge)
+    if connective is not None and connective.id == topic_id:
+        return CONNECTIVE_HEADING
     ordinal = sense_ordinal(topic_id, course_map, knowledge=knowledge)
     if ordinal is not None:
         return sense_heading(ordinal)
@@ -448,9 +552,11 @@ def pick_summary_unit_for_topic(
 
 
 __all__ = [
+    "CONNECTIVE_HEADING",
     "is_connective_topic",
     "is_fixed_sense_heading",
     "is_fixed_sense_summary_line",
+    "is_grammar_connective_topic",
     "is_grammar_usage_topic",
     "iter_topics",
     "learner_page_title",
@@ -460,6 +566,7 @@ __all__ = [
     "sense_ordinal",
     "sense_topic_ids",
     "summary_bullet_for_sense",
+    "topic_for_connective",
     "topic_for_sense_ordinal",
     "topic_kind",
     "usage_topics",

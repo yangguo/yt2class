@@ -30,6 +30,7 @@ from yt2class.stages.llm_util import (
     model_request,
 )
 from yt2class.stages.grammar_sense import (
+    CONNECTIVE_HEADING,
     is_fixed_sense_heading,
     is_fixed_sense_summary_line,
     learner_page_title,
@@ -39,6 +40,7 @@ from yt2class.stages.grammar_sense import (
     sense_ordinal,
     sense_topic_ids,
     summary_bullet_for_sense,
+    topic_for_connective,
     topic_for_sense_ordinal,
 )
 from yt2class.stages.student_copy import contains_student_meta, sanitize_student_copy
@@ -53,6 +55,7 @@ KIND_IMPORTANCE = {
 }
 
 _MAX_EXAMPLES_PER_TOPIC = 2
+_MAX_CAUSE_CONTENT_PAGES = 2
 
 
 class EditorContractError(ValueError):
@@ -411,6 +414,10 @@ def _restore_sense_content_titles(
         if topic_id is None:
             pages.append(page)
             continue
+        connective = topic_for_connective(course_map, knowledge)
+        if connective is not None and topic_id == connective.id:
+            pages.append(page.model_copy(update={"title": CONNECTIVE_HEADING}))
+            continue
         ordinal = sense_ordinal(topic_id, course_map, knowledge=knowledge)
         if ordinal is None:
             pages.append(page)
@@ -535,8 +542,8 @@ def _pick_mandatory_sense_candidate(
     demoted: set[str],
     knowledge: KnowledgeDocument,
     course_map: CourseMap | None,
+    lock_note: str = "mandatory-sense lock",
 ) -> PageCandidate | None:
-    lock_note = "mandatory-sense lock"
     pools = [
         [
             item
@@ -682,6 +689,163 @@ def _pick_topic_representative(
     return usable[0]
 
 
+def _cause_keep_key(item: PageCandidate, knowledge: KnowledgeDocument) -> tuple:
+    """Lower sorts first: locked example pages survive the 用法一 cap."""
+
+    locked = 0 if "mandatory-sense lock" in item.selection_reason else 1
+    example = 0 if item.kind == "example" else 1
+    meta = 1 if _is_meta_page_candidate(item, knowledge) else 0
+    return (locked, example, meta, -item.score, item.start_seconds, item.id)
+
+
+def _cap_cause_content_pages(
+    selected: list[PageCandidate],
+    *,
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument,
+) -> list[PageCandidate]:
+    """Keep at most two 用法一 pages once that sense is already represented."""
+
+    cause = [
+        item
+        for item in selected
+        if sense_ordinal(item.topic_id, course_map, knowledge=knowledge) == 1
+    ]
+    if len(cause) <= _MAX_CAUSE_CONTENT_PAGES:
+        return selected
+    keep = {
+        item.unit_id
+        for item in sorted(cause, key=lambda row: _cause_keep_key(row, knowledge))[
+            :_MAX_CAUSE_CONTENT_PAGES
+        ]
+    }
+    return [
+        item
+        for item in selected
+        if sense_ordinal(item.topic_id, course_map, knowledge=knowledge) != 1
+        or item.unit_id in keep
+    ]
+
+
+def _stamp_connective_lock(
+    selected: list[PageCandidate],
+    topic_id: str,
+) -> list[PageCandidate]:
+    stamped: list[PageCandidate] = []
+    for item in selected:
+        if item.topic_id != topic_id or "mandatory-connective lock" in item.selection_reason:
+            stamped.append(item)
+            continue
+        stamped.append(
+            replace(
+                item,
+                selection_reason=f"mandatory-connective lock; {item.selection_reason}"[:400],
+            )
+        )
+    return stamped
+
+
+def _drop_duplicate_cause_page(
+    selected: list[PageCandidate],
+    *,
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument,
+) -> list[PageCandidate]:
+    """Drop the weakest extra 用法一 page, keeping the locked example."""
+
+    cause = [
+        item
+        for item in selected
+        if sense_ordinal(item.topic_id, course_map, knowledge=knowledge) == 1
+    ]
+    if len(cause) < 2:
+        return selected
+    worst = max(cause, key=lambda row: _cause_keep_key(row, knowledge))
+    return [item for item in selected if item.unit_id != worst.unit_id]
+
+
+def _drop_nonprotected_for_connective(
+    selected: list[PageCandidate],
+    *,
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument,
+) -> list[PageCandidate]:
+    """Drop a filler page so 接续 can fit without removing 用法二/三 or the last 用法一."""
+
+    connective = topic_for_connective(course_map, knowledge)
+    cause = [
+        item
+        for item in selected
+        if sense_ordinal(item.topic_id, course_map, knowledge=knowledge) == 1
+    ]
+    protected_cause = {
+        min(cause, key=lambda row: _cause_keep_key(row, knowledge)).unit_id
+    } if cause else set()
+
+    def droppable(item: PageCandidate) -> bool:
+        if connective is not None and item.topic_id == connective.id:
+            return False
+        ordinal = sense_ordinal(item.topic_id, course_map, knowledge=knowledge)
+        if ordinal in {2, 3}:
+            return False
+        if ordinal == 1 and item.unit_id in protected_cause:
+            return False
+        return True
+
+    candidates = [item for item in selected if droppable(item)]
+    if not candidates:
+        return selected
+    weakest = min(candidates, key=lambda row: (row.score, -row.start_seconds, row.id))
+    return [item for item in selected if item.unit_id != weakest.unit_id]
+
+
+def _ensure_connective_page(
+    selected: list[PageCandidate],
+    *,
+    ranked: list[PageCandidate],
+    demoted: set[str],
+    knowledge: KnowledgeDocument,
+    course_map: CourseMap | None,
+    content_max: int,
+) -> list[PageCandidate]:
+    """Force one 接续 page when attachment knowledge exists."""
+
+    topic = topic_for_connective(course_map, knowledge)
+    if topic is None:
+        return selected
+    if any(item.topic_id == topic.id for item in selected):
+        return _stamp_connective_lock(selected, topic.id)
+    pick = _pick_mandatory_sense_candidate(
+        topic.id,
+        ranked,
+        demoted=demoted,
+        knowledge=knowledge,
+        course_map=course_map,
+        lock_note="mandatory-connective lock",
+    )
+    if pick is None:
+        return selected
+    updated = list(selected)
+    if len(updated) >= content_max:
+        updated = _drop_duplicate_cause_page(
+            updated,
+            course_map=course_map,
+            knowledge=knowledge,
+        )
+    if len(updated) >= content_max:
+        updated = _drop_nonprotected_for_connective(
+            updated,
+            course_map=course_map,
+            knowledge=knowledge,
+        )
+    if len(updated) >= content_max:
+        return updated
+    if any(item.unit_id == pick.unit_id for item in updated):
+        return _stamp_connective_lock(updated, topic.id)
+    updated.append(pick)
+    return updated
+
+
 def _rank_key(item: PageCandidate, *, demoted: set[str]) -> tuple[float, float, str]:
     penalty = 5.0 if item.unit_id in demoted else 0.0
     return (-(item.score - penalty), item.start_seconds, item.id)
@@ -705,10 +869,22 @@ def select_candidates(
     selected: list[PageCandidate] = []
     selected_ids: set[str] = set()
 
+    def cause_count() -> int:
+        return sum(
+            1
+            for row in selected
+            if sense_ordinal(row.topic_id, course_map, knowledge=knowledge) == 1
+        )
+
     def add(item: PageCandidate, *, force: bool = False) -> None:
         if item.unit_id in selected_ids:
             return
         if item.unit_id in demoted and not force:
+            return
+        if (
+            sense_ordinal(item.topic_id, course_map, knowledge=knowledge) == 1
+            and cause_count() >= _MAX_CAUSE_CONTENT_PAGES
+        ):
             return
         if len(selected) >= content_max and not force:
             return
@@ -800,6 +976,19 @@ def select_candidates(
             continue
         add_with_prerequisites(item)
 
+    selected = _cap_cause_content_pages(
+        selected,
+        course_map=course_map,
+        knowledge=knowledge,
+    )
+    selected = _ensure_connective_page(
+        selected,
+        ranked=ranked,
+        demoted=demoted,
+        knowledge=knowledge,
+        course_map=course_map,
+        content_max=content_max,
+    )
     selected_ids = {item.unit_id for item in selected}
     omissions: list[Omission] = []
     for item in candidates:
@@ -995,6 +1184,10 @@ def _content_page(
         fallback_title=fallback,
         knowledge=knowledge,
     )
+    notes = item.notes
+    if contains_student_meta(notes):
+        cleaned = sanitize_student_copy(notes)
+        notes = cleaned or " ".join(point for point in item.body_points if point.strip())[:4000]
     return PageIntent(
         id=item.id,
         type=page_type,  # type: ignore[arg-type]
@@ -1002,7 +1195,7 @@ def _content_page(
         title=title,
         claim_ids=item.claim_ids[:8],
         frame_ids=item.frame_ids[:3],
-        notes=item.notes,
+        notes=notes,
         selection_reason=item.selection_reason[:400],
         quality_label="draft",
         body_points=item.body_points[:4],
@@ -1021,33 +1214,44 @@ def _trim_content_pages(
         return content_pages
     by_id = {page.id: page for page in content_pages}
     ordered = [by_id[item.id] for item in selected if item.id in by_id]
-    protected: list[PageIntent] = []
+    selected_by_page = {item.id: item for item in selected}
+    connective = topic_for_connective(course_map, knowledge)
+    rate_about: list[PageIntent] = []
+    cause_pages: list[tuple[PageCandidate, PageIntent]] = []
+    connective_pages: list[PageIntent] = []
     optional: list[PageIntent] = []
     for page in ordered:
-        item = next((row for row in selected if row.id == page.id), None)
-        ordinal = (
-            sense_ordinal(item.topic_id, course_map, knowledge=knowledge) if item else None
-        )
-        if ordinal in {1, 2, 3}:
-            protected.append(page)
+        item = selected_by_page.get(page.id)
+        if item is None:
+            optional.append(page)
+            continue
+        if connective is not None and item.topic_id == connective.id:
+            connective_pages.append(page)
+            continue
+        ordinal = sense_ordinal(item.topic_id, course_map, knowledge=knowledge)
+        if ordinal in {2, 3}:
+            rate_about.append(page)
+        elif ordinal == 1:
+            cause_pages.append((item, page))
         else:
             optional.append(page)
+    ranked_cause = [
+        page
+        for _, page in sorted(cause_pages, key=lambda row: _cause_keep_key(row[0], knowledge))
+    ]
+    primary_cause = ranked_cause[:1]
+    second_cause = ranked_cause[1:2]
+    extra_cause = ranked_cause[2:]
+    # 用法二/三, one 用法一, then 接续, then a second 用法一. Duplicate cause pages go last.
+    protected = [*rate_about, *primary_cause, *connective_pages, *second_cause]
     if len(protected) > max_content:
         max_content = len(protected)
-    body = list(protected)
-    for page in optional:
+    body: list[PageIntent] = []
+    for page in [*protected, *optional, *extra_cause]:
         if len(body) >= max_content:
             break
         if page not in body:
             body.append(page)
-    if len(body) > max_content:
-        protected_ids = {page.id for page in protected}
-        body = [page for page in body if page.id in protected_ids]
-        for page in optional:
-            if len(body) >= max_content:
-                break
-            if page.id not in protected_ids:
-                body.append(page)
     order_map = {item.id: (item.start_seconds, item.id) for item in selected}
     body.sort(key=lambda page: order_map.get(page.id, (0.0, page.id)))
     return body

@@ -9,6 +9,7 @@ Shared constraints:
 - Do not invent IDs. Do not use local file paths, URLs, or image filenames.
 - Preserve negation, conditions, numbers, units, proper names, and source-language terms.
 - Prefer one page per CourseMap topic / announced 用法 (接续, 用法1, 用法2, …); do not let near-duplicate JA/ZH translation pairs crowd out later senses.
+- For ～につき, keep one 接续 page (名詞／数量詞＋につき) and at most two 用法一 pages so 用法二 and 用法三 stay.
 - Use `output_language` gloss with quoted source JA for titles/body; avoid parallel clone pages for the same evidence span.
 - Stay within `max_pages`. Prefer `target_pages`. Always keep a cover and a summary.
 - Return only the specified JSON object.
