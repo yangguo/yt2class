@@ -72,8 +72,15 @@ _TSUKI_LESSON_RE = re.compile(r"(?:～|〜)?につき")
 CONNECTIVE_HEADING = "接续：名詞／数量詞＋につき"
 _EXPLICIT_CONNECTIVE_RE = re.compile(r"接续|接続|连接")
 _CONNECTIVE_PATTERN_RE = re.compile(
-    r"(?:名词|名詞|数量词|数量詞).{0,12}につき|"
-    r"につき.{0,16}(?:接续|接続|连接|名词|名詞|数量词|数量詞)"
+    r"(?:名词|名詞|数量词|数量詞|数量).{0,16}(?:につき|つき)|"
+    r"(?:につき|つき).{0,20}(?:接续|接続|连接|名词|名詞|数量词|数量詞|数量)|"
+    r"(?:接在|前面接|后接).{0,12}(?:につき|つき)"
+)
+_BEFORE_TSUKI_RE = re.compile(
+    r"what\s+goes\s+before.{0,40}(?:につき|つき)|"
+    r"goes\s+before.{0,24}(?:につき|つき)|"
+    r"\bbefore\s*(?:～|〜)?(?:につき|つき)",
+    re.I,
 )
 _CONNECTIVE_MIN_SCORE = 4.0
 _SENSE_DOMINANCE = 6.0
@@ -124,7 +131,40 @@ def _is_connective_gloss(text: str) -> bool:
         return False
     if _EXPLICIT_CONNECTIVE_RE.search(text):
         return True
+    if _BEFORE_TSUKI_RE.search(text):
+        return True
     return _CONNECTIVE_PATTERN_RE.search(text) is not None
+
+
+def text_is_connective_attachment(text: str, topic: Topic | None = None) -> bool:
+    """True when copy teaches what attaches to につき, even inside a cause topic."""
+
+    if not _is_connective_gloss(text):
+        return False
+    if topic is not None and _topic_kind(topic) == "rate" and _text_signals_rate(text):
+        return False
+    if (
+        topic is not None
+        and _topic_kind(topic) == "about"
+        and "について" in text
+        and not _EXPLICIT_CONNECTIVE_RE.search(text)
+    ):
+        return False
+    return True
+
+
+def unit_is_connective_attachment(
+    unit: KnowledgeUnit,
+    topic: Topic | None = None,
+) -> bool:
+    return text_is_connective_attachment(_unit_text(unit), topic)
+
+
+def is_tsuki_grammar_lesson(
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument | None,
+) -> bool:
+    return _is_tsuki_lesson(course_map, knowledge)
 
 
 def _non_gloss_cause_strength(topic: Topic, knowledge: KnowledgeDocument) -> float:
@@ -458,7 +498,18 @@ def learner_page_title(
     course_map: CourseMap | None,
     fallback_title: str,
     knowledge: KnowledgeDocument | None = None,
+    unit_text: str | None = None,
 ) -> str:
+    topic = next(
+        (item for item in iter_topics(course_map, knowledge) if item.id == topic_id),
+        None,
+    )
+    if (
+        unit_text
+        and is_tsuki_grammar_lesson(course_map, knowledge)
+        and text_is_connective_attachment(unit_text, topic)
+    ):
+        return CONNECTIVE_HEADING
     connective = topic_for_connective(course_map, knowledge)
     if connective is not None and connective.id == topic_id:
         return CONNECTIVE_HEADING
@@ -510,10 +561,15 @@ def pick_summary_unit(
         for unit in units:
             if _text_signals_rate(_unit_text(unit)):
                 return unit
+
+    def _usage_units(rows: list[KnowledgeUnit]) -> list[KnowledgeUnit]:
+        plain = [unit for unit in rows if not _is_connective_gloss(_unit_text(unit))]
+        return plain or rows
+
     if examples:
-        return examples[0]
+        return _usage_units(examples)[0]
     if concepts:
-        return concepts[0]
+        return _usage_units(concepts)[0]
     return units[0]
 
 
@@ -554,6 +610,7 @@ def pick_summary_unit_for_topic(
 __all__ = [
     "CONNECTIVE_HEADING",
     "is_connective_topic",
+    "is_tsuki_grammar_lesson",
     "is_fixed_sense_heading",
     "is_fixed_sense_summary_line",
     "is_grammar_connective_topic",
@@ -566,8 +623,10 @@ __all__ = [
     "sense_ordinal",
     "sense_topic_ids",
     "summary_bullet_for_sense",
+    "text_is_connective_attachment",
     "topic_for_connective",
     "topic_for_sense_ordinal",
     "topic_kind",
+    "unit_is_connective_attachment",
     "usage_topics",
 ]

@@ -31,8 +31,11 @@ from yt2class.stages.llm_util import (
 )
 from yt2class.stages.grammar_sense import (
     CONNECTIVE_HEADING,
+    is_connective_topic,
     is_fixed_sense_heading,
     is_fixed_sense_summary_line,
+    is_grammar_connective_topic,
+    is_tsuki_grammar_lesson,
     learner_page_title,
     pick_summary_unit,
     pick_summary_unit_for_topic,
@@ -42,6 +45,7 @@ from yt2class.stages.grammar_sense import (
     summary_bullet_for_sense,
     topic_for_connective,
     topic_for_sense_ordinal,
+    unit_is_connective_attachment,
 )
 from yt2class.stages.student_copy import contains_student_meta, sanitize_student_copy
 
@@ -84,6 +88,49 @@ class PageCandidate:
 
 def _unit_by_id(knowledge: KnowledgeDocument, unit_id: str) -> KnowledgeUnit | None:
     return next((unit for unit in knowledge.units if unit.id == unit_id), None)
+
+
+def _unit_for_claim_ids(
+    knowledge: KnowledgeDocument,
+    claim_ids: list[str],
+) -> KnowledgeUnit | None:
+    wanted = set(claim_ids)
+    if not wanted:
+        return None
+    return next(
+        (
+            unit
+            for unit in knowledge.units
+            if any(claim.id in wanted for claim in unit.claims)
+        ),
+        None,
+    )
+
+
+def _candidate_is_connective(
+    item: PageCandidate,
+    knowledge: KnowledgeDocument,
+    course_map: CourseMap | None,
+) -> bool:
+    if not is_tsuki_grammar_lesson(course_map, knowledge):
+        return False
+    unit = _unit_by_id(knowledge, item.unit_id)
+    if unit is None:
+        return False
+    topic = _topic_by_id(item.topic_id, course_map, knowledge)
+    return unit_is_connective_attachment(unit, topic)
+
+
+def _is_usage_cause_page(
+    item: PageCandidate,
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument,
+) -> bool:
+    """用法一 page that is not an attachment gloss living on the cause topic."""
+
+    if _candidate_is_connective(item, knowledge, course_map):
+        return False
+    return sense_ordinal(item.topic_id, course_map, knowledge=knowledge) == 1
 
 
 def prerequisite_parents(knowledge: KnowledgeDocument) -> dict[str, set[str]]:
@@ -414,6 +461,15 @@ def _restore_sense_content_titles(
         if topic_id is None:
             pages.append(page)
             continue
+        unit = _unit_for_claim_ids(knowledge, page.claim_ids)
+        topic = _topic_by_id(topic_id, course_map, knowledge) if unit is not None else None
+        if (
+            is_tsuki_grammar_lesson(course_map, knowledge)
+            and unit is not None
+            and unit_is_connective_attachment(unit, topic)
+        ):
+            pages.append(page.model_copy(update={"title": CONNECTIVE_HEADING}))
+            continue
         connective = topic_for_connective(course_map, knowledge)
         if connective is not None and topic_id == connective.id:
             pages.append(page.model_copy(update={"title": CONNECTIVE_HEADING}))
@@ -544,16 +600,41 @@ def _pick_mandatory_sense_candidate(
     course_map: CourseMap | None,
     lock_note: str = "mandatory-sense lock",
 ) -> PageCandidate | None:
+    want_connective = "mandatory-connective" in lock_note
+
+    def narrow(pool: list[PageCandidate]) -> list[PageCandidate]:
+        if want_connective:
+            matched = [
+                row
+                for row in pool
+                if _candidate_is_connective(row, knowledge, course_map)
+            ]
+            return matched or pool
+        plain = [
+            row
+            for row in pool
+            if not _candidate_is_connective(row, knowledge, course_map)
+        ]
+        return plain or pool
+
     pools = [
-        [
-            item
-            for item in ranked
-            if item.topic_id == topic_id
-            and item.unit_id not in demoted
-            and not _is_meta_page_candidate(item, knowledge)
-        ],
-        [item for item in ranked if item.topic_id == topic_id and item.unit_id not in demoted],
-        [item for item in ranked if item.topic_id == topic_id],
+        narrow(
+            [
+                item
+                for item in ranked
+                if item.topic_id == topic_id
+                and item.unit_id not in demoted
+                and not _is_meta_page_candidate(item, knowledge)
+            ]
+        ),
+        narrow(
+            [
+                item
+                for item in ranked
+                if item.topic_id == topic_id and item.unit_id not in demoted
+            ]
+        ),
+        narrow([item for item in ranked if item.topic_id == topic_id]),
     ]
     for pool in pools:
         examples = sorted(
@@ -609,6 +690,7 @@ def _drop_weakest_page_for_sense(
         if sense_ordinal(item.topic_id, course_map, knowledge=knowledge) == ordinal
         and item.unit_id not in protected_unit_ids
         and "mandatory-sense lock" not in item.selection_reason
+        and not _candidate_is_connective(item, knowledge, course_map)
     ]
     if len(matches) < 2:
         return selected
@@ -709,7 +791,7 @@ def _cap_cause_content_pages(
     cause = [
         item
         for item in selected
-        if sense_ordinal(item.topic_id, course_map, knowledge=knowledge) == 1
+        if _is_usage_cause_page(item, course_map, knowledge)
     ]
     if len(cause) <= _MAX_CAUSE_CONTENT_PAGES:
         return selected
@@ -722,18 +804,18 @@ def _cap_cause_content_pages(
     return [
         item
         for item in selected
-        if sense_ordinal(item.topic_id, course_map, knowledge=knowledge) != 1
+        if not _is_usage_cause_page(item, course_map, knowledge)
         or item.unit_id in keep
     ]
 
 
 def _stamp_connective_lock(
     selected: list[PageCandidate],
-    topic_id: str,
+    unit_ids: set[str],
 ) -> list[PageCandidate]:
     stamped: list[PageCandidate] = []
     for item in selected:
-        if item.topic_id != topic_id or "mandatory-connective lock" in item.selection_reason:
+        if item.unit_id not in unit_ids or "mandatory-connective lock" in item.selection_reason:
             stamped.append(item)
             continue
         stamped.append(
@@ -756,7 +838,7 @@ def _drop_duplicate_cause_page(
     cause = [
         item
         for item in selected
-        if sense_ordinal(item.topic_id, course_map, knowledge=knowledge) == 1
+        if _is_usage_cause_page(item, course_map, knowledge)
     ]
     if len(cause) < 2:
         return selected
@@ -772,18 +854,17 @@ def _drop_nonprotected_for_connective(
 ) -> list[PageCandidate]:
     """Drop a filler page so 接续 can fit without removing 用法二/三 or the last 用法一."""
 
-    connective = topic_for_connective(course_map, knowledge)
     cause = [
         item
         for item in selected
-        if sense_ordinal(item.topic_id, course_map, knowledge=knowledge) == 1
+        if _is_usage_cause_page(item, course_map, knowledge)
     ]
     protected_cause = {
         min(cause, key=lambda row: _cause_keep_key(row, knowledge)).unit_id
     } if cause else set()
 
     def droppable(item: PageCandidate) -> bool:
-        if connective is not None and item.topic_id == connective.id:
+        if _candidate_is_connective(item, knowledge, course_map):
             return False
         ordinal = sense_ordinal(item.topic_id, course_map, knowledge=knowledge)
         if ordinal in {2, 3}:
@@ -799,6 +880,64 @@ def _drop_nonprotected_for_connective(
     return [item for item in selected if item.unit_id != weakest.unit_id]
 
 
+def _connective_units(
+    knowledge: KnowledgeDocument,
+    course_map: CourseMap | None,
+) -> list[KnowledgeUnit]:
+    if not is_tsuki_grammar_lesson(course_map, knowledge):
+        return []
+    topics = {topic.id: topic for topic in (course_map.topics if course_map else [])}
+    found: list[KnowledgeUnit] = []
+    for unit in knowledge.units:
+        topic = topics.get(unit.topic_id) or _topic_by_id(unit.topic_id, course_map, knowledge)
+        if unit_is_connective_attachment(unit, topic):
+            found.append(unit)
+    return found
+
+
+def _pick_connective_candidate(
+    ranked: list[PageCandidate],
+    *,
+    demoted: set[str],
+    knowledge: KnowledgeDocument,
+    course_map: CourseMap | None,
+) -> PageCandidate | None:
+    """Best attachment unit, including glosses filed under a cause topic."""
+
+    units = _connective_units(knowledge, course_map)
+    if units:
+        def rank(unit: KnowledgeUnit) -> tuple:
+            text = " ".join(claim.text for claim in unit.claims)
+            meta = 1 if contains_student_meta(text) else 0
+            example = 0 if unit.kind == "example" else 1
+            return (meta, example, unit.start_seconds, unit.id)
+
+        best = min(units, key=rank)
+        existing = next((row for row in ranked if row.unit_id == best.id), None)
+        if existing is not None:
+            return replace(
+                existing,
+                selection_reason=f"mandatory-connective lock; {existing.selection_reason}"[:400],
+            )
+        return _candidate_from_unit(
+            best,
+            knowledge,
+            ranked=ranked,
+            lock_note="mandatory-connective lock",
+        )
+    topic = topic_for_connective(course_map, knowledge)
+    if topic is None:
+        return None
+    return _pick_mandatory_sense_candidate(
+        topic.id,
+        ranked,
+        demoted=demoted,
+        knowledge=knowledge,
+        course_map=course_map,
+        lock_note="mandatory-connective lock",
+    )
+
+
 def _ensure_connective_page(
     selected: list[PageCandidate],
     *,
@@ -808,23 +947,23 @@ def _ensure_connective_page(
     course_map: CourseMap | None,
     content_max: int,
 ) -> list[PageCandidate]:
-    """Force one 接续 page when attachment knowledge exists."""
+    """Force one 接续 page when attachment knowledge exists, on any topic."""
 
-    topic = topic_for_connective(course_map, knowledge)
-    if topic is None:
-        return selected
-    if any(item.topic_id == topic.id for item in selected):
-        return _stamp_connective_lock(selected, topic.id)
-    pick = _pick_mandatory_sense_candidate(
-        topic.id,
+    pick = _pick_connective_candidate(
         ranked,
         demoted=demoted,
         knowledge=knowledge,
         course_map=course_map,
-        lock_note="mandatory-connective lock",
     )
     if pick is None:
         return selected
+    present = [
+        item
+        for item in selected
+        if item.unit_id == pick.unit_id or _candidate_is_connective(item, knowledge, course_map)
+    ]
+    if present:
+        return _stamp_connective_lock(selected, {item.unit_id for item in present})
     updated = list(selected)
     if len(updated) >= content_max:
         updated = _drop_duplicate_cause_page(
@@ -841,7 +980,7 @@ def _ensure_connective_page(
     if len(updated) >= content_max:
         return updated
     if any(item.unit_id == pick.unit_id for item in updated):
-        return _stamp_connective_lock(updated, topic.id)
+        return _stamp_connective_lock(updated, {pick.unit_id})
     updated.append(pick)
     return updated
 
@@ -871,9 +1010,7 @@ def select_candidates(
 
     def cause_count() -> int:
         return sum(
-            1
-            for row in selected
-            if sense_ordinal(row.topic_id, course_map, knowledge=knowledge) == 1
+            1 for row in selected if _is_usage_cause_page(row, course_map, knowledge)
         )
 
     def add(item: PageCandidate, *, force: bool = False) -> None:
@@ -882,7 +1019,7 @@ def select_candidates(
         if item.unit_id in demoted and not force:
             return
         if (
-            sense_ordinal(item.topic_id, course_map, knowledge=knowledge) == 1
+            _is_usage_cause_page(item, course_map, knowledge)
             and cause_count() >= _MAX_CAUSE_CONTENT_PAGES
         ):
             return
@@ -1106,7 +1243,11 @@ def _summary_units_for_topics(
         topic = topic_for_sense_ordinal(course_map, ordinal, knowledge=knowledge)
         if topic is None:
             continue
-        pool = selected_by_topic.get(topic.id) or []
+        pool = [
+            row
+            for row in selected_by_topic.get(topic.id) or []
+            if not _candidate_is_connective(row, knowledge, course_map)
+        ]
         unit: KnowledgeUnit | None = None
         if pool:
             picked = sorted(
@@ -1183,6 +1324,7 @@ def _content_page(
         course_map=course_map,
         fallback_title=fallback,
         knowledge=knowledge,
+        unit_text=item.notes,
     )
     notes = item.notes
     if contains_student_meta(notes):
@@ -1225,7 +1367,9 @@ def _trim_content_pages(
         if item is None:
             optional.append(page)
             continue
-        if connective is not None and item.topic_id == connective.id:
+        if _candidate_is_connective(item, knowledge, course_map) or (
+            connective is not None and item.topic_id == connective.id
+        ):
             connective_pages.append(page)
             continue
         ordinal = sense_ordinal(item.topic_id, course_map, knowledge=knowledge)
@@ -1252,9 +1396,87 @@ def _trim_content_pages(
             break
         if page not in body:
             body.append(page)
-    order_map = {item.id: (item.start_seconds, item.id) for item in selected}
-    body.sort(key=lambda page: order_map.get(page.id, (0.0, page.id)))
+    if is_tsuki_grammar_lesson(course_map, knowledge):
+        by_item = {item.id: item for item in selected}
+        body.sort(
+            key=lambda page: _pedagogical_rank(by_item[page.id], course_map, knowledge)
+            if page.id in by_item
+            else (9, 0.0, page.id)
+        )
+    else:
+        order_map = {item.id: (item.start_seconds, item.id) for item in selected}
+        body.sort(key=lambda page: order_map.get(page.id, (0.0, page.id)))
     return body
+
+
+def _pedagogical_rank(
+    item: PageCandidate,
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument,
+) -> tuple[int, float, str]:
+    """Sense order: intro, 接续, 用法一, 用法二, 用法三, then other pages."""
+
+    if _candidate_is_connective(item, knowledge, course_map):
+        return (1, item.start_seconds, item.id)
+    topic = _topic_by_id(item.topic_id, course_map, knowledge)
+    if topic is not None and is_grammar_connective_topic(topic, knowledge, course_map):
+        return (1, item.start_seconds, item.id)
+    ordinal = sense_ordinal(item.topic_id, course_map, knowledge=knowledge)
+    if ordinal in {1, 2, 3}:
+        return (1 + ordinal, item.start_seconds, item.id)
+    if topic is not None and is_connective_topic(topic.title) and ordinal is None:
+        return (0, item.start_seconds, item.id)
+    return (5, item.start_seconds, item.id)
+
+
+def _order_lesson_pages(
+    selected: list[PageCandidate],
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument,
+) -> list[PageCandidate]:
+    if not is_tsuki_grammar_lesson(course_map, knowledge):
+        return selected
+    return sorted(
+        selected,
+        key=lambda item: _pedagogical_rank(item, course_map, knowledge),
+    )
+
+
+def _apply_pedagogical_page_order(
+    plan: EditorialPlan,
+    *,
+    knowledge: KnowledgeDocument,
+    course_map: CourseMap | None,
+) -> EditorialPlan:
+    """Put 接续 then 用法一/二/三 ahead of timestamp order. Cover and summary stay put."""
+
+    if not is_tsuki_grammar_lesson(course_map, knowledge):
+        return plan
+    cover = [page for page in plan.pages if page.type == "cover"]
+    summary = [page for page in plan.pages if page.type == "summary"]
+    body = [page for page in plan.pages if page.type not in {"cover", "summary"}]
+
+    def rank(page: PageIntent) -> tuple[int, float, str]:
+        unit = _unit_for_claim_ids(knowledge, page.claim_ids)
+        if unit is None:
+            return (5, 0.0, page.id)
+        topic = _topic_by_id(unit.topic_id, course_map, knowledge)
+        if unit_is_connective_attachment(unit, topic) or (
+            topic is not None and is_grammar_connective_topic(topic, knowledge, course_map)
+        ):
+            group = 1
+        else:
+            ordinal = sense_ordinal(unit.topic_id, course_map, knowledge=knowledge)
+            if ordinal in {1, 2, 3}:
+                group = 1 + ordinal
+            elif topic is not None and is_connective_topic(topic.title) and ordinal is None:
+                group = 0
+            else:
+                group = 5
+        return (group, unit.start_seconds, page.id)
+
+    body.sort(key=rank)
+    return plan.model_copy(update={"pages": [*cover, *body, *summary]})
 
 
 def build_deterministic_plan(
@@ -1269,7 +1491,7 @@ def build_deterministic_plan(
     knowledge: KnowledgeDocument,
 ) -> EditorialPlan:
     pages = [_cover_page(course_map, source_id)]
-    for item in selected:
+    for item in _order_lesson_pages(selected, course_map, knowledge):
         page_type = "quiz" if _is_practice(knowledge, item.claim_ids) else "content"
         pages.append(
             _content_page(
@@ -1551,6 +1773,11 @@ def edit_deck(
     except (EditorContractError, ValidationError):
         planned = fallback
     planned = _restore_sense_content_titles(
+        planned,
+        knowledge=knowledge,
+        course_map=course_map,
+    )
+    planned = _apply_pedagogical_page_order(
         planned,
         knowledge=knowledge,
         course_map=course_map,
