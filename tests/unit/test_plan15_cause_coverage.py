@@ -9,17 +9,35 @@ from yt2class.stages.bind_spec import BindError, _content_bullets
 from yt2class.stages.edit_deck import edit_deck
 
 
-def test_four_source_backed_cause_examples_fit_two_complete_bullets_per_page():
+def _build_cause_coverage_plan(
+    *,
+    same_cause_topic: bool = False,
+    include_duplicate: bool = False,
+    target_pages: int = 7,
+    max_pages: int = 7,
+):
     examples = [
         ("repair", "店内改装中につき、今月は臨時休業いたします。", "cap-repair"),
         ("work", "工事中につき、通路を変更しています。", "cap-work"),
         ("rain", "本日雨天につき、運動会は来週に延期します。", "cap-rain"),
         ("limited", "こちらは限定品につき、お一人様一点までとさせていただきます。", "cap-limited"),
     ]
+    cause_topic_by_key = {
+        key: "topic-cause" if same_cause_topic else f"topic-{key}"
+        for key, _, _ in examples
+    }
+    cause_topics = (
+        [("topic-cause", "用法1・原因", 10.0, 50.0)]
+        if same_cause_topic
+        else [
+            (f"topic-{key}", "用法1・原因", 10.0 + i * 10, 20.0 + i * 10)
+            for i, (key, _, _) in enumerate(examples)
+        ]
+    )
     topics = course_map(
         [
             ("topic-conn", "Introduction: what goes before につき", 0.0, 10.0),
-            *[(f"topic-{key}", "用法1・原因", 10.0 + i * 10, 20.0 + i * 10) for i, (key, _, _) in enumerate(examples)],
+            *cause_topics,
             ("topic-rate", "用法2・比例", 60.0, 70.0),
             ("topic-about", "用法3・について", 70.0, 80.0),
         ]
@@ -27,7 +45,7 @@ def test_four_source_backed_cause_examples_fit_two_complete_bullets_per_page():
     units = [
         concept_unit(
             f"unit-{key}", f"claim-{key}", sentence, [cap],
-            topic_id=f"topic-{key}", start=10.0 + i * 10, end=19.0 + i * 10,
+            topic_id=cause_topic_by_key[key], start=10.0 + i * 10, end=19.0 + i * 10,
             kind="example",
         )
         for i, (key, sentence, cap) in enumerate(examples)
@@ -67,20 +85,37 @@ def test_four_source_backed_cause_examples_fit_two_complete_bullets_per_page():
             ]
         }
     )
+    if include_duplicate:
+        units.append(
+            concept_unit(
+                "unit-repair-duplicate",
+                "claim-repair-duplicate",
+                examples[0][1],
+                ["cap-repair-duplicate"],
+                topic_id=cause_topic_by_key["repair"],
+                start=11.0,
+                end=12.0,
+                kind="example",
+            )
+        )
     units.extend(
         [
             concept_unit(
                 "unit-cause-concept", "claim-cause-concept",
                 "原因・理由常见于公告等场合。", ["cap-cause-concept"],
-                topic_id="topic-cause-concept", start=49.0, end=59.0, kind="concept",
+                topic_id="topic-cause" if same_cause_topic else "topic-cause-concept",
+                start=49.0, end=59.0, kind="concept",
             ),
             concept_unit(
                 "unit-long", "claim-long", "本日雨天につき、" + "あ" * 220 + "。",
-                ["cap-long"], topic_id="topic-long", start=59.0, end=60.0, kind="example",
+                ["cap-long"],
+                topic_id="topic-cause" if same_cause_topic else "topic-long",
+                start=59.0, end=60.0, kind="example",
             ),
             concept_unit(
                 "unit-unsupported", "claim-unsupported", "臨時休業につき、入口を閉鎖します。",
-                ["cap-does-not-exist"], topic_id="topic-repair", start=18.0, end=19.0,
+                ["cap-does-not-exist"],
+                topic_id=cause_topic_by_key["repair"], start=18.0, end=19.0,
                 kind="example",
             ),
             concept_unit(
@@ -98,30 +133,31 @@ def test_four_source_backed_cause_examples_fit_two_complete_bullets_per_page():
         ]
     )
     doc = knowledge(*units)
-    topics.topics.insert(
-        5,
-        topics.topics[0].model_copy(
-            update={
-                "id": "topic-cause-concept",
-                "title": "用法1・原因",
-                "goal": "理解原因・理由",
-                "start_seconds": 49.0,
-                "end_seconds": 59.0,
-            }
-        ),
-    )
-    topics.topics.insert(
-        6,
-        topics.topics[0].model_copy(
-            update={
-                "id": "topic-long",
-                "title": "用法1・原因",
-                "goal": "理解原因・理由",
-                "start_seconds": 59.0,
-                "end_seconds": 60.0,
-            }
-        ),
-    )
+    if not same_cause_topic:
+        topics.topics.insert(
+            5,
+            topics.topics[0].model_copy(
+                update={
+                    "id": "topic-cause-concept",
+                    "title": "用法1・原因",
+                    "goal": "理解原因・理由",
+                    "start_seconds": 49.0,
+                    "end_seconds": 59.0,
+                }
+            ),
+        )
+        topics.topics.insert(
+            6,
+            topics.topics[0].model_copy(
+                update={
+                    "id": "topic-long",
+                    "title": "用法1・原因",
+                    "goal": "理解原因・理由",
+                    "start_seconds": 59.0,
+                    "end_seconds": 60.0,
+                }
+            ),
+        )
     transcript = make_transcript(
         [(cap, 10.0 + index * 10, 19.0 + index * 10, sentence) for index, (key, sentence, cap) in enumerate(examples)]
         + [
@@ -130,6 +166,11 @@ def test_four_source_backed_cause_examples_fit_two_complete_bullets_per_page():
             ("cap-conn", 1.0, 9.0, "名詞／数量詞＋につき。"),
             ("cap-cause-concept", 49.0, 59.0, "原因・理由常见于公告等场合。"),
             ("cap-long", 59.0, 60.0, "本日雨天につき、" + "あ" * 220 + "。"),
+            *(
+                [("cap-repair-duplicate", 11.0, 12.0, examples[0][1])]
+                if include_duplicate
+                else []
+            ),
         ],
         duration=80.0,
     )
@@ -139,11 +180,16 @@ def test_four_source_backed_cause_examples_fit_two_complete_bullets_per_page():
         transcript=transcript,
         visual=make_visual([], duration=80.0),
         provider=FakeProvider(frames_caps()),
-        target_pages=7,
-        max_pages=7,
+        target_pages=target_pages,
+        max_pages=max_pages,
         order="teaching",
     )
 
+    return plan, examples, doc, transcript
+
+
+def test_four_source_backed_cause_examples_fit_two_complete_bullets_per_page():
+    plan, examples, doc, transcript = _build_cause_coverage_plan()
     content = [page for page in plan.pages if page.type == "content"]
     assert len(plan.pages) <= 7
     cause_pages = [page for page in content if page.title.startswith("用法一")]
@@ -185,6 +231,50 @@ def test_four_source_backed_cause_examples_fit_two_complete_bullets_per_page():
         matching_claims = [claims[claim_id] for claim_id in page.claim_ids if sentence.rstrip("。") in claims[claim_id].text]
         assert matching_claims
         assert any(claim.provenance == "source" and set(claim.evidence_ids) & valid_ids for claim in matching_claims)
+
+
+def test_same_cause_topic_can_keep_four_distinct_supported_examples():
+    plan, examples, doc, transcript = _build_cause_coverage_plan(
+        same_cause_topic=True,
+        include_duplicate=True,
+        target_pages=8,
+        max_pages=10,
+    )
+    content = [page for page in plan.pages if page.type == "content"]
+    cause_pages = [page for page in content if page.title.startswith("用法一")]
+    visible_bullets = [bullet for page in cause_pages for bullet in page.body_points]
+    visible = "\n".join(visible_bullets)
+
+    assert len(plan.pages) <= 10
+    assert len(cause_pages) == 2
+    assert all(len(page.body_points) <= 4 for page in cause_pages)
+    assert all(len(point) <= 200 for page in cause_pages for point in page.body_points)
+    for _key, sentence, _cap in examples:
+        assert visible.count(sentence) == 1
+    assert sum("店内改装中につき" in point for point in visible_bullets) == 1
+    assert not any("臨時休業につき、入口を閉鎖" in point for point in visible_bullets)
+
+    claims = {claim.id: claim for claim in doc.iter_claims()}
+    valid_ids = {segment.id for segment in transcript.segments}
+    page_claim_ids = {claim_id for page in cause_pages for claim_id in page.claim_ids}
+    for _key, sentence, _cap in examples:
+        matching_claims = [
+            claims[claim_id]
+            for claim_id in page_claim_ids
+            if sentence.rstrip("。") in claims[claim_id].text
+        ]
+        assert matching_claims
+        assert any(
+            claim.provenance == "source" and set(claim.evidence_ids) & valid_ids
+            for claim in matching_claims
+        )
+    omissions = {item.claim_id: item for item in plan.omissions}
+    assert omissions["claim-repair-duplicate"].reason == "duplicate source-backed cause example"
+    assert "source evidence is unavailable" in omissions["claim-unsupported"].reason
+    assert "claim-repair-duplicate" not in page_claim_ids
+    assert any(page.title.startswith("用法二") for page in content)
+    assert any(page.title.startswith("用法三") for page in content)
+    assert any(page.title.startswith("接续") for page in content)
 
 
 def test_binder_rejects_overlong_bullet_instead_of_truncating_japanese():

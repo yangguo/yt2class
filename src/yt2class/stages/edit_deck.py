@@ -465,7 +465,11 @@ def score_candidates(
     return candidates
 
 
-def _example_keep(candidates: Iterable[PageCandidate]) -> set[str]:
+def _example_keep(
+    candidates: Iterable[PageCandidate],
+    *,
+    expanded_cause_units: set[str] | None = None,
+) -> set[str]:
     per_topic: dict[str, list[PageCandidate]] = {}
     for item in candidates:
         if item.kind != "example":
@@ -476,7 +480,40 @@ def _example_keep(candidates: Iterable[PageCandidate]) -> set[str]:
         ranked = sorted(rows, key=lambda row: (-row.score, row.start_seconds, row.id))
         for row in ranked[:_MAX_EXAMPLES_PER_TOPIC]:
             kept.add(row.unit_id)
+    expanded = sorted(
+        (row for rows in per_topic.values() for row in rows
+         if row.unit_id in (expanded_cause_units or set())),
+        key=lambda row: (-row.score, row.start_seconds, row.id),
+    )
+    kept.update(
+        row.unit_id for row in expanded[: 2 * _MAX_CAUSE_CONTENT_PAGES]
+    )
     return kept
+
+
+def _cause_example_signature(
+    item: PageCandidate,
+    knowledge: KnowledgeDocument,
+) -> str | None:
+    if item.kind != "example":
+        return None
+    unit = _unit_by_id(knowledge, item.unit_id)
+    if unit is None:
+        return None
+    sentence = next(
+        (
+            sanitize_student_copy(claim.text).strip()
+            for claim in unit.claims
+            if claim.id in item.claim_ids
+            and claim.provenance == "source"
+            and _script_profile(claim.text) == "ja"
+            and "につき" in claim.text
+        ),
+        None,
+    )
+    if not sentence:
+        return None
+    return re.sub(r"\s+", "", sentence).rstrip("。．.!！?？")
 
 
 _KANA_RE = re.compile(r"[\u3040-\u30ff\u3100-\u312f]")
@@ -1177,10 +1214,10 @@ def select_candidates(
     content_target = max(1, min(target_pages, max_pages) - 2)
     content_max = max(1, max_pages - 2, sense_slots)
     parents = prerequisite_parents(knowledge)
-    keep_examples = _example_keep(candidates)
     demoted = _demote_translation_duplicate_units(candidates, knowledge)
     unsupported_cause_ids: set[str] = set()
     invalid_cause_claims: dict[str, tuple[str, ...]] = {}
+    expanded_cause_units: set[str] = set()
     ranked_candidates: list[PageCandidate] = []
     for item in candidates:
         if (
@@ -1211,6 +1248,16 @@ def select_candidates(
             invalid_cause_claims[item.unit_id] = tuple(item.claim_ids)
             unsupported_cause_ids.add(item.unit_id)
             continue
+        if (
+            valid_evidence_ids is not None
+            and item.kind == "example"
+            and _is_usage_cause_page(item, course_map, knowledge)
+            and any(
+                _script_profile(claim.text) == "ja" and "につき" in claim.text
+                for claim in source_claims
+            )
+        ):
+            expanded_cause_units.add(item.unit_id)
         ranked_candidates.append(
             replace(
                 item,
@@ -1222,6 +1269,26 @@ def select_candidates(
     ranked = sorted(
         [item for item in ranked_candidates if item.unit_id not in unsupported_cause_ids],
         key=lambda item: _rank_key(item, demoted=demoted),
+    )
+    deduplicated: list[PageCandidate] = []
+    seen_cause_examples: set[str] = set()
+    duplicate_cause_ids: set[str] = set()
+    for item in ranked:
+        signature = (
+            _cause_example_signature(item, knowledge)
+            if item.unit_id in expanded_cause_units
+            else None
+        )
+        if signature is not None and signature in seen_cause_examples:
+            duplicate_cause_ids.add(item.unit_id)
+            continue
+        if signature is not None:
+            seen_cause_examples.add(signature)
+        deduplicated.append(item)
+    ranked = deduplicated
+    keep_examples = _example_keep(
+        ranked,
+        expanded_cause_units=expanded_cause_units - duplicate_cause_ids,
     )
     selected: list[PageCandidate] = []
     selected_ids: set[str] = set()
@@ -1412,6 +1479,8 @@ def select_candidates(
                     reason=(
                         _cause_omission_reason(item, knowledge, valid_evidence_ids)
                         if item.unit_id in unsupported_cause_ids
+                        else "duplicate source-backed cause example"
+                        if item.unit_id in duplicate_cause_ids
                         else "cause-example capacity (four supported examples across two pages)"
                         if item.unit_id in capacity_omission_ids
                         else "page budget or representative-example compression"
