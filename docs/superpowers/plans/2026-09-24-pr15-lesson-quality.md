@@ -78,5 +78,21 @@
 
 - [ ] Run `uv run pytest -q`, `npm ci --prefix renderer`, and `git diff --check` on the final branch; record exact counts.
 - [ ] Build a PPTX from the synthetic regression fixture. Inspect SlideSpec text/citation mapping and convert PPTX to PDF or preview images; check pages for orphan bullets, overflow, frame fidelity, repeated summary text, and misleading source times.
-- [ ] Compare this output with `/Users/vyang/Downloads/lesson.pdf` as a failure example. If the historical intermediate artifacts are absent, state that true VGQ6/Ark reproduction is unverified; do not claim the supplied PDF was regenerated.
+- [ ] Compare this output with the user-supplied `lesson.pdf` as a failure example. If the historical intermediate artifacts are absent, state that true VGQ6/Ark reproduction is unverified; do not claim the supplied PDF was regenerated.
 - [ ] Review the full PR diff against the global constraints, push the PR #15 follow-up branch or update PR #15 only after local verification, and inspect remote CI for the exact final SHA. Do not merge while PR remains draft or until live acceptance is explicitly closed.
+
+### Task 6: Preserve original screenshot aspect ratio (2026-09-25 follow-up)
+
+**Files:** Modify `renderer/src/layouts/common.mjs` and renderer dependencies only if image dimension parsing requires one; test with `tests/integration/test_pptx_renderer.py` or a focused renderer package test.
+
+- [ ] Reproduce the new six-page PDF's image distortion with a 16:9 source in the image-text box: its PPTX shape currently has the 4.2:3.8 box ratio. Assert the exported shape or PDF placement keeps the source's aspect ratio within a small tolerance.
+- [ ] Compute a centered fit rectangle from intrinsic image width/height for cover, image-text, comparison, and sequence layouts. Keep original image bytes, provenance, hyperlinks, and the surrounding layout box unchanged.
+- [ ] Render PPTX and export PDF locally; inspect the image-text pages and verify no unintended crop, stretch, overlap, or footer change. Run the full offline suite.
+
+### Task 7: Preserve four supported cause examples in one topic (2026-09-25 follow-up)
+
+**Files:** Modify `src/yt2class/stages/edit_deck.py` and a focused editor test only after checking the new run's source artifacts if available.
+
+- [ ] Add a failing fixture with four distinct supported cause examples in the same `CourseMap` topic, plus a separate rate and about sense. Give enough configurable page budget for a second cause page; do not treat the six-page PDF as a cap.
+- [ ] Reconcile `_example_keep`'s per-topic two-example limit with the existing four-example cause capacity. Keep deduplication, real claim/evidence IDs, two examples per readable cause page, and an omission for missing or unsupported claims.
+- [ ] Test the full editorial and bind path; do not synthesize the two missing sentences from this document. Compare against the actual new run when its artifacts are available.
