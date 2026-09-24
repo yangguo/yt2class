@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from yt2class.adapters.providers.base import FakeProvider
-from yt2class.domain.knowledge import KnowledgeClaim, KnowledgeUnit
-from yt2class.stages.bind_spec import BindError, _content_bullets
-from yt2class.domain.editorial import PageIntent
-from yt2class.stages.edit_deck import edit_deck
 from tests.helpers.m2 import frames_caps, make_transcript, make_visual
 from tests.helpers.m3 import concept_unit, course_map, knowledge
+from yt2class.adapters.providers.base import FakeProvider
+from yt2class.domain.editorial import PageIntent
+from yt2class.domain.knowledge import KnowledgeClaim
+from yt2class.stages.bind_spec import BindError, _content_bullets
+from yt2class.stages.edit_deck import edit_deck
 
 
 def test_four_source_backed_cause_examples_fit_two_complete_bullets_per_page():
@@ -139,18 +139,23 @@ def test_four_source_backed_cause_examples_fit_two_complete_bullets_per_page():
         transcript=transcript,
         visual=make_visual([], duration=80.0),
         provider=FakeProvider(frames_caps()),
-        target_pages=8,
-        max_pages=10,
+        target_pages=7,
+        max_pages=7,
         order="teaching",
     )
 
     content = [page for page in plan.pages if page.type == "content"]
+    assert len(plan.pages) <= 7
     cause_pages = [page for page in content if page.title.startswith("用法一")]
     assert len(cause_pages) == 2
     visible_bullets = [bullet for page in cause_pages for bullet in page.body_points]
     visible = "\n".join(visible_bullets)
     for _key, sentence, _cap in examples:
-        assert sentence in visible
+        assert sentence in visible, (
+            visible,
+            [(item.claim_id, item.reason) for item in plan.omissions],
+            [(page.title, page.claim_ids) for page in content],
+        )
     assert "因今日下雨，运动会延期至下周。" in visible
     assert not any("臨時休業につき、入口を閉鎖" in bullet for bullet in visible_bullets)
     assert "claim-rain" in {claim for page in cause_pages for claim in page.claim_ids}

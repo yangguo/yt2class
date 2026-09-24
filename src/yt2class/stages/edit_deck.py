@@ -931,7 +931,7 @@ def _enforce_mandatory_sense_pages(
         )
         if pick is None:
             continue
-        if len(updated) >= content_max:
+        if _candidate_page_count(updated, course_map=course_map, knowledge=knowledge) >= content_max:
             if ordinal == 2:
                 updated = _drop_weakest_page_for_sense(
                     updated,
@@ -940,7 +940,7 @@ def _enforce_mandatory_sense_pages(
                     knowledge=knowledge,
                     protected_unit_ids=selected_ids,
                 )
-            elif len(updated) >= content_max:
+            elif _candidate_page_count(updated, course_map=course_map, knowledge=knowledge) >= content_max:
                 updated = sorted(
                     updated,
                     key=lambda row: (row.score, row.start_seconds, row.id),
@@ -1139,19 +1139,19 @@ def _ensure_connective_page(
     if present:
         return _stamp_connective_lock(selected, {item.unit_id for item in present})
     updated = list(selected)
-    if len(updated) >= content_max:
+    if _candidate_page_count(updated, course_map=course_map, knowledge=knowledge) >= content_max:
         updated = _drop_duplicate_cause_page(
             updated,
             course_map=course_map,
             knowledge=knowledge,
         )
-    if len(updated) >= content_max:
+    if _candidate_page_count(updated, course_map=course_map, knowledge=knowledge) >= content_max:
         updated = _drop_nonprotected_for_connective(
             updated,
             course_map=course_map,
             knowledge=knowledge,
         )
-    if len(updated) >= content_max:
+    if _candidate_page_count(updated, course_map=course_map, knowledge=knowledge) >= content_max:
         return updated
     if any(item.unit_id == pick.unit_id for item in updated):
         return _stamp_connective_lock(updated, {pick.unit_id})
@@ -1263,7 +1263,15 @@ def select_candidates(
             and 2 in _selected_sense_ordinals(selected, course_map=course_map, knowledge=knowledge)
         ):
             return
-        if len(selected) >= content_max and not force:
+        if (
+            _candidate_page_count(
+                [*selected, item],
+                course_map=course_map,
+                knowledge=knowledge,
+            )
+            > content_max
+            and not force
+        ):
             return
         selected.append(item)
         selected_ids.add(item.unit_id)
@@ -1343,7 +1351,7 @@ def select_candidates(
             if extra.unit_id == pick.unit_id:
                 continue
             add_with_prerequisites(extra)
-            if len(selected) >= content_max:
+            if _candidate_page_count(selected, course_map=course_map, knowledge=knowledge) >= content_max:
                 break
 
     for item in ranked:
@@ -1353,7 +1361,11 @@ def select_candidates(
             continue
         if item.unit_id in selected_ids:
             continue
-        if len(selected) >= content_target and item.unit_id not in selected_ids:
+        if (
+            _candidate_page_count(selected, course_map=course_map, knowledge=knowledge)
+            >= content_target
+            and item.unit_id not in selected_ids
+        ):
             if item.required_prerequisite:
                 add_with_prerequisites(item)
             continue
@@ -1510,6 +1522,23 @@ def _group_cause_candidates(
             result.append(grouped[owner])
             inserted_groups.add(owner)
     return result
+
+
+def _candidate_page_count(
+    selected: list[PageCandidate],
+    *,
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument,
+) -> int:
+    """Count the pages candidates will occupy after cause examples are grouped."""
+
+    return len(
+        _group_cause_candidates(
+            selected,
+            course_map=course_map,
+            knowledge=knowledge,
+        )
+    )
 
 
 def _cause_omission_reason(
