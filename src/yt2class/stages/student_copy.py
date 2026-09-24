@@ -40,6 +40,13 @@ _PROPORTION_TSUKI_RE = re.compile(
     r"につき.{0,16}(?:[0-9０-９]+円|ポイント)|"
     r"[0-9０-９]+円.{0,20}につき"
 )
+_ANALYSIS_MARKER_RE = re.compile(
+    r"新知识导入(?:[（(][^）)]*[）)])?|保留否定|对比点|老师指出|老师宣布"
+)
+_ANALYSIS_PREFIX_RE = re.compile(
+    r"^\s*(?:新知识导入(?:[（(][^）)]*[）)])?|保留否定|对比点)\s*[:：]?\s*"
+)
+_ANALYSIS_NARRATION_RE = re.compile(r"(?:老师指出|老师宣布|老师强调|对比点|保留否定)")
 LEARNER_ARTIFACT_RE = re.compile(r"cap-\d+|occ-\d+|webm\s*@", re.I)
 
 
@@ -78,6 +85,8 @@ def contains_student_meta(text: str) -> bool:
         return True
     if _AUTOMATION_ID_RE.search(text) or _ALIGNMENT_NOTE_RE.search(text):
         return True
+    if _ANALYSIS_MARKER_RE.search(text):
+        return True
     if _is_timing_alignment(text):
         return True
     stripped = text.strip()
@@ -93,8 +102,14 @@ def normalize_headword_display(text: str) -> str:
         return text
     if _PROPORTION_TSUKI_RE.search(text):
         return text
-    if _HEADWORD_TSUKI_RE.search(text) and not re.search(r"時間につき", text):
-        return _HEADWORD_TSUKI_RE.sub("～につき", text, count=1)
+    match = _HEADWORD_TSUKI_RE.search(text)
+    if match and not re.search(r"時間につき", text):
+        prefix = text[: match.start()]
+        # A preceding Japanese character means this occurrence is sentence text.
+        standalone = not prefix or prefix[-1].isspace() or prefix[-1] in "：:、，,（([「『\"'"
+        labeled = bool(re.search(r"(?:文法|语法|詞頭|词头|词条)\s*[：:、，,]?\s*$", prefix))
+        if standalone or labeled:
+            return text[: match.start()] + "～につき" + text[match.end() :]
     if "用法" in text or "文法" in text or "助詞" in text:
         text = _TSUKI_MISHEAR_RE.sub("～につき", text)
     return text
@@ -105,7 +120,9 @@ def sanitize_student_copy(text: str) -> str:
 
     if not text:
         return text
-    cleaned = _META_PAREN_RE.sub("", text)
+    cleaned = _ANALYSIS_PREFIX_RE.sub("", text)
+    cleaned = re.sub(r"^[—–-]+\s*保留否定[^；;。！？\n]*[；;]?\s*", "", cleaned)
+    cleaned = _META_PAREN_RE.sub("", cleaned)
     cleaned = _META_INLINE_RE.sub("", cleaned)
     cleaned = _AUTOMATION_ID_RE.sub("", cleaned)
     cleaned = _ALIGNMENT_NOTE_RE.sub("", cleaned)
@@ -116,7 +133,11 @@ def sanitize_student_copy(text: str) -> str:
         delimiter = parts[index + 1] if index + 1 < len(parts) else ""
         if not chunk:
             continue
-        if _is_timing_alignment(chunk) or contains_student_meta(chunk):
+        if (
+            _is_timing_alignment(chunk)
+            or contains_student_meta(chunk)
+            or _ANALYSIS_NARRATION_RE.search(chunk)
+        ):
             continue
         chunk = _strip_timing_scaffolds(chunk).strip()
         if not chunk:
