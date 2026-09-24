@@ -4,27 +4,34 @@ from __future__ import annotations
 
 import json
 import shutil
+import struct
 import subprocess
+import xml.etree.ElementTree as ET
+import zlib
 from pathlib import Path
 from zipfile import ZipFile
 
 import pytest
 
+from tests.helpers.m4 import seed_lecture_run
 from yt2class.adapters.render.base import RenderError, RenderRequest
 from yt2class.adapters.render.pptxgenjs import (
-    PptxGenJsRenderer,
     RENDER_REPORT_REL,
+    PptxGenJsRenderer,
     renderer_root,
-    validate_pptx_package,
 )
 from yt2class.stages.bind_spec import bind_editorial_plan
 from yt2class.stages.render import render_bound_spec, spec_digest
-from tests.helpers.m4 import seed_lecture_run
 
 pytestmark = pytest.mark.skipif(
     not shutil.which("node") or not (renderer_root() / "node_modules").is_dir(),
     reason="Node renderer toolchain unavailable",
 )
+NS = {
+    "p": "http://schemas.openxmlformats.org/presentationml/2006/main",
+    "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
+    "rel": "http://schemas.openxmlformats.org/package/2006/relationships",
+}
 
 
 def _pptx_text(archive: ZipFile) -> str:
@@ -42,6 +49,32 @@ def _has_hyperlink_rels(archive: ZipFile) -> bool:
             if "hyperlink" in body.lower() or "youtube.com" in body:
                 return True
     return False
+
+
+def _slide_hyperlink_targets(archive: ZipFile, slide_number: int) -> list[str]:
+    name = f"ppt/slides/_rels/slide{slide_number}.xml.rels"
+    root = ET.fromstring(archive.read(name))
+    return [
+        relation.attrib["Target"]
+        for relation in root.findall("rel:Relationship", NS)
+        if relation.attrib.get("Type", "").endswith("/hyperlink")
+    ]
+
+
+def _write_solid_png(path: Path, width: int, height: int) -> None:
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        payload = kind + data
+        return struct.pack(">I", len(data)) + payload + struct.pack(">I", zlib.crc32(payload))
+
+    row = b"\0" + b"\x00\x00\x00" * width
+    raw = row * height
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    path.write_bytes(
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", header)
+        + chunk(b"IDAT", zlib.compress(raw))
+        + chunk(b"IEND", b"")
+    )
 
 
 def test_renderer_resolves_bundled_package_without_repo_root():
@@ -118,6 +151,64 @@ await renderSpec(spec, process.cwd(), process.argv[1]);
     assert blob.count("04:17") == 1
     assert blob.count("01:39") == 1
     assert "来源 00:00" not in blob
+
+
+def test_renderer_preserves_image_aspect_ratio_across_image_layouts(tmp_path: Path):
+    root = renderer_root()
+    _write_solid_png(tmp_path / "frame.png", 1259, 708)
+    output = tmp_path / "image-aspect.pptx"
+    script = """
+import { renderSpec } from "./src/render.mjs";
+const asset = (id) => ({ id, role: "frame", path: "frame.png", timestamp_seconds: 12 });
+const spec = {
+  source: { kind: "youtube", url: "https://www.youtube.com/watch?v=abc123_" },
+  theme: { font_family: "Arial" },
+  claims: [{ id: "claim-a", text: "Example" }],
+  assets: [asset("frame-a"), asset("frame-b")],
+  evidence: [],
+  slides: [
+    { id: "cover", type: "cover", layout: "cover", title: "Cover", hero_asset_id: "frame-a", notes: "" },
+    { id: "image-text", type: "content", layout: "image-text", title: "Image text", point_claim_ids: ["claim-a"], frame_asset_ids: ["frame-a"], notes: "" },
+    { id: "comparison", type: "content", layout: "comparison", title: "Comparison", point_claim_ids: [], frame_asset_ids: ["frame-a", "frame-b"], captions: ["A", "B"], notes: "" },
+    { id: "sequence", type: "content", layout: "sequence", title: "Sequence", point_claim_ids: [], steps: [
+      { asset_id: "frame-a", caption: "Step A", claim_ids: [] },
+      { asset_id: "frame-b", caption: "Step B", claim_ids: [] }
+    ], notes: "" }
+  ]
+};
+await renderSpec(spec, process.argv[2], process.argv[1]);
+"""
+    subprocess.run(
+        ["node", "--input-type=module", "-e", script, str(output), str(tmp_path)],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    with ZipFile(output) as archive:
+        slide_xml = [
+            archive.read(name)
+            for name in sorted(archive.namelist())
+            if name.startswith("ppt/slides/slide") and name.endswith(".xml")
+        ]
+        aspect_ratios = []
+        for body in slide_xml:
+            root_xml = ET.fromstring(body)
+            for ext in root_xml.findall(".//p:pic/p:spPr/a:xfrm/a:ext", NS):
+                width = int(ext.attrib["cx"])
+                height = int(ext.attrib["cy"])
+                aspect_ratios.append(width / height)
+        assert len(aspect_ratios) == 6
+        assert all(abs(ratio - (1259 / 708)) < 0.001 for ratio in aspect_ratios)
+        assert _has_hyperlink_rels(archive)
+        for slide_number in (3, 4):
+            targets = _slide_hyperlink_targets(archive, slide_number)
+            assert targets
+            assert all(
+                target == "https://www.youtube.com/watch?v=abc123_&t=12s"
+                for target in targets
+            )
 
 
 def test_preview_required_without_libreoffice_fails_closed(tmp_path: Path):
