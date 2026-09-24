@@ -6,6 +6,8 @@ Turn course videos into source-faithful PPTX lecture notes: transcript and visua
 
 **Quality status:** pull-request and `master` CI run the full offline suite. A prior dated Ark Plan VGQ6 run checked structural sense coverage and mandatory selection on an earlier revision. The PR #15 lesson-quality follow-up now tests four evidence-backed cause examples within two pages, concise learner copy, and page-local source times offline. The current revision still needs a fresh VGQ6/Ark run, visual QA, gold-outline comparison, and human review; see [known limits](docs/examples/m7-known-limits.md) and the [follow-up design](docs/plans/2026-09-24-pr15-lesson-quality-design.md).
 
+The seven-page example is a compact regression case, not a fixed deck length. `editor.target_pages` and `editor.max_pages` are configurable for the video's length and complexity; the default course configuration uses 12 and 20, respectively.
+
 **Roadmap:** complete dated live scorecards, visual QA, human-review closure, and release hardening — see the [implementation plan](docs/plans/2026-08-11-youtube-to-ppt-implementation.md).
 
 ```text
