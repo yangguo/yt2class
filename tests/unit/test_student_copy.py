@@ -26,6 +26,21 @@ def test_meta_does_not_flag_legitimate_month_usage():
     assert not contains_student_meta("2月1日から改定します。")
 
 
+def test_sanitize_strips_automation_ids_but_keeps_proportion_examples():
+    raw = (
+        "返却期限を過ぎた場合、延滞料金として一日につき300円お支払いいただきます。"
+        "cap-0148 occ-0012 d344652e6eddd447.webm @ 04:17 语音与画面对应。"
+    )
+    cleaned = sanitize_student_copy(raw)
+    assert "一日につき300円" in cleaned
+    assert "cap-" not in cleaned
+    assert "occ-" not in cleaned
+    assert "webm" not in cleaned.lower()
+    assert "1000円分のお買い物につき10ポイント" == sanitize_student_copy(
+        "1000円分のお買い物につき10ポイント"
+    )
+
+
 def test_sanitize_strips_board_sync_and_teacher_confirm():
     raw = "板书同步 timed 老师确认用法二"
     cleaned = sanitize_student_copy(raw)

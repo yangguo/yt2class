@@ -67,3 +67,34 @@ console.log(JSON.stringify({ label: link.label }));
     )
     payload = json.loads(result.stdout.strip())
     assert "02:00" in payload["label"]
+    assert "webm" not in payload["label"].lower()
+    assert " @" not in payload["label"]
+    assert payload["label"].startswith("来源")
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node required")
+def test_content_bullets_prefer_learner_lines_over_claim_ids():
+    root = renderer_root()
+    script = """
+import { contentBulletLines, formatLocalSeek } from "./src/layouts/links.mjs";
+const lines = contentBulletLines(
+  { bullets: ["1時間につき1500円", "一日につき300円"] },
+  ["cap-0148 raw claim"],
+);
+const fallback = contentBulletLines({ bullets: [] }, ["雨天につき延期"]);
+const label = formatLocalSeek("media/d344652e6eddd447.webm", 257);
+console.log(JSON.stringify({ lines, fallback, label }));
+"""
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(result.stdout.strip())
+    assert payload["lines"] == ["1時間につき1500円", "一日につき300円"]
+    assert payload["fallback"] == ["雨天につき延期"]
+    assert "webm" not in payload["label"].lower()
+    assert "cap-" not in payload["label"]
+    assert "04:17" in payload["label"]

@@ -110,6 +110,63 @@ def _text_signals_rate(text: str) -> bool:
     return _RATE_EXAMPLE_RE.search(text) is not None
 
 
+def text_is_rate_proportion(text: str) -> bool:
+    """True for 比例・単位 sentences (一日につき300円), not bare につき cause lines."""
+
+    if not text or not text.strip():
+        return False
+    sample = text.replace("について", "")
+    if _RATE_EXAMPLE_RE.search(sample):
+        return True
+    if re.search(r"につき.{0,24}(?:円|ポイント|点|割)", sample):
+        return True
+    if re.search(r"(?:円|ポイント).{0,24}につき", sample):
+        return True
+    if re.search(r"(?:一日|1日|１日|[0-9０-９]+日).{0,6}につき", sample):
+        return True
+    if re.search(r"(?:時間|個|匹|本|枚).{0,4}につき", sample) and re.search(r"[0-9０-９]", sample):
+        return True
+    return False
+
+
+def iter_rate_sentences(text: str) -> list[str]:
+    """Return proportion sentences inside a claim, OCR line, or caption."""
+
+    if not text or not text.strip():
+        return []
+    sentences = [part.strip() for part in re.split(r"[。．！？\n]", text) if part.strip()]
+    found = [
+        sentence
+        for sentence in sentences
+        if text_is_rate_proportion(sentence) and not text_is_connective_attachment(sentence)
+    ]
+    if found:
+        return found
+    stripped = text.strip()
+    if text_is_rate_proportion(stripped) and not text_is_connective_attachment(stripped):
+        return [stripped]
+    return []
+
+
+def text_is_rate_only(text: str) -> bool:
+    """True when the copy is proportion examples and not a cause/about sentence."""
+
+    sentences = [part.strip() for part in re.split(r"[。．！？\n]", text or "") if part.strip()]
+    if not sentences:
+        return False
+    saw_rate = False
+    for sentence in sentences:
+        if text_is_connective_attachment(sentence):
+            continue
+        if text_is_rate_proportion(sentence):
+            saw_rate = True
+            continue
+        bare = sentence.replace("について", "")
+        if "につき" in bare or "について" in sentence:
+            return False
+    return saw_rate
+
+
 def is_connective_topic(title: str) -> bool:
     text = title.strip()
     lowered = text.lower()
@@ -504,12 +561,11 @@ def learner_page_title(
         (item for item in iter_topics(course_map, knowledge) if item.id == topic_id),
         None,
     )
-    if (
-        unit_text
-        and is_tsuki_grammar_lesson(course_map, knowledge)
-        and text_is_connective_attachment(unit_text, topic)
-    ):
-        return CONNECTIVE_HEADING
+    if unit_text and is_tsuki_grammar_lesson(course_map, knowledge):
+        if text_is_rate_only(unit_text):
+            return sense_heading(2)
+        if text_is_connective_attachment(unit_text, topic):
+            return CONNECTIVE_HEADING
     connective = topic_for_connective(course_map, knowledge)
     if connective is not None and connective.id == topic_id:
         return CONNECTIVE_HEADING
@@ -623,7 +679,10 @@ __all__ = [
     "sense_ordinal",
     "sense_topic_ids",
     "summary_bullet_for_sense",
+    "iter_rate_sentences",
     "text_is_connective_attachment",
+    "text_is_rate_only",
+    "text_is_rate_proportion",
     "topic_for_connective",
     "topic_for_sense_ordinal",
     "topic_kind",

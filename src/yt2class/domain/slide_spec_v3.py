@@ -213,6 +213,10 @@ class SlidePage(StrictModel):
                 allowed_fields.add("frame_asset_ids")
                 if len(self.frame_asset_ids) != 1:
                     raise ValueError("image-text layout requires exactly 1 frame")
+            if self.layout in {"text", "image-text"}:
+                allowed_fields.add("bullets")
+                if self.bullets and not 1 <= len(self.bullets) <= 4:
+                    raise ValueError("content bullets must be 1-4 lines")
             if self.layout == "text" and self.frame_asset_ids:
                 raise ValueError("text layout requires 0 frames")
             if self.layout == "comparison":

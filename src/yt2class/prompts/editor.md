@@ -11,6 +11,11 @@ Shared constraints:
 - Prefer one page per CourseMap topic / announced 用法 (接续, 用法1, 用法2, …); do not let near-duplicate JA/ZH translation pairs crowd out later senses.
 - For ～につき, keep one 接续 page (名詞／数量詞＋につき) and at most two 用法一 pages so 用法二 and 用法三 stay.
 - Order ～につき content as 接续, then 用法一, 用法二, 用法三. Do not put 用法一 after 用法三 because its timestamp is later.
+- Proportion examples (一日につき300円, 1時間につき1500円, 買い物につきポイント) belong on 用法二, never on 用法一.
+- For 接续, prefer a frame that shows 名詞／数量詞＋につき. Do not use a 会話 frame when a grammar frame exists.
+- Learner-facing titles, bullets, captions, and footers must not include cap-/occ- ids, webm filenames, or alignment notes.
+- Keep a single 用法三 page and a short summary bullet. Do not repeat the same 使わないで / について note.
+- Cover title for ～につき should be learner-facing Chinese or Japanese, not an English introduction line.
 - Use `output_language` gloss with quoted source JA for titles/body; avoid parallel clone pages for the same evidence span.
 - Stay within `max_pages`. Prefer `target_pages`. Always keep a cover and a summary.
 - Return only the specified JSON object.

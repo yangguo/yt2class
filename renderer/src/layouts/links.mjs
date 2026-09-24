@@ -8,11 +8,19 @@ export function floorYoutubeSeek(url, seconds) {
 }
 
 export function formatLocalSeek(mediaPath, seconds) {
-  const name = mediaPath?.split("/").pop() || "source";
+  void mediaPath;
   const total = Math.max(0, Math.floor(Number(seconds) || 0));
   const mm = String(Math.floor(total / 60)).padStart(2, "0");
   const ss = String(total % 60).padStart(2, "0");
-  return `${name} @ ${mm}:${ss}`;
+  return `来源 ${mm}:${ss}`;
+}
+
+export function contentBulletLines(page, claimLines) {
+  const bullets = Array.isArray(page?.bullets)
+    ? page.bullets.map((line) => String(line || "").trim()).filter(Boolean)
+    : [];
+  if (bullets.length) return bullets;
+  return claimLines;
 }
 
 export function evidenceStartSeconds(evidenceId, evidenceById) {
