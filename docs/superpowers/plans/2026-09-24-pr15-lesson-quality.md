@@ -22,7 +22,7 @@
 
 ## Review Focus
 
-1. Four supported cause examples across separate topics: all four appear within two cause pages without displacing rate/about. Task 2 owns this test.
+1. Four supported cause examples across separate topics: all four appear within two cause pages without displacing rate/about, including a strict seven-page total budget. Task 2 owns this test.
 2. One Japanese claim plus Chinese translation of the same example: no duplicate page or split orphan bullet. Task 2 owns this test.
 3. Unsupported target example or truncated ASR: never synthesize its missing ending; retain an omission/review trail. Task 2 owns this test.
 4. Long semicolon-separated 用法三 analysis: summary remains short while preserving preference for 「について」. Task 3 owns this test.
@@ -48,7 +48,7 @@
 **Interfaces:** Input remains `KnowledgeDocument`, `CourseMap`, `VisualCatalogue`, and `TranscriptDocument`; output remains `EditorialPlan`. Reuse `PageCandidate`, `PageIntent`, `KnowledgeClaim`, and existing `Omission`. Add a private helper for source-backed distinct cause examples rather than a VGQ6/video-ID branch. A selected example contributes its real `claim_id` and source text to one cause page.
 
 - [ ] Create a fixture with distinct supported examples for 店内改装／工事中／雨天／限定品 in separate `KnowledgeUnit`s, each with evidence IDs; add a fifth duplicate translation, a rate example, and a target example with no source evidence. The four supported examples are synthetic test data and must not be copied into production rules.
-- [ ] Assert two or fewer 用法一 pages display the four supported Japanese sentences (plus available translations), each sentence remains one logical bullet, all displayed examples retain their real `claim_id`s, and rate/about pages remain. Assert unsupported text does not appear and omissions explain capacity/evidence gaps. Run and observe failure on PR #15 baseline.
+- [ ] Assert two or fewer 用法一 pages display the four supported Japanese sentences (plus available translations) with `target_pages=max_pages=7`; each sentence remains one logical bullet, all displayed examples retain their real `claim_id`s, rate/about pages remain, and total pages stay within seven. Assert unsupported text does not appear and omissions explain capacity/evidence gaps. Run and observe failure on PR #15 baseline.
 - [ ] Adjust example selection and grouping so page caps count pages, not individual examples. Preserve the mandatory-sense locks and `max_pages`. Prefer source-backed, distinct examples; group up to two examples per cause page, and keep evidence IDs and claim IDs synchronized. If fewer than four are supported, output only those with source evidence.
 - [ ] Run the new test, existing plan11–plan14 tests, and binder contract/integration tests. Inspect generated `PageIntent` to ensure no visible bullet exists without a matching claim. Commit once green.
 
