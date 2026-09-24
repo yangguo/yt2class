@@ -14,6 +14,7 @@ PySceneDetect、Pillow/OpenCV、可选 OCR、可选 WhisperX、HTTP provider ada
 Node ESM、PptxGenJS、pytest。
 
 本计划与[完整设计](2026-08-11-youtube-to-ppt-design.md)配套。
+PR #15 的 ～につき 讲义质量补强另见[专项设计](2026-09-24-pr15-lesson-quality-design.md)和[逐任务开发计划](../superpowers/plans/2026-09-24-pr15-lesson-quality.md)。
 文件名是目标布局；实施时可以保留兼容 facade，但不能让原型的 v1/v2 合同限制 3.0。
 每个任务遵循：写行为测试→确认失败原因→最小实现→目标测试→相关测试→提交。
 真实模型、YouTube 与视觉检查分别记录，不用单测代替。
