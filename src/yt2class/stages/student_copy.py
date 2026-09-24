@@ -76,6 +76,24 @@ def _strip_timing_scaffolds(text: str) -> str:
     return cleaned
 
 
+def _strip_analysis_fragments(text: str) -> str:
+    cleaned = _ANALYSIS_PREFIX_RE.sub("", text)
+    chunks = re.split(r"([；;。．！？\n])", cleaned)
+    kept: list[str] = []
+    for index in range(0, len(chunks), 2):
+        chunk = chunks[index].strip()
+        delimiter = chunks[index + 1] if index + 1 < len(chunks) else ""
+        if not chunk:
+            continue
+        if "保留否定" in chunk or "新知识导入" in chunk or "复习内容" in chunk:
+            continue
+        chunk = re.sub(r"老师(?:指出|宣布|强调)\s*", "", chunk)
+        chunk = re.sub(r"^[—–-]+\s*", "", chunk).strip()
+        if chunk:
+            kept.append(chunk + delimiter)
+    return "".join(kept)
+
+
 def contains_student_meta(text: str) -> bool:
     if not text or not text.strip():
         return False
@@ -120,8 +138,7 @@ def sanitize_student_copy(text: str) -> str:
 
     if not text:
         return text
-    cleaned = _ANALYSIS_PREFIX_RE.sub("", text)
-    cleaned = re.sub(r"^[—–-]+\s*保留否定[^；;。！？\n]*[；;]?\s*", "", cleaned)
+    cleaned = _strip_analysis_fragments(text)
     cleaned = _META_PAREN_RE.sub("", cleaned)
     cleaned = _META_INLINE_RE.sub("", cleaned)
     cleaned = _AUTOMATION_ID_RE.sub("", cleaned)
@@ -133,11 +150,7 @@ def sanitize_student_copy(text: str) -> str:
         delimiter = parts[index + 1] if index + 1 < len(parts) else ""
         if not chunk:
             continue
-        if (
-            _is_timing_alignment(chunk)
-            or contains_student_meta(chunk)
-            or _ANALYSIS_NARRATION_RE.search(chunk)
-        ):
+        if _is_timing_alignment(chunk) or contains_student_meta(chunk):
             continue
         chunk = _strip_timing_scaffolds(chunk).strip()
         if not chunk:

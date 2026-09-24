@@ -63,6 +63,18 @@ def test_sanitize_does_not_leak_negation_analysis_heading():
     assert "关于含义通常用「について」" in cleaned
 
 
+def test_sanitize_keeps_teaching_conclusion_after_analysis_narration():
+    raw = (
+        "日本語では「について」が普通です；老师指出这里是关于的用法；"
+        "保留否定「使わないで」；通常用「について」"
+    )
+    cleaned = sanitize_student_copy(raw)
+    assert "老师指出" not in cleaned
+    assert "保留否定" not in cleaned
+    assert "「について」が普通です" in cleaned
+    assert "通常用「について」" in cleaned
+
+
 def test_meta_does_not_flag_legitimate_month_usage():
     assert not contains_student_meta("2月1日から改定します。")
 

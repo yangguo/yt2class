@@ -159,7 +159,7 @@ def test_plan11_cause_crowd_keeps_connective_and_caps_usage_one():
     assert "用法一" in joined
     assert "用法二" in joined
     assert "用法三" in joined
-    assert "1500" in joined or "1時間" in joined
+    assert "每个单位" in joined
 
 
 def test_connective_gloss_does_not_consume_cause_ordinal():

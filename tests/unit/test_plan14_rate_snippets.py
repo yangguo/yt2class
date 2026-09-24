@@ -199,11 +199,10 @@ def test_plan14_usage_two_keeps_three_kinds_from_other_topics():
     summary = next(page for page in plan.pages if page.type == "summary")
     rate_summary = next(point for point in summary.body_points if point.startswith("用法二"))
     assert rate_summary.startswith("用法二：比例・単位")
-    assert "1時間につき1500円" in rate_summary
-    assert "1000円分のお買い物につき10ポイント" in rate_summary
-    assert "300円" in rate_summary
-    assert rate_summary.count("1時間につき") == 1
-    assert "ましょう" not in rate_summary
+    assert "每个单位" in rate_summary
+    assert "1時間につき1500円" not in rate_summary
+    assert "10ポイント" not in rate_summary
+    assert "300円" not in rate_summary
 
     def indexes(prefix: str) -> list[int]:
         return [index for index, title in enumerate(titles) if title.startswith(prefix)]

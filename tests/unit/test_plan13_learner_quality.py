@@ -196,9 +196,10 @@ def test_plan13_rate_examples_frames_and_learner_copy():
     assert summary.type == "summary"
     summary_text = " ".join(summary.body_points)
     assert "比例" in summary_text
-    assert "1500" in summary_text
-    assert "ポイント" in summary_text
-    assert "300円" in summary_text
+    assert "每个单位" in summary_text
+    assert "1500" not in summary_text
+    assert "ポイント" not in summary_text
+    assert "300円" not in summary_text
     about_summary = next(point for point in summary.body_points if point.startswith("用法三"))
     assert "使わない" not in about_summary
     assert len(about_summary) < 80

@@ -226,4 +226,5 @@ def test_edit_deck_plan9_style_opaque_blocks(tmp_path):
     summary = next(page for page in plan.pages if page.type == "summary")
     rate_line = next(line for line in summary.body_points if line.startswith("用法二"))
     assert "比例・単位" in rate_line
-    assert "1500" in rate_line or "1時間" in rate_line
+    assert "每个单位" in rate_line
+    assert "1500" not in rate_line and "1時間" not in rate_line

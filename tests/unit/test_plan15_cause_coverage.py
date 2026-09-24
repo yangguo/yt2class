@@ -50,8 +50,34 @@ def test_four_source_backed_cause_examples_fit_two_complete_bullets_per_page():
         }
     )
     units[2] = rain
+    limited = units[3]
+    units[3] = limited.model_copy(
+        update={
+            "claims": [
+                *limited.claims,
+                KnowledgeClaim(
+                    id="claim-limited-unsupported",
+                    text="臨時休業につき、入口を閉鎖します。",
+                    evidence_ids=["cap-invalid"],
+                    status="draft",
+                    qualifiers=[],
+                    modality="audio",
+                    provenance="source",
+                ),
+            ]
+        }
+    )
     units.extend(
         [
+            concept_unit(
+                "unit-cause-concept", "claim-cause-concept",
+                "原因・理由常见于公告等场合。", ["cap-cause-concept"],
+                topic_id="topic-cause-concept", start=49.0, end=59.0, kind="concept",
+            ),
+            concept_unit(
+                "unit-long", "claim-long", "本日雨天につき、" + "あ" * 220 + "。",
+                ["cap-long"], topic_id="topic-long", start=59.0, end=60.0, kind="example",
+            ),
             concept_unit(
                 "unit-unsupported", "claim-unsupported", "臨時休業につき、入口を閉鎖します。",
                 ["cap-does-not-exist"], topic_id="topic-repair", start=18.0, end=19.0,
@@ -72,12 +98,38 @@ def test_four_source_backed_cause_examples_fit_two_complete_bullets_per_page():
         ]
     )
     doc = knowledge(*units)
+    topics.topics.insert(
+        5,
+        topics.topics[0].model_copy(
+            update={
+                "id": "topic-cause-concept",
+                "title": "用法1・原因",
+                "goal": "理解原因・理由",
+                "start_seconds": 49.0,
+                "end_seconds": 59.0,
+            }
+        ),
+    )
+    topics.topics.insert(
+        6,
+        topics.topics[0].model_copy(
+            update={
+                "id": "topic-long",
+                "title": "用法1・原因",
+                "goal": "理解原因・理由",
+                "start_seconds": 59.0,
+                "end_seconds": 60.0,
+            }
+        ),
+    )
     transcript = make_transcript(
         [(cap, 10.0 + index * 10, 19.0 + index * 10, sentence) for index, (key, sentence, cap) in enumerate(examples)]
         + [
             ("cap-rate", 60.0, 69.0, "駐車場は1時間につき1500円です。"),
             ("cap-about", 70.0, 79.0, "このテーマについて説明します。"),
             ("cap-conn", 1.0, 9.0, "名詞／数量詞＋につき。"),
+            ("cap-cause-concept", 49.0, 59.0, "原因・理由常见于公告等场合。"),
+            ("cap-long", 59.0, 60.0, "本日雨天につき、" + "あ" * 220 + "。"),
         ],
         duration=80.0,
     )
@@ -105,6 +157,16 @@ def test_four_source_backed_cause_examples_fit_two_complete_bullets_per_page():
     assert "claim-rain-zh" in {claim for page in cause_pages for claim in page.claim_ids}
     assert sum("雨天につき" in bullet for bullet in visible_bullets) == 1
     assert any(item.claim_id == "claim-unsupported" for item in plan.omissions)
+    assert any(item.claim_id == "claim-limited-unsupported" for item in plan.omissions)
+    assert any(
+        item.claim_id == "claim-long"
+        and "200-character limit" in item.reason
+        for item in plan.omissions
+    )
+    assert "claim-limited-unsupported" not in {
+        claim_id for page in cause_pages for claim_id in page.claim_ids
+    }
+    assert any("公告" in bullet for bullet in visible_bullets)
     assert any(page.title.startswith("用法二") for page in content)
     assert any(page.title.startswith("用法三") for page in content)
     assert any(page.title.startswith("接续") for page in content)

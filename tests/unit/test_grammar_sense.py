@@ -179,7 +179,7 @@ def test_rate_summary_from_knowledge_when_usage2_not_on_slides():
     summary = next(page for page in plan.pages if page.type == "summary")
     joined = " ".join(summary.body_points)
     assert "用法二" in joined
-    assert "五百円" in joined or "一個につき" in joined
+    assert "每个单位" in joined
 
 
 def test_topic_kind_inferred_from_knowledge_when_title_is_opaque():
@@ -277,7 +277,7 @@ def test_rate_content_and_summary_when_only_u1_u3_would_fit_budget():
     summary = next(page for page in plan.pages if page.type == "summary")
     joined = " ".join(summary.body_points)
     assert "用法二" in joined
-    assert "五百円" in joined or "一個につき" in joined
+    assert "每个单位" in joined
 
 
 def test_summary_bullet_includes_sense_heading():
