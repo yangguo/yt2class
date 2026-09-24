@@ -125,7 +125,16 @@ def test_plan11_cause_crowd_keeps_connective_and_caps_usage_one():
     plan = edit_deck(
         doc,
         course_map=topics,
-        transcript=make_transcript([], duration=190.0),
+        transcript=make_transcript(
+            [
+                (evidence_id, unit.start_seconds, unit.end_seconds, claim.text)
+                for unit in doc.units
+                for claim in unit.claims
+                for evidence_id in claim.evidence_ids
+                if evidence_id.startswith("cap-")
+            ],
+            duration=190.0,
+        ),
         visual=make_visual([], duration=190.0),
         provider=FakeProvider(frames_caps()),
         target_pages=8,

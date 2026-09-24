@@ -1200,6 +1200,7 @@ def select_candidates(
     max_pages: int,
     knowledge: KnowledgeDocument,
     course_map: CourseMap | None = None,
+    valid_evidence_ids: set[str] | None = None,
 ) -> tuple[list[PageCandidate], list[Omission]]:
     sense_slots = len(sense_topic_ids(course_map, knowledge))
     content_target = max(1, min(target_pages, max_pages) - 2)
@@ -1207,13 +1208,27 @@ def select_candidates(
     parents = prerequisite_parents(knowledge)
     keep_examples = _example_keep(candidates)
     demoted = _demote_translation_duplicate_units(candidates, knowledge)
-    ranked = sorted(candidates, key=lambda item: _rank_key(item, demoted=demoted))
+    unsupported_cause_ids = {
+        item.unit_id
+        for item in candidates
+        if _is_usage_cause_page(item, course_map, knowledge)
+        and item.kind == "example"
+        and valid_evidence_ids is not None
+        and not _unit_has_source_evidence(item, knowledge, valid_evidence_ids)
+    }
+    ranked = sorted(
+        [item for item in candidates if item.unit_id not in unsupported_cause_ids],
+        key=lambda item: _rank_key(item, demoted=demoted),
+    )
     selected: list[PageCandidate] = []
     selected_ids: set[str] = set()
 
-    def cause_count() -> int:
+    def cause_example_count() -> int:
         return sum(
-            1 for row in selected if _is_usage_cause_page(row, course_map, knowledge)
+            1
+            for row in selected
+            if row.kind == "example"
+            and _is_usage_cause_page(row, course_map, knowledge)
         )
 
     def about_count() -> int:
@@ -1227,8 +1242,9 @@ def select_candidates(
         if item.unit_id in demoted and not force:
             return
         if (
-            _is_usage_cause_page(item, course_map, knowledge)
-            and cause_count() >= _MAX_CAUSE_CONTENT_PAGES
+            item.kind == "example"
+            and _is_usage_cause_page(item, course_map, knowledge)
+            and cause_example_count() >= 2 * _MAX_CAUSE_CONTENT_PAGES
         ):
             return
         if (
@@ -1340,11 +1356,6 @@ def select_candidates(
             continue
         add_with_prerequisites(item)
 
-    selected = _cap_cause_content_pages(
-        selected,
-        course_map=course_map,
-        knowledge=knowledge,
-    )
     selected = _ensure_connective_page(
         selected,
         ranked=ranked,
@@ -1354,6 +1365,15 @@ def select_candidates(
         content_max=content_max,
     )
     selected_ids = {item.unit_id for item in selected}
+    capacity_omission_ids = {
+        item.unit_id
+        for item in candidates
+        if item.kind == "example"
+        and _is_usage_cause_page(item, course_map, knowledge)
+        and item.unit_id not in selected_ids
+        and item.unit_id not in unsupported_cause_ids
+        and cause_example_count() >= 2 * _MAX_CAUSE_CONTENT_PAGES
+    }
     omissions: list[Omission] = []
     for item in candidates:
         if item.unit_id in selected_ids:
@@ -1363,10 +1383,101 @@ def select_candidates(
                 Omission(
                     topic_id=item.topic_id,
                     claim_id=claim_id,
-                    reason="page budget or representative-example compression",
+                    reason=(
+                        "source evidence is unavailable for this example"
+                        if item.unit_id in unsupported_cause_ids
+                        else "cause-example capacity (four supported examples across two pages)"
+                        if item.unit_id in capacity_omission_ids
+                        else "page budget or representative-example compression"
+                    ),
                 )
             )
     return selected, omissions
+
+
+def _unit_has_source_evidence(
+    item: PageCandidate,
+    knowledge: KnowledgeDocument,
+    valid_evidence_ids: set[str],
+) -> bool:
+    unit = _unit_by_id(knowledge, item.unit_id)
+    return bool(
+        unit
+        and any(
+            claim.provenance == "source"
+            and set(claim.evidence_ids) & valid_evidence_ids
+            for claim in unit.claims
+        )
+    )
+
+
+def _learner_bullets_for_claims(claims: list[object]) -> list[str]:
+    """Pair source-language text and its existing translation in one bullet."""
+
+    lines = [sanitize_student_copy(str(getattr(claim, "text", ""))).strip() for claim in claims]
+    lines = [line for line in lines if line]
+    japanese = next((line for line in lines if _script_profile(line) == "ja"), None)
+    chinese = next((line for line in lines if _script_profile(line) == "zh"), None)
+    if japanese and chinese:
+        paired = f"{japanese}（{chinese}）"
+        return [paired, *(line for line in lines if line not in {japanese, chinese})]
+    return lines
+
+
+def _group_cause_candidates(
+    selected: list[PageCandidate],
+    *,
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument,
+) -> list[PageCandidate]:
+    """Represent up to two source-backed examples on each of at most two pages."""
+
+    cause = [
+        item for item in selected
+        if _is_usage_cause_page(item, course_map, knowledge) and item.kind == "example"
+    ]
+    if len(cause) < 2:
+        return selected
+    groups = [cause[index : index + 2] for index in range(0, len(cause), 2)]
+    grouped: dict[str, PageCandidate] = {}
+    consumed = {item.unit_id for item in cause}
+    for group in groups[:_MAX_CAUSE_CONTENT_PAGES]:
+        first = group[0]
+        claim_ids: list[str] = []
+        frame_ids: list[str] = []
+        body_points: list[str] = []
+        notes: list[str] = []
+        for item in group:
+            claim_ids.extend(item.claim_ids)
+            frame_ids.extend(item.frame_ids)
+            unit = _unit_by_id(knowledge, item.unit_id)
+            if unit:
+                claims = [claim for claim in unit.claims if claim.id in item.claim_ids]
+                body_points.extend(_learner_bullets_for_claims(claims))
+            notes.extend(point for point in item.body_points if point.strip())
+        grouped[first.unit_id] = replace(
+            first,
+            id=f"intent-cause-group-{first.unit_id}",
+            claim_ids=list(dict.fromkeys(claim_ids))[:8],
+            frame_ids=list(dict.fromkeys(frame_ids))[:3],
+            body_points=body_points[:4],
+            notes="。".join(notes)[:4000],
+            selection_reason="source-backed cause examples; " + first.selection_reason[:300],
+        )
+    result: list[PageCandidate] = []
+    inserted_groups: set[str] = set()
+    for item in selected:
+        if item.unit_id not in consumed:
+            result.append(item)
+            continue
+        owner = next(
+            (group[0].unit_id for group in groups[:_MAX_CAUSE_CONTENT_PAGES] if item in group),
+            None,
+        )
+        if owner and owner not in inserted_groups:
+            result.append(grouped[owner])
+            inserted_groups.add(owner)
+    return result
 
 
 def sort_candidates(
@@ -1592,6 +1703,17 @@ def _content_page(
     if contains_student_meta(notes):
         cleaned = sanitize_student_copy(notes)
         notes = cleaned or " ".join(point for point in item.body_points if point.strip())[:4000]
+    body_points = item.body_points
+    unit = _unit_by_id(knowledge, item.unit_id) if knowledge is not None else None
+    if (
+        unit is not None
+        and _is_usage_cause_page(item, course_map, knowledge)
+        and item.kind == "example"
+        and not item.selection_reason.startswith("source-backed cause examples;")
+    ):
+        body_points = _learner_bullets_for_claims(
+            [claim for claim in unit.claims if claim.id in item.claim_ids]
+        )
     return PageIntent(
         id=item.id,
         type=page_type,  # type: ignore[arg-type]
@@ -1602,7 +1724,7 @@ def _content_page(
         notes=notes,
         selection_reason=item.selection_reason[:400],
         quality_label="draft",
-        body_points=item.body_points[:4],
+        body_points=body_points[:4],
     )
 
 
@@ -1897,8 +2019,15 @@ def _polish_learner_plan(
     polished: list[PageIntent] = []
     for page in pages:
         if page.type == "content" and page.title.startswith("用法一"):
-            body = _lines_without_rate(page.body_points)
-            notes = "。".join(_lines_without_rate([page.notes]))[:4000]
+            body = _dedupe_lines(
+                [
+                    cleaned
+                    for point in page.body_points
+                    if (cleaned := sanitize_student_copy(point).strip())
+                    and not representative_rate_snippets([cleaned])
+                ]
+            )[:4]
+            notes = "。".join(body)[:4000]
             claim_ids = [claim_id for claim_id in page.claim_ids if claim_id not in rate_ids]
             if not claim_ids:
                 claim_ids = list(page.claim_ids)
@@ -1983,7 +2112,12 @@ def build_deterministic_plan(
     transcript: TranscriptDocument | None = None,
 ) -> EditorialPlan:
     pages = [_cover_page(course_map, source_id, knowledge)]
-    for item in _order_lesson_pages(selected, course_map, knowledge):
+    displayed = _group_cause_candidates(
+        selected,
+        course_map=course_map,
+        knowledge=knowledge,
+    )
+    for item in _order_lesson_pages(displayed, course_map, knowledge):
         page_type = "quiz" if _is_practice(knowledge, item.claim_ids) else "content"
         pages.append(
             _content_page(
@@ -2174,6 +2308,8 @@ def apply_model_organization(
                 for point in incoming.body_points
                 if sanitize_student_copy(point).strip()
             ] or base.body_points
+            if base.selection_reason.startswith("source-backed cause examples;"):
+                body_points = list(base.body_points)
         return base.model_copy(
             update={
                 "title": title,
@@ -2208,12 +2344,18 @@ def edit_deck(
     if max_pages < target_pages:
         raise EditorContractError("max_pages must be >= target_pages")
     scored = score_candidates(knowledge, visual=visual, course_map=course_map)
+    valid_evidence_ids = {
+        *(segment.id for segment in transcript.segments),
+        *(occurrence.id for occurrence in visual.occurrences),
+        *(region.id for region in visual.ocr_regions),
+    }
     selected, omissions = select_candidates(
         scored,
         target_pages=target_pages,
         max_pages=max_pages,
         knowledge=knowledge,
         course_map=course_map,
+        valid_evidence_ids=valid_evidence_ids,
     )
     selected = sort_candidates(selected, order=order, knowledge=knowledge)
     selected = _apply_frames(

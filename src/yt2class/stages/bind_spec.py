@@ -332,7 +332,11 @@ def _content_bullets(page: PageIntent) -> list[str]:
     for point in page.body_points:
         cleaned = sanitize_student_copy(point).strip()
         if cleaned:
-            lines.append(cleaned[:200])
+            if len(cleaned) > 200:
+                raise BindError(
+                    f"learner bullet on page {page.id!r} exceeds the 200-character limit"
+                )
+            lines.append(cleaned)
     return lines[:4]
 
 
