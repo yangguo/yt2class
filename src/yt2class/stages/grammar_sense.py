@@ -110,23 +110,92 @@ def _text_signals_rate(text: str) -> bool:
     return _RATE_EXAMPLE_RE.search(text) is not None
 
 
+def _proportion_sample(text: str) -> str:
+    """Drop whitespace so `1日 につき300円` matches the same way as `1日につき300円`."""
+
+    return re.sub(r"\s+", "", text.replace("について", ""))
+
+
 def text_is_rate_proportion(text: str) -> bool:
-    """True for 比例・単位 sentences (一日につき300円), not bare につき cause lines."""
+    """True for a complete 比例・単位 example, not a truncated `1時間につき` fragment."""
 
     if not text or not text.strip():
         return False
-    sample = text.replace("について", "")
-    if _RATE_EXAMPLE_RE.search(sample):
+    sample = _proportion_sample(text)
+    if re.search(r"(?:[0-9０-９]+)?時間につき[0-9０-９,，]+円", sample):
         return True
-    if re.search(r"につき.{0,24}(?:円|ポイント|点|割)", sample):
+    if re.search(r"(?:一日|1日|１日|[0-9０-９]+日)につき[0-9０-９,，]+円", sample):
         return True
-    if re.search(r"(?:円|ポイント).{0,24}につき", sample):
+    if re.search(r"[0-9０-９]+円分?.{0,18}(?:お)?買い物につき[0-9０-９]+ポイント", sample):
         return True
-    if re.search(r"(?:一日|1日|１日|[0-9０-９]+日).{0,6}につき", sample):
+    if re.search(r"につき[0-9０-９]+ポイント", sample):
         return True
-    if re.search(r"(?:時間|個|匹|本|枚).{0,4}につき", sample) and re.search(r"[0-9０-９]", sample):
+    if re.search(r"一[個匹本枚]につき", sample) and re.search(r"[0-9０-９]+円|円", sample):
+        return True
+    if re.search(r"(?:円|ポイント).{0,24}につき", sample) and re.search(r"[0-9０-９]", sample):
         return True
     return False
+
+
+def representative_rate_snippets(texts: list[str]) -> list[str]:
+    """One learner snippet per rate kind: hourly fee, shopping points, daily fee.
+
+    Incomplete ASR such as `1時間につき` with no amount is ignored. Shopping points
+    are recognized from a close variant that names the purchase unit and the points
+    even when `につき` was split across captions.
+    """
+
+    best: dict[str, tuple[float, str]] = {}
+
+    def offer(kind: str, snippet: str, score: float) -> None:
+        cleaned = snippet.strip()
+        if not cleaned:
+            return
+        current = best.get(kind)
+        if current is None or score > current[0]:
+            best[kind] = (score, cleaned[:80])
+
+    for raw in texts:
+        if not raw or not str(raw).strip():
+            continue
+        sample = _proportion_sample(raw)
+        hourly = re.search(r"([0-9０-９]+)時間につき([0-9０-９,，]+)円", sample)
+        if hourly:
+            amount = re.sub(r"[,，]", "", hourly.group(2))
+            score = 5.0
+            if any(token in raw for token in ("できます", "利用", "活動センター")):
+                score += 1.0
+            if raw.strip().startswith("ましょう"):
+                score -= 2.0
+            offer("hourly", f"{hourly.group(1)}時間につき{amount}円", score)
+        daily = re.search(r"(一日|1日|１日)につき([0-9０-９,，]+)円", sample)
+        if daily:
+            amount = re.sub(r"[,，]", "", daily.group(2))
+            day = "一日" if "一日" in sample else "1日"
+            score = 5.0 + (1.0 if day == "一日" else 0.0)
+            if any(token in raw for token in ("お支払い", "いただきます", "いたします")):
+                score += 2.0
+            offer("daily", f"{day}につき{amount}円", score)
+        points = re.search(
+            r"([0-9０-９]+)円分?.{0,18}?(?:お)?買い物につき([0-9０-９]+)ポイント",
+            sample,
+        )
+        if points:
+            offer(
+                "points",
+                f"{points.group(1)}円分のお買い物につき{points.group(2)}ポイント",
+                8.0,
+            )
+        else:
+            amount = re.search(r"([0-9０-９]+)円分?.{0,24}(?:お)?買い物", sample)
+            count = re.search(r"([0-9０-９]+)ポイント", sample)
+            if amount and count:
+                offer(
+                    "points",
+                    f"{amount.group(1)}円分のお買い物につき{count.group(1)}ポイント",
+                    4.0,
+                )
+    return [best[kind][1] for kind in ("hourly", "points", "daily") if kind in best]
 
 
 def iter_rate_sentences(text: str) -> list[str]:
@@ -680,6 +749,7 @@ __all__ = [
     "sense_topic_ids",
     "summary_bullet_for_sense",
     "iter_rate_sentences",
+    "representative_rate_snippets",
     "text_is_connective_attachment",
     "text_is_rate_only",
     "text_is_rate_proportion",

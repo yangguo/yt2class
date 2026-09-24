@@ -38,6 +38,7 @@ from yt2class.stages.grammar_sense import (
     is_tsuki_grammar_lesson,
     iter_rate_sentences,
     learner_page_title,
+    representative_rate_snippets,
     pick_summary_unit,
     pick_summary_unit_for_topic,
     sense_heading,
@@ -140,6 +141,15 @@ def _row_is_rate_only(
     unit = _unit_by_id(knowledge, item.unit_id)
     text = _unit_display_text(unit) if unit is not None else item.notes
     return text_is_rate_only(text)
+
+
+def _row_has_rate_snippet(
+    item: PageCandidate,
+    knowledge: KnowledgeDocument,
+) -> bool:
+    unit = _unit_by_id(knowledge, item.unit_id)
+    text = _unit_display_text(unit) if unit is not None else item.notes
+    return bool(representative_rate_snippets([text]))
 
 
 def _candidate_ordinal(
@@ -761,7 +771,9 @@ def _pick_mandatory_sense_candidate(
     want_connective = "mandatory-connective" in lock_note
 
     def matches_ordinal(row: PageCandidate) -> bool:
-        if ordinal == 1 and _row_is_rate_only(row, knowledge):
+        if ordinal == 1 and (
+            _row_is_rate_only(row, knowledge) or _row_has_rate_snippet(row, knowledge)
+        ):
             return False
         if ordinal == 2 and not _row_is_rate_only(row, knowledge):
             return False
@@ -1225,8 +1237,11 @@ def select_candidates(
             and about_count() >= _MAX_ABOUT_CONTENT_PAGES
         ):
             return
-        if not force and _row_is_rate_only(item, knowledge) and 2 in _selected_sense_ordinals(
-            selected, course_map=course_map, knowledge=knowledge
+        if (
+            not force
+            and is_tsuki_grammar_lesson(course_map, knowledge)
+            and (_row_is_rate_only(item, knowledge) or _row_has_rate_snippet(item, knowledge))
+            and 2 in _selected_sense_ordinals(selected, course_map=course_map, knowledge=knowledge)
         ):
             return
         if len(selected) >= content_max and not force:
@@ -1746,40 +1761,46 @@ def _dedupe_lines(lines: list[str]) -> list[str]:
     return kept
 
 
+def _transcript_windows(transcript: TranscriptDocument) -> list[str]:
+    """Join adjacent captions so a fee split across ASR segments can still match."""
+
+    segments = sorted(transcript.segments, key=lambda item: (item.start_seconds, item.id))
+    windows: list[str] = []
+    buffer: list[str] = []
+    buffer_end: float | None = None
+    for segment in segments:
+        if buffer and buffer_end is not None and segment.start_seconds - buffer_end > 2.0:
+            windows.append(" ".join(buffer))
+            buffer = []
+        buffer.append(segment.text_original)
+        buffer_end = segment.end_seconds
+        if len(buffer) >= 4:
+            windows.append(" ".join(buffer))
+            buffer = []
+            buffer_end = None
+    if buffer:
+        windows.append(" ".join(buffer))
+    return windows
+
+
 def _collect_rate_examples(
     knowledge: KnowledgeDocument,
     visual: VisualCatalogue | None,
     transcript: TranscriptDocument | None,
 ) -> list[str]:
-    found: list[str] = []
-    for claim in knowledge.iter_claims():
-        found.extend(iter_rate_sentences(claim.text))
+    texts = [claim.text for claim in knowledge.iter_claims()]
     if visual is not None:
-        for region in visual.ocr_regions:
-            found.extend(iter_rate_sentences(region.text))
+        texts.extend(region.text for region in visual.ocr_regions)
     if transcript is not None:
-        for segment in transcript.segments:
-            found.extend(iter_rate_sentences(segment.text_original))
-    ranked = _dedupe_lines(sanitize_student_copy(line)[:200] for line in found if sanitize_student_copy(line).strip())
-
-    def sort_key(text: str) -> tuple[int, str]:
-        if "ポイント" in text or "買い物" in text:
-            return (1, text)
-        if "時間" in text and "につき" in text:
-            return (0, text)
-        if re.search(r"(?:一日|1日|１日|日)につき", text):
-            return (2, text)
-        return (3, text)
-
-    return sorted(ranked, key=sort_key)[:4]
+        texts.extend(segment.text_original for segment in transcript.segments)
+        texts.extend(_transcript_windows(transcript))
+    return representative_rate_snippets(texts)
 
 
 def _rate_claim_ids(knowledge: KnowledgeDocument) -> list[str]:
     ids: list[str] = []
     for claim in knowledge.iter_claims():
-        sentences = _sentences(claim.text) or [claim.text.strip()]
-        learner = [sentence for sentence in sentences if sentence and not contains_student_meta(sentence)]
-        if learner and all(text_is_rate_proportion(sentence) for sentence in learner):
+        if representative_rate_snippets([claim.text]):
             ids.append(claim.id)
     return ids
 
@@ -1789,7 +1810,7 @@ def _lines_without_rate(lines: list[str]) -> list[str]:
     for line in lines:
         for sentence in _sentences(line) or [line]:
             cleaned = sanitize_student_copy(sentence).strip()
-            if not cleaned or text_is_rate_proportion(cleaned):
+            if not cleaned or representative_rate_snippets([cleaned]):
                 continue
             kept.append(cleaned[:200])
     return _dedupe_lines(kept)[:4]
@@ -1812,15 +1833,9 @@ def _short_about_bullet(text: str) -> str:
 
 
 def _compact_rate_snippet(text: str) -> str:
-    match = re.search(
-        r"(?:[0-9０-９]+円分?.{0,12}につき[0-9０-９]+ポイント|"
-        r"[0-9０-９]+時間につき[0-9０-９]+円|"
-        r"(?:一日|1日|１日)につき[0-9０-９]+円|"
-        r"時間につき[0-9０-９]+円)",
-        text,
-    )
-    if match:
-        return match.group(0)
+    snippets = representative_rate_snippets([text])
+    if snippets:
+        return snippets[0]
     return text if len(text) <= 36 else text[:36]
 
 
@@ -1902,9 +1917,11 @@ def _polish_learner_plan(
     rate_pages = [page for page in polished if page.type == "content" and page.title.startswith("用法二")]
     if rate_pages and examples:
         primary = rate_pages[0]
-        merged_ids = list(dict.fromkeys([*primary.claim_ids, *rate_ids]))[:4]
-        body = _dedupe_lines([*examples, *primary.body_points])[:4]
-        updated = primary.model_copy(update={"claim_ids": merged_ids, "body_points": body})
+        merged_ids = list(dict.fromkeys([*rate_ids, *primary.claim_ids]))[:4]
+        body = [line[:200] for line in examples][:4]
+        updated = primary.model_copy(
+            update={"claim_ids": merged_ids, "body_points": body, "notes": "。".join(body)[:4000]}
+        )
         polished = [
             updated if page.id == primary.id else page
             for page in polished

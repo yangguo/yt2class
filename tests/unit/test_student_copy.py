@@ -41,6 +41,23 @@ def test_sanitize_strips_automation_ids_but_keeps_proportion_examples():
     )
 
 
+def test_sanitize_strips_timing_and_empty_board_frame():
+    raw = (
+        "接续：名詞／数量詞＋につき。"
+        "：0.033s 的板书帧（）已写出本课词头「～につき」及接续「名詞／数量詞」，"
+        "与 5.78–8.45s 的口头开场白相对应。"
+    )
+    cleaned = sanitize_student_copy(raw)
+    assert "接续" in cleaned
+    assert "0.033s" not in cleaned
+    assert "8.45s" not in cleaned
+    assert "板书帧（）" not in cleaned
+    assert "板书帧()" not in cleaned
+    import re
+
+    assert re.search(r"\d+(?:\.\d+)?s", cleaned) is None
+
+
 def test_sanitize_strips_board_sync_and_teacher_confirm():
     raw = "板书同步 timed 老师确认用法二"
     cleaned = sanitize_student_copy(raw)

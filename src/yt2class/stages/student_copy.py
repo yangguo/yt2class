@@ -28,6 +28,13 @@ _ALIGNMENT_NOTE_RE = re.compile(
     r"(?:语音|画面|字幕).{0,12}(?:对应|对齐|同期)|\balignment\b",
     re.I,
 )
+_TIMING_RANGE_RE = re.compile(
+    r"(?<![A-Za-z0-9.])\d+(?:\.\d+)?\s*[–—\-－~〜]\s*\d+(?:\.\d+)?\s*s\b",
+    re.I,
+)
+_TIMING_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9.])\d+(?:\.\d+)?s\b", re.I)
+_EMPTY_BOARD_FRAME_RE = re.compile(r"板书帧\s*[（(]\s*[）)]")
+_BOARD_LABEL_RE = re.compile(r"板书对应\s*[:：]?")
 _PROPORTION_TSUKI_RE = re.compile(
     r"(?:時間|一日|1日|１日|[0-9０-９]+日).{0,8}につき|"
     r"につき.{0,16}(?:[0-9０-９]+円|ポイント)|"
@@ -42,6 +49,26 @@ def contains_automation_artifact(text: str) -> bool:
     return LEARNER_ARTIFACT_RE.search(text) is not None
 
 
+def _is_timing_alignment(text: str) -> bool:
+    """Board-sync notes that cite a timestamp or an empty 板书帧（）."""
+
+    if _EMPTY_BOARD_FRAME_RE.search(text):
+        return True
+    has_timing = _TIMING_RANGE_RE.search(text) is not None or _TIMING_TOKEN_RE.search(text) is not None
+    if not has_timing:
+        return False
+    return any(token in text for token in ("板书", "相对应", "开场", "帧"))
+
+
+def _strip_timing_scaffolds(text: str) -> str:
+    cleaned = _TIMING_RANGE_RE.sub("", text)
+    cleaned = _TIMING_TOKEN_RE.sub("", cleaned)
+    cleaned = _EMPTY_BOARD_FRAME_RE.sub("", cleaned)
+    cleaned = _BOARD_LABEL_RE.sub("", cleaned)
+    cleaned = re.sub(r"^[：:、，\s]+", "", cleaned)
+    return cleaned
+
+
 def contains_student_meta(text: str) -> bool:
     if not text or not text.strip():
         return False
@@ -50,6 +77,8 @@ def contains_student_meta(text: str) -> bool:
     if _META_PAREN_RE.search(text):
         return True
     if _AUTOMATION_ID_RE.search(text) or _ALIGNMENT_NOTE_RE.search(text):
+        return True
+    if _is_timing_alignment(text):
         return True
     stripped = text.strip()
     if _STANDALONE_ASR_NOTE_RE.match(stripped):
@@ -87,14 +116,17 @@ def sanitize_student_copy(text: str) -> str:
         delimiter = parts[index + 1] if index + 1 < len(parts) else ""
         if not chunk:
             continue
-        if contains_student_meta(chunk):
+        if _is_timing_alignment(chunk) or contains_student_meta(chunk):
+            continue
+        chunk = _strip_timing_scaffolds(chunk).strip()
+        if not chunk:
             continue
         kept.append(chunk + delimiter)
     result = "".join(kept).strip()
     if not result:
-        if contains_student_meta(text):
+        if contains_student_meta(text) or _is_timing_alignment(text):
             return ""
-        result = cleaned.strip()
+        result = _strip_timing_scaffolds(cleaned).strip()
     result = re.sub(r"\s{2,}", " ", result)
     result = normalize_headword_display(result)
     return result.strip()

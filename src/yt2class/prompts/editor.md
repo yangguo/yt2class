@@ -11,7 +11,8 @@ Shared constraints:
 - Prefer one page per CourseMap topic / announced 用法 (接续, 用法1, 用法2, …); do not let near-duplicate JA/ZH translation pairs crowd out later senses.
 - For ～につき, keep one 接续 page (名詞／数量詞＋につき) and at most two 用法一 pages so 用法二 and 用法三 stay.
 - Order ～につき content as 接续, then 用法一, 用法二, 用法三. Do not put 用法一 after 用法三 because its timestamp is later.
-- Proportion examples (一日につき300円, 1時間につき1500円, 買い物につきポイント) belong on 用法二, never on 用法一.
+- Proportion examples (一日につき300円, 1時間につき1500円, 買い物につきポイント) belong on 用法二, never on 用法一. Keep one snippet of each kind; do not fill 用法二 with truncated ASR that lacks the fee.
+- Do not put timestamps (`0.033s`, `5.78–8.45s`) or empty 板书帧（） notes on learner-facing titles, bullets, or captions.
 - For 接续, prefer a frame that shows 名詞／数量詞＋につき. Do not use a 会話 frame when a grammar frame exists.
 - Learner-facing titles, bullets, captions, and footers must not include cap-/occ- ids, webm filenames, or alignment notes.
 - Keep a single 用法三 page and a short summary bullet. Do not repeat the same 使わないで / について note.
