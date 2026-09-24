@@ -41,10 +41,11 @@ _PROPORTION_TSUKI_RE = re.compile(
     r"[0-9０-９]+円.{0,20}につき"
 )
 _ANALYSIS_MARKER_RE = re.compile(
-    r"新知识导入(?:[（(][^）)]*[）)])?|保留否定|对比点|老师指出|老师宣布"
+    r"新知识导入(?:[（(][^）)]*[）)])?|保留条件|保留否定|对比点|老师指出|老师宣布"
 )
+_CONDITION_EDIT_LABEL_RE = re.compile(r"保留条件\s*[:：]?")
 _ANALYSIS_PREFIX_RE = re.compile(
-    r"^\s*(?:新知识导入(?:[（(][^）)]*[）)])?|保留否定|对比点)\s*[:：]?\s*"
+    r"^\s*(?:新知识导入(?:[（(][^）)]*[）)])?|保留条件|保留否定|对比点)\s*[:：]?\s*"
 )
 _ANALYSIS_NARRATION_RE = re.compile(r"(?:老师指出|老师宣布|老师强调|对比点|保留否定)")
 LEARNER_ARTIFACT_RE = re.compile(r"cap-\d+|occ-\d+|webm\s*@", re.I)
@@ -87,6 +88,7 @@ def _strip_analysis_fragments(text: str) -> str:
             continue
         if "保留否定" in chunk or "新知识导入" in chunk or "复习内容" in chunk:
             continue
+        chunk = _CONDITION_EDIT_LABEL_RE.sub("", chunk)
         chunk = re.sub(r"老师(?:指出|宣布|强调)\s*", "", chunk)
         chunk = re.sub(r"^[—–-]+\s*", "", chunk).strip()
         if chunk:

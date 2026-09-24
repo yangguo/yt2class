@@ -75,6 +75,22 @@ def test_sanitize_keeps_teaching_conclusion_after_analysis_narration():
     assert "通常用「について」" in cleaned
 
 
+def test_sanitize_removes_condition_edit_label_but_keeps_condition_and_full_examples():
+    raw = (
+        "数量限定につき、なくなり次第終了します。（保留条件「なくなり次第」）"
+        "本日雨天につき、運動会は来週に延期します。（「来週に延期」）"
+        "参加条件を満たした方につき、記念品を配ります。"
+        "返品は受け付けません。"
+    )
+    cleaned = sanitize_student_copy(raw)
+    assert "保留条件" not in cleaned
+    assert "なくなり次第終了します。" in cleaned
+    assert "「なくなり次第」" in cleaned
+    assert "本日雨天につき、運動会は来週に延期します。（「来週に延期」）" in cleaned
+    assert "参加条件を満たした方につき、記念品を配ります。" in cleaned
+    assert "返品は受け付けません。" in cleaned
+
+
 def test_meta_does_not_flag_legitimate_month_usage():
     assert not contains_student_meta("2月1日から改定します。")
 
