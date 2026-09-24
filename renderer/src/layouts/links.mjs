@@ -26,8 +26,10 @@ export function contentBulletLines(page, claimLines) {
 export function evidenceStartSeconds(evidenceId, evidenceById) {
   const ev = evidenceById?.[evidenceId];
   if (!ev) return null;
-  if (ev.timestamp_seconds != null) return ev.timestamp_seconds;
-  if (ev.start_seconds != null) return ev.start_seconds;
+  const value = ev.timestamp_seconds ?? ev.start_seconds;
+  if (value != null && Number.isFinite(Number(value)) && Number(value) >= 0) {
+    return Number(value);
+  }
   return null;
 }
 
@@ -51,8 +53,13 @@ export function primarySeekSeconds(page, assets, evidenceByAsset, evidenceById =
     const stamp = evidenceStartSeconds(evidenceId, evidenceById);
     if (stamp != null) times.push(Number(stamp));
   }
-  if (times.length) return Math.min(...times);
-  return 0;
+  const validTimes = times.filter((value) => Number.isFinite(value) && value >= 0);
+  if (!validTimes.length) return null;
+  if (page.type === "summary") {
+    const anchors = [...new Set(validTimes)];
+    return anchors.length === 1 ? anchors[0] : null;
+  }
+  return Math.min(...validTimes);
 }
 
 export function buildSeekLink(
@@ -67,6 +74,9 @@ export function buildSeekLink(
     secondsOverride != null
       ? secondsOverride
       : primarySeekSeconds(page, assets, evidenceByAsset, evidenceById);
+  if (seconds == null || !Number.isFinite(Number(seconds)) || Number(seconds) < 0) {
+    return null;
+  }
   if (spec.source?.kind === "youtube" && spec.source.url) {
     const url = floorYoutubeSeek(spec.source.url, seconds);
     if (url) return { url, label: `来源视频 ${Math.floor(seconds)}s` };

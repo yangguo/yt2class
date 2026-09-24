@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -80,6 +81,43 @@ def test_end_to_end_bind_render_sources(tmp_path: Path):
     assert stage.report.render_complete is True
     report_path = workspace.safe_path(RENDER_REPORT_REL)
     assert report_path.is_file()
+
+
+def test_renderer_uses_each_page_timestamp_without_carrying_it_to_summary(tmp_path: Path):
+    root = renderer_root()
+    output = tmp_path / "page-times.pptx"
+    script = """
+import { renderSpec } from "./src/render.mjs";
+const spec = {
+  source: { kind: "local", media_path: "media/lesson.mp4" },
+  theme: { font_family: "Arial" },
+  claims: [],
+  assets: [],
+  evidence: [
+    { id: "ev-later", kind: "transcript", asset_id: "asset-later", start_seconds: 257, end_seconds: 260, text: "later", origin: "sidecar" },
+    { id: "ev-earlier", kind: "transcript", asset_id: "asset-earlier", start_seconds: 99, end_seconds: 102, text: "earlier", origin: "sidecar" }
+  ],
+  slides: [
+    { id: "page-later", type: "content", layout: "text", title: "Later source", point_claim_ids: [], bullets: ["Later"], citation_ids: ["ev-later"], notes: "" },
+    { id: "page-earlier", type: "content", layout: "text", title: "Earlier source", point_claim_ids: [], bullets: ["Earlier"], citation_ids: ["ev-earlier"], notes: "" },
+    { id: "page-summary", type: "summary", title: "Summary", claim_ids: ["claim-a", "claim-b"], bullets: ["A", "B"], citation_ids: ["ev-later", "ev-earlier"], notes: "" },
+    { id: "page-unanchored", type: "content", layout: "text", title: "No source time", point_claim_ids: [], bullets: ["No time"], citation_ids: ["ev-missing"], notes: "" }
+  ]
+};
+await renderSpec(spec, process.cwd(), process.argv[1]);
+"""
+    subprocess.run(
+        ["node", "--input-type=module", "-e", script, str(output)],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    with ZipFile(output) as archive:
+        blob = _pptx_text(archive)
+    assert blob.count("04:17") == 1
+    assert blob.count("01:39") == 1
+    assert "来源 00:00" not in blob
 
 
 def test_preview_required_without_libreoffice_fails_closed(tmp_path: Path):
