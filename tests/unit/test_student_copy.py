@@ -160,6 +160,21 @@ def test_sanitize_strips_inline_asr_residue_but_keeps_gloss():
     )
 
 
+def test_sanitize_strips_plan18_asr_mishear_commentary():
+    raw = "例句1「この先工事中につき、通行不可。」：前方因施工，禁止通行；ASR 将「通行不可」为「」，。"
+    cleaned = sanitize_student_copy(raw)
+    assert cleaned == "例句1「この先工事中につき、通行不可。」：前方因施工，禁止通行"
+    assert "ASR" not in cleaned
+    assert "通行不可」为" not in cleaned
+    variants = {
+        "前方因施工，禁止通行；ASR将「通行不可」识别为「」。": "前方因施工，禁止通行",
+        "前方因施工，禁止通行；ASR 把「通行不可」听成「通行不可以」。": "前方因施工，禁止通行",
+        "前方因施工，禁止通行；语音识别将「通行不可」为「」。": "前方因施工，禁止通行",
+    }
+    for source, expected in variants.items():
+        assert sanitize_student_copy(source) == expected
+
+
 def test_sanitize_keeps_real_kouka_and_calendar_month():
     assert sanitize_student_copy("この薬は効果があります。") == "この薬は効果があります。"
     assert sanitize_student_copy("2月1日から改定します。") == "2月1日から改定します。"

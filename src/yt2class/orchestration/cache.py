@@ -23,7 +23,7 @@ STAGE_VERSIONS: dict[StageName, str] = {
     "reduce_knowledge": "1",
     "edit_deck": "1",
     "verify_claims": "2",
-    "bind_spec": "1",
+    "bind_spec": "2",
     "render": "1",
 }
 

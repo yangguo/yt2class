@@ -35,6 +35,16 @@ _CORRECTION_CHATTER_RE = re.compile(
     r"(?:校正|纠正|误识)(?:说明|注记|备注)|"
     r"(?:校正|纠正|误识)\s*[:：]"
 )
+_QUOTED_SPAN = r"(?:「[^」]{0,80}」|『[^』]{0,80}』|“[^”]{0,80}”|\"[^\"]{0,80}\")"
+# "ASR 将「通行不可」为「」" and close variants. The target quote may be empty.
+_ASR_MISHEAR_RE = re.compile(
+    rf"(?:ASR|语音识别)\s*(?:将|把)\s*"
+    rf"(?:{_QUOTED_SPAN}|[^。．！？\n；;]{{1,40}}?)"
+    rf"\s*(?:识别为|听成|听作|误识为|误听为|为)\s*"
+    rf"(?:{_QUOTED_SPAN}|[^。．！？\n；;，,]{{0,24}})?"
+    rf"\s*[，,、]*",
+    re.I,
+)
 _TIMING_RANGE_RE = re.compile(
     r"(?<![A-Za-z0-9.])\d+(?:\.\d+)?\s*[–—\-－~〜]\s*\d+(?:\.\d+)?\s*s\b",
     re.I,
@@ -81,6 +91,11 @@ def _strip_diagnostic_residue(text: str) -> str:
     cleaned = _ASR_DIGIT_GLOSS_RE.sub("", text)
     cleaned = _AUTHORITY_NOTE_RE.sub("", cleaned)
     cleaned = _CORRECTION_CHATTER_RE.sub("", cleaned)
+    cleaned = _ASR_MISHEAR_RE.sub("", cleaned)
+    # The mishear clause is usually glued on with ； and closed by a dangling 。
+    cleaned = re.sub(r"[；;]\s*[。．]", "", cleaned)
+    cleaned = re.sub(r"[；;]\s*$", "", cleaned)
+    cleaned = re.sub(r"[，,、]+\s*$", "", cleaned)
     cleaned = re.sub(r"[：:]\s*(?=[。．！？])", "", cleaned)
     cleaned = re.sub(r"(?<=[。．！？])\s*[，,、：:]\s*", "", cleaned)
     cleaned = re.sub(r"。{2,}", "。", cleaned)
@@ -132,7 +147,7 @@ def contains_student_meta(text: str) -> bool:
         return True
     if _ASR_DIGIT_GLOSS_RE.search(text) or _AUTHORITY_NOTE_RE.search(text):
         return True
-    if _CORRECTION_CHATTER_RE.search(text):
+    if _CORRECTION_CHATTER_RE.search(text) or _ASR_MISHEAR_RE.search(text):
         return True
     stripped = text.strip()
     if _STANDALONE_ASR_NOTE_RE.match(stripped):
