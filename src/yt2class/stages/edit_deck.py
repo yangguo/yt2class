@@ -1781,6 +1781,25 @@ def _summary_units_for_topics(
                 break
         if claim is None:
             continue
+        if ordinal == 3:
+            advice_claim = next(
+                (
+                    source_claim
+                    for unit in knowledge.units
+                    if sense_ordinal(unit.topic_id, course_map, knowledge=knowledge) == 3
+                    for source_claim in unit.claims
+                    if source_claim.provenance == "source"
+                    and source_claim.evidence_ids
+                    and "について" in source_claim.text
+                    and re.search(
+                        r"通常|一般|普通|多数|多く|主に|常用|更常用",
+                        source_claim.text,
+                    )
+                ),
+                None,
+            )
+            if advice_claim is not None:
+                claim = advice_claim
         if ordinal == 1:
             bullet = "用法一：原因・理由（公告等）"
         elif ordinal == 2:

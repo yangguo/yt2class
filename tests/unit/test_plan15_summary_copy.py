@@ -102,7 +102,7 @@ def test_summary_does_not_claim_about_sense_when_missing():
     assert not any(line.startswith("用法三") for line in summary.body_points)
 
 
-def test_summary_includes_displayed_about_topic_when_another_about_topic_ranks_first():
+def test_summary_uses_source_backed_usage_advice_across_about_topics():
     topics = course_map([
         ("topic-cause", "用法1・原因", 0.0, 10.0),
         ("topic-about-main", "用法3・について", 10.0, 20.0),
@@ -133,5 +133,5 @@ def test_summary_includes_displayed_about_topic_when_another_about_topic_ranks_f
     assert content.title.startswith("用法三")
 
     summary = _summary_page(selected, course_map=topics, knowledge=doc)
-    assert summary.body_points == ["用法三：关于"]
-    assert summary.claim_ids == ["claim-about-example"]
+    assert summary.body_points == ["用法三：关于（罕用，通常用「について」）"]
+    assert summary.claim_ids == ["claim-about-main"]
