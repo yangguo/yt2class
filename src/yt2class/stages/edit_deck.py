@@ -1757,37 +1757,28 @@ def _summary_units_for_topics(
 ) -> list[tuple[str, str, str]]:
     """Return compact, evidence-backed role descriptions and their real claims."""
 
-    selected_by_topic: dict[str, list[PageCandidate]] = {}
-    for item in selected:
-        selected_by_topic.setdefault(item.topic_id, []).append(item)
     rows: list[tuple[str, str, str]] = []
     for ordinal in (1, 2, 3):
-        topic = topic_for_sense_ordinal(course_map, ordinal, knowledge=knowledge)
-        if topic is None:
-            continue
-        pool = [
-            row
-            for row in selected_by_topic.get(topic.id) or []
-            if not _candidate_is_connective(row, knowledge, course_map)
-        ]
-        if not pool:
-            continue
-        picked = sorted(
-            pool,
+        pool = sorted(
+            (row for row in selected if _candidate_ordinal(row, course_map, knowledge) == ordinal),
             key=lambda row: (0 if row.kind == "example" else 1, row.start_seconds, row.id),
-        )[0]
-        unit = _unit_by_id(knowledge, picked.unit_id)
-        if unit is None:
-            continue
-        claim = next(
-            (
-                item for item in unit.claims
-                if item.id in picked.claim_ids
-                and item.provenance == "source"
-                and item.evidence_ids
-            ),
-            None,
         )
+        claim = None
+        for picked in pool:
+            unit = _unit_by_id(knowledge, picked.unit_id)
+            if unit is None:
+                continue
+            claim = next(
+                (
+                    item for item in unit.claims
+                    if item.id in picked.claim_ids
+                    and item.provenance == "source"
+                    and item.evidence_ids
+                ),
+                None,
+            )
+            if claim is not None:
+                break
         if claim is None:
             continue
         if ordinal == 1:
