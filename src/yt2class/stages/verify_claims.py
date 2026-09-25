@@ -29,6 +29,7 @@ from yt2class.domain.verification import (
     strict_closure_errors,
 )
 from yt2class.domain.visual import VisualCatalogue
+from yt2class.stages.grammar_sense import is_tsuki_grammar_lesson
 from yt2class.stages.llm_util import (
     allowed_evidence_ids,
     attach_provider_payload,
@@ -623,6 +624,24 @@ def _sync_claim_status(knowledge: KnowledgeDocument, verdicts: list[ClaimVerdict
     return knowledge.model_copy(update={"units": units})
 
 
+def _is_protected_connective_page(page: PageIntent, knowledge: KnowledgeDocument) -> bool:
+    """True for a learner 接续 page on a ～につき / ～つき lesson.
+
+    Soft-failed gloss claims must not delete this page. The pre-verify plan
+    already decided the page is mandatory; formalization only keeps it.
+    """
+
+    if page.type != "content":
+        return False
+    marked = page.title.startswith("接续") or "mandatory-connective" in page.selection_reason
+    if not marked:
+        return False
+    if is_tsuki_grammar_lesson(None, knowledge):
+        return True
+    blob = f"{page.title}\n{page.notes}\n" + "\n".join(page.body_points)
+    return "につき" in blob or "～つき" in blob or "〜つき" in blob
+
+
 def formalize_plan(
     plan: EditorialPlan,
     *,
@@ -635,9 +654,11 @@ def formalize_plan(
     provider: Provider | None = None,
 ) -> EditorialPlan:
     supported = {item.claim_id for item in verdicts if item.verdict == "supported"}
+    removed_ids = set(removed)
     pages: list[PageIntent] = []
     extra_omissions: list[Omission] = list(plan.omissions)
     for page in plan.pages:
+        protected = _is_protected_connective_page(page, knowledge)
         if quality_mode == "evidence-only":
             keep = list(page.claim_ids)
             dropped = []
@@ -645,8 +666,13 @@ def formalize_plan(
             keep = [claim_id for claim_id in page.claim_ids if claim_id in supported]
             dropped = [claim_id for claim_id in page.claim_ids if claim_id not in supported]
         else:
-            dropped = [claim_id for claim_id in page.claim_ids if claim_id in set(removed)]
-            keep = [claim_id for claim_id in page.claim_ids if claim_id not in set(removed)]
+            dropped = [claim_id for claim_id in page.claim_ids if claim_id in removed_ids]
+            keep = [claim_id for claim_id in page.claim_ids if claim_id not in removed_ids]
+        if protected:
+            # Soft-failed 接续 claims stay on the page so bind still has point claims
+            # and the learner-facing title/bullets are not discarded.
+            keep = list(page.claim_ids)
+            dropped = []
         for claim_id in dropped:
             extra_omissions.append(Omission(claim_id=claim_id, reason="removed after verification"))
         if page.type == "content" and page.claim_ids and not keep:
@@ -656,6 +682,10 @@ def formalize_plan(
         elif quality_mode == "strict":
             label = "verified"
         else:
+            label = "draft"
+        if protected and quality_mode != "evidence-only" and any(
+            claim_id not in supported for claim_id in keep
+        ):
             label = "draft"
         updated = page.model_copy(update={"claim_ids": keep})
         if _is_practice(knowledge, keep) and updated.type == "content":

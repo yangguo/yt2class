@@ -127,6 +127,44 @@ def test_sanitize_strips_timing_and_empty_board_frame():
     assert re.search(r"\d+(?:\.\d+)?s", cleaned) is None
 
 
+def test_sanitize_strips_plan17_kouji_asr_residue():
+    raw = (
+        "工事中につき、通路を変更しています。"
+        "2効果。"
+        "应以板书「工事中につき」为准。"
+        "因施工，请变更通道。"
+    )
+    cleaned = sanitize_student_copy(raw)
+    assert "工事中につき、通路を変更しています" in cleaned
+    assert "因施工，请变更通道" in cleaned
+    assert "2効果" not in cleaned
+    assert "为准" not in cleaned
+    assert "板书" not in cleaned
+
+
+def test_sanitize_strips_inline_asr_residue_but_keeps_gloss():
+    raw = "工事中につき、通路を変更しています。2効果 应以板书为准，因施工改道。"
+    cleaned = sanitize_student_copy(raw)
+    assert "工事中につき、通路を変更しています" in cleaned
+    assert "因施工改道" in cleaned
+    assert "2効果" not in cleaned
+    assert "为准" not in cleaned
+    assert "OCR校正" not in sanitize_student_copy(
+        "店内改装中につき、臨時休業します。OCR校正：2効果。店内改装，临时停业。"
+    )
+    assert "店内改装中につき、臨時休業します" in sanitize_student_copy(
+        "店内改装中につき、臨時休業します。OCR校正：2効果。店内改装，临时停业。"
+    )
+    assert "店内改装，临时停业" in sanitize_student_copy(
+        "店内改装中につき、臨時休業します。OCR校正：2効果。店内改装，临时停业。"
+    )
+
+
+def test_sanitize_keeps_real_kouka_and_calendar_month():
+    assert sanitize_student_copy("この薬は効果があります。") == "この薬は効果があります。"
+    assert sanitize_student_copy("2月1日から改定します。") == "2月1日から改定します。"
+
+
 def test_sanitize_strips_board_sync_and_teacher_confirm():
     raw = "板书同步 timed 老师确认用法二"
     cleaned = sanitize_student_copy(raw)

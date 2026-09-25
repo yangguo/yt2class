@@ -25,8 +25,15 @@ _AUTOMATION_ID_RE = re.compile(
     re.I,
 )
 _ALIGNMENT_NOTE_RE = re.compile(
-    r"(?:语音|画面|字幕).{0,12}(?:对应|对齐|同期)|\balignment\b",
+    r"(?:语音|画面|字幕|板书).{0,16}(?:对应|对齐|同期|相对应)|对齐说明|\balignment\b",
     re.I,
+)
+_AUTHORITY_NOTE_RE = re.compile(r"应?以[^。．！？\n；;]{0,48}为准")
+_ASR_DIGIT_GLOSS_RE = re.compile(r"(?<![0-9０-９A-Za-z])[0-9０-９]{1,2}効果")
+_CORRECTION_CHATTER_RE = re.compile(
+    r"(?:OCR|ASR|字幕|语音|识别).{0,16}(?:校正|纠正|修正|误识|错听)|"
+    r"(?:校正|纠正|误识)(?:说明|注记|备注)|"
+    r"(?:校正|纠正|误识)\s*[:：]"
 )
 _TIMING_RANGE_RE = re.compile(
     r"(?<![A-Za-z0-9.])\d+(?:\.\d+)?\s*[–—\-－~〜]\s*\d+(?:\.\d+)?\s*s\b",
@@ -66,6 +73,20 @@ def _is_timing_alignment(text: str) -> bool:
     if not has_timing:
         return False
     return any(token in text for token in ("板书", "相对应", "开场", "帧"))
+
+
+def _strip_diagnostic_residue(text: str) -> str:
+    """Drop ASR/OCR correction notes while leaving the example and gloss."""
+
+    cleaned = _ASR_DIGIT_GLOSS_RE.sub("", text)
+    cleaned = _AUTHORITY_NOTE_RE.sub("", cleaned)
+    cleaned = _CORRECTION_CHATTER_RE.sub("", cleaned)
+    cleaned = re.sub(r"[：:]\s*(?=[。．！？])", "", cleaned)
+    cleaned = re.sub(r"(?<=[。．！？])\s*[，,、：:]\s*", "", cleaned)
+    cleaned = re.sub(r"。{2,}", "。", cleaned)
+    cleaned = re.sub(r"^[，,、：:\s]+", "", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    return cleaned
 
 
 def _strip_timing_scaffolds(text: str) -> str:
@@ -109,6 +130,10 @@ def contains_student_meta(text: str) -> bool:
         return True
     if _is_timing_alignment(text):
         return True
+    if _ASR_DIGIT_GLOSS_RE.search(text) or _AUTHORITY_NOTE_RE.search(text):
+        return True
+    if _CORRECTION_CHATTER_RE.search(text):
+        return True
     stripped = text.strip()
     if _STANDALONE_ASR_NOTE_RE.match(stripped):
         return True
@@ -145,6 +170,7 @@ def sanitize_student_copy(text: str) -> str:
     cleaned = _META_INLINE_RE.sub("", cleaned)
     cleaned = _AUTOMATION_ID_RE.sub("", cleaned)
     cleaned = _ALIGNMENT_NOTE_RE.sub("", cleaned)
+    cleaned = _strip_diagnostic_residue(cleaned)
     parts = re.split(r"([。．！？\n])", cleaned)
     kept: list[str] = []
     for index in range(0, len(parts), 2):
