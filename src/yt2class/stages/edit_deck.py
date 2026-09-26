@@ -1750,6 +1750,112 @@ def _cover_page(
     )
 
 
+_ADVICE_MARKER_RE = re.compile(r"通常|一般|普通|多数|多く|主に|常用|更常用")
+_SENSE_ROLE_BULLETS = {
+    1: "用法一：原因・理由（公告等）",
+    2: "用法二：比例・単位（每个单位）",
+    3: "用法三：关于（罕用，通常用「について」）",
+}
+
+
+def _content_page_sense_ordinal(
+    page: PageIntent,
+    *,
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument,
+) -> int | None:
+    if page.type != "content":
+        return None
+    for ordinal, prefix in ((3, "用法三"), (2, "用法二"), (1, "用法一")):
+        if page.title.startswith(prefix):
+            return ordinal
+    unit = _unit_for_claim_ids(knowledge, page.claim_ids)
+    if unit is None:
+        return None
+    return sense_ordinal(unit.topic_id, course_map, knowledge=knowledge)
+
+
+def _source_claim_on_page(
+    page: PageIntent,
+    knowledge: KnowledgeDocument,
+) -> KnowledgeClaim | None:
+    claims = {claim.id: claim for claim in knowledge.iter_claims()}
+    for claim_id in page.claim_ids:
+        claim = claims.get(claim_id)
+        if claim is not None and claim.provenance == "source" and claim.evidence_ids:
+            return claim
+    return None
+
+
+def _about_advice_claim(
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument,
+) -> KnowledgeClaim | None:
+    """Source note that prefers 「について」 over the rare ～につき about-sense."""
+
+    for unit in knowledge.units:
+        if sense_ordinal(unit.topic_id, course_map, knowledge=knowledge) != 3:
+            continue
+        for claim in unit.claims:
+            if (
+                claim.provenance == "source"
+                and claim.evidence_ids
+                and "について" in claim.text
+                and _ADVICE_MARKER_RE.search(claim.text)
+            ):
+                return claim
+    return None
+
+
+def _sense_role_summary_rows(
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument,
+    displayed_pages: list[PageIntent],
+) -> list[tuple[str, str, str]] | None:
+    """Compact 用法一/二/三 lines for a ～につき lesson that kept those pages.
+
+    Returns None when this lesson should keep the generic extractive summary.
+    """
+
+    if not is_tsuki_grammar_lesson(course_map, knowledge):
+        return None
+    pages_by_ordinal: dict[int, list[PageIntent]] = {}
+    for page in displayed_pages:
+        ordinal = _content_page_sense_ordinal(
+            page, course_map=course_map, knowledge=knowledge
+        )
+        if ordinal in {1, 2, 3}:
+            pages_by_ordinal.setdefault(ordinal, []).append(page)
+    if not pages_by_ordinal:
+        return None
+    units_by_claim = {
+        claim.id: unit for unit in knowledge.units for claim in unit.claims
+    }
+    rows: list[tuple[str, str, str]] = []
+    for ordinal in (1, 2, 3):
+        claim: KnowledgeClaim | None = None
+        for page in pages_by_ordinal.get(ordinal, []):
+            claim = _source_claim_on_page(page, knowledge)
+            if claim is not None:
+                break
+        if claim is None:
+            continue
+        if ordinal == 3:
+            advice = _about_advice_claim(course_map, knowledge)
+            if advice is not None:
+                claim = advice
+        if ordinal == 3 and not (
+            "について" in claim.text and _ADVICE_MARKER_RE.search(claim.text)
+        ):
+            bullet = "用法三：关于"
+        else:
+            bullet = _SENSE_ROLE_BULLETS[ordinal]
+        unit = units_by_claim.get(claim.id)
+        topic_id = unit.topic_id if unit is not None else f"sense-{ordinal}"
+        rows.append((topic_id, claim.id, bullet))
+    return rows
+
+
 def _summary_units_for_topics(
     course_map: CourseMap | None,
     knowledge: KnowledgeDocument,
@@ -1844,17 +1950,19 @@ def _summary_page(
     *,
     page_index: int = 0,
     notes: str = "",
+    title: str = "课程要点回顾",
+    selection_reason: str = "来源内容回顾",
 ) -> PageIntent:
     page_rows = rows[page_index * 4 : page_index * 4 + 4]
     page_id = "intent-summary" if page_index == 0 else f"intent-summary-{page_index + 1}"
     return PageIntent(
         id=page_id,
         type="summary",
-        title="课程要点回顾",
+        title=title,
         claim_ids=[claim_id for _, claim_id, _ in page_rows],
         frame_ids=[],
         notes=notes or "本页按保留的课程主题索引来源内容。",
-        selection_reason="来源内容回顾",
+        selection_reason=selection_reason,
         quality_label="draft",
         body_points=[bullet for _, _, bullet in page_rows],
     )
@@ -2362,12 +2470,14 @@ def build_deterministic_plan(
                     )
         body = trimmed[:content_budget]
 
-    summary_rows = _summary_units_for_topics(
+    sense_rows = _sense_role_summary_rows(course_map, knowledge, body)
+    summary_rows = sense_rows if sense_rows is not None else _summary_units_for_topics(
         course_map,
         knowledge,
         body,
         valid_evidence_ids=_summary_evidence_ids(knowledge, transcript, visual),
     )
+    sense_summary = sense_rows is not None
     available_summary_pages = max(0, max_pages - len(body) - 1)
     summary_page_count = (len(summary_rows) + 3) // 4 if summary_rows else 0
     if summary_page_count > available_summary_pages:
@@ -2399,7 +2509,13 @@ def build_deterministic_plan(
                     )
                 )
     summaries = [
-        _summary_page(summary_rows, page_index=index)
+        _summary_page(
+            summary_rows,
+            page_index=index,
+            title="本课总结" if sense_summary else "课程要点回顾",
+            notes="总结按课程主题覆盖各用法，并附代表性例句。" if sense_summary else "",
+            selection_reason="总结" if sense_summary else "来源内容回顾",
+        )
         for index in range(summary_page_count)
     ]
     pages = [pages[0], *body, *summaries]

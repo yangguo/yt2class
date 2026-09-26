@@ -164,7 +164,9 @@ def test_plan11_cause_crowd_keeps_connective_and_caps_usage_one():
     }
     assert summary.claim_ids
     assert set(summary.claim_ids) <= body_claim_ids
-    assert "につき" in joined
+    assert "用法一：原因・理由（公告等）" in joined
+    assert "用法二：比例・単位（每个单位）" in joined
+    assert "用法三：关于" in joined
 
 
 def test_connective_gloss_does_not_consume_cause_ordinal():

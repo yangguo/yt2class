@@ -178,7 +178,7 @@ def test_rate_summary_from_knowledge_when_usage2_not_on_slides():
     )
     summary = next(page for page in plan.pages if page.type == "summary")
     joined = " ".join(summary.body_points)
-    assert "一個につき五百円です。" in joined
+    assert "用法二：比例・単位（每个单位）" in joined
     assert "claim-u2" in summary.claim_ids
 
 
@@ -276,7 +276,7 @@ def test_rate_content_and_summary_when_only_u1_u3_would_fit_budget():
     assert any("用法二" in title for title in content_titles)
     summary = next(page for page in plan.pages if page.type == "summary")
     joined = " ".join(summary.body_points)
-    assert "一個につき五百円です。" in joined
+    assert "用法二：比例・単位（每个单位）" in joined
     assert "claim-rate" in summary.claim_ids
 
 

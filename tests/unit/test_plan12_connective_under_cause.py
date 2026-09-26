@@ -141,4 +141,6 @@ def test_plan12_empty_intro_attachment_under_cause_locks_connective_before_sense
     }
     assert summary.claim_ids
     assert set(summary.claim_ids) <= body_claim_ids
-    assert "につき" in joined
+    assert "用法一：原因・理由（公告等）" in joined
+    assert "用法二：比例・単位（每个单位）" in joined
+    assert "用法三：关于" in joined

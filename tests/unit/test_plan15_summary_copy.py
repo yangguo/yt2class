@@ -378,6 +378,141 @@ def test_tight_budget_keeps_body_and_reports_topics_missing_from_summary():
     assert len(missing_summary_topics) == 2
 
 
+def _tsuki_summary_plan(*, include_about: bool = True):
+    topic_rows = [
+        ("topic-intro", "Introduction: what goes before につき", 0.0, 10.0),
+        ("topic-cause", "用法1・原因", 10.0, 20.0),
+        ("topic-rate", "用法2・比例", 20.0, 30.0),
+    ]
+    units = [
+        make_unit(
+            "unit-conn", "claim-conn", "名詞／数量詞＋につき。", ["cap-conn"],
+            topic_id="topic-intro", start=1.0, end=9.0, kind="concept",
+        ),
+        make_unit(
+            "unit-cause", "claim-cause", "店内改装中につき、今月は臨時休業いたします。",
+            ["cap-cause"], topic_id="topic-cause", start=11.0, end=19.0, kind="example",
+        ),
+        make_unit(
+            "unit-rate", "claim-rate", "駐車場は1時間につき1500円です。",
+            ["cap-rate"], topic_id="topic-rate", start=21.0, end=29.0, kind="example",
+        ),
+    ]
+    transcript_rows = [
+        ("cap-conn", 1.0, 9.0, "名詞／数量詞＋につき。"),
+        ("cap-cause", 11.0, 19.0, "店内改装中につき、今月は臨時休業いたします。"),
+        ("cap-rate", 21.0, 29.0, "駐車場は1時間につき1500円です。"),
+    ]
+    if include_about:
+        topic_rows.append(("topic-about", "用法3・について", 30.0, 40.0))
+        long_about = (
+            "自衛隊の海外派遣について発言した；老师指出此处是关于的意思；"
+            "保留否定「使わないで」；关于这一用法较少见，通常使用「について」。"
+        )
+        units.append(
+            make_unit(
+                "unit-about", "claim-about", long_about, ["cap-about"],
+                topic_id="topic-about", start=31.0, end=39.0, kind="example",
+            )
+        )
+        transcript_rows.append(("cap-about", 31.0, 39.0, long_about))
+    topics = course_map(topic_rows)
+    return edit_deck(
+        knowledge(*units),
+        course_map=topics,
+        transcript=make_transcript(transcript_rows, duration=40.0),
+        visual=make_visual([], duration=40.0),
+        provider=FakeProvider(frames_caps()),
+        target_pages=8,
+        max_pages=10,
+        order="teaching",
+    )
+
+
+def test_summary_compares_senses_in_three_short_role_lines():
+    plan = _tsuki_summary_plan()
+    summary = next(page for page in plan.pages if page.type == "summary")
+    assert summary.body_points == [
+        "用法一：原因・理由（公告等）",
+        "用法二：比例・単位（每个单位）",
+        "用法三：关于（罕用，通常用「について」）",
+    ]
+    joined = " ".join(summary.body_points)
+    assert not any(marker in joined for marker in ("对比点", "保留否定", "老师指出"))
+    assert "店内改装中につき" not in joined
+    assert "1500" not in joined
+    assert len(summary.body_points) == len(summary.claim_ids)
+    assert all(len(point) <= 80 for point in summary.body_points)
+    about = next(
+        page for page in plan.pages
+        if page.type == "content" and page.title.startswith("用法三")
+    )
+    assert any("通常使用「について」" in point or "通常用「について」" in point for point in about.body_points)
+
+
+def test_summary_does_not_claim_about_sense_when_missing():
+    summary = next(
+        page for page in _tsuki_summary_plan(include_about=False).pages if page.type == "summary"
+    )
+    assert summary.body_points == [
+        "用法一：原因・理由（公告等）",
+        "用法二：比例・単位（每个单位）",
+    ]
+    assert not any(line.startswith("用法三") for line in summary.body_points)
+
+
+def test_summary_cites_source_usage_advice_for_about_sense():
+    topics = course_map([
+        ("topic-cause", "用法1・原因", 0.0, 10.0),
+        ("topic-rate", "用法2・比例", 10.0, 20.0),
+        ("topic-about-main", "用法3・について", 20.0, 30.0),
+        ("topic-about-example", "用法3・についての例句", 30.0, 40.0),
+    ])
+    advice = "关于的意思：～について的中止形。通常使用「について」。"
+    example = "自衛隊の海外派遣につき、国会で与党と野党が激しく議論している。"
+    doc = knowledge(
+        make_unit(
+            "unit-cause", "claim-cause", "本日雨天につき、運動会は延期します。",
+            ["cap-cause"], topic_id="topic-cause", start=1.0, end=9.0, kind="example",
+        ),
+        make_unit(
+            "unit-rate", "claim-rate", "駐車場は1時間につき1500円です。",
+            ["cap-rate"], topic_id="topic-rate", start=11.0, end=19.0, kind="example",
+        ),
+        make_unit(
+            "unit-about-main", "claim-about-main", advice,
+            ["cap-about-main"], topic_id="topic-about-main", start=21.0, end=29.0,
+        ),
+        make_unit(
+            "unit-about-example", "claim-about-example", example,
+            ["cap-about-example"], topic_id="topic-about-example",
+            start=31.0, end=39.0, kind="example",
+        ),
+    )
+    plan = edit_deck(
+        doc,
+        course_map=topics,
+        transcript=make_transcript(
+            [
+                ("cap-cause", 1.0, 9.0, "本日雨天につき、運動会は延期します。"),
+                ("cap-rate", 11.0, 19.0, "駐車場は1時間につき1500円です。"),
+                ("cap-about-main", 21.0, 29.0, advice),
+                ("cap-about-example", 31.0, 39.0, example),
+            ],
+            duration=40.0,
+        ),
+        visual=make_visual([], duration=40.0),
+        provider=FakeProvider(frames_caps()),
+        target_pages=8,
+        max_pages=10,
+        order="teaching",
+    )
+    summary = next(page for page in plan.pages if page.type == "summary")
+    assert "用法三：关于（罕用，通常用「について」）" in summary.body_points
+    assert "claim-about-main" in summary.claim_ids
+    assert example not in " ".join(summary.body_points)
+
+
 def test_summary_does_not_claim_about_topic_without_selected_source_content():
     plan = _pipeline_plan(
         topic_title="About markers",

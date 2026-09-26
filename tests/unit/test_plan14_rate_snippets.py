@@ -205,7 +205,7 @@ def test_plan14_usage_two_keeps_three_kinds_from_other_topics():
     }
     assert summary.claim_ids
     assert set(summary.claim_ids) <= body_claim_ids
-    assert any("1時間につき" in point for point in summary.body_points)
+    assert "用法二：比例・単位（每个单位）" in summary.body_points
 
     def indexes(prefix: str) -> list[int]:
         return [index for index, title in enumerate(titles) if title.startswith(prefix)]

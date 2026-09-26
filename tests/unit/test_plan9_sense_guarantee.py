@@ -232,4 +232,4 @@ def test_edit_deck_plan9_style_opaque_blocks(tmp_path):
     }
     assert summary.claim_ids
     assert set(summary.claim_ids) <= body_claim_ids
-    assert any("1時間につき1500円" in line for line in summary.body_points)
+    assert "用法二：比例・単位（每个单位）" in summary.body_points
