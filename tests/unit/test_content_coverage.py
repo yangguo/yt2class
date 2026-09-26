@@ -85,7 +85,7 @@ def _plan() -> EditorialPlan:
                 id="page-quiz",
                 type="quiz",
                 title="Quiz",
-                claim_ids=["claim-alpha-practice"],
+                claim_ids=["claim-alpha-practice", "claim-alpha-free"],
                 selection_reason="fixture",
             ),
         ],
@@ -130,7 +130,7 @@ def test_report_tracks_reference_omission_topic_and_evidence_gaps_without_claimi
     assert claims["claim-alpha-body"]["verification_status"] == "supported"
     assert claims["claim-alpha-summary"]["coverage_status"] == "summary-only"
     assert claims["claim-beta-omitted"]["coverage_status"] == "explicitly-omitted"
-    assert claims["claim-alpha-free"]["coverage_status"] == "unaccounted"
+    assert claims["claim-alpha-free"]["coverage_status"] == "other-reference"
     assert claims["claim-alpha-practice"]["coverage_status"] == "other-reference"
     assert claims["claim-alpha-practice"]["other_page_ids"] == ["page-quiz"]
     assert claims["claim-invalid-evidence"]["invalid_evidence_ids"] == ["ev-not-in-input"]

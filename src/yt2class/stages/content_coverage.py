@@ -250,7 +250,7 @@ def build_content_coverage_report(
                 coverage_status = "summary-only"
             elif omission_refs:
                 coverage_status = "explicitly-omitted"
-            elif other_ids and claim.provenance == "generated-practice":
+            elif other_ids:
                 coverage_status = "other-reference"
             else:
                 coverage_status = "unaccounted"
