@@ -16,6 +16,7 @@ CI proves contracts and fixture behavior; semantic and visual gates need dated l
 | Wall-clock / cost vs realtime video | `evals/performance.py` linear **estimates** | **Not a speed guarantee** |
 | Hybrid default | **Opt-in** (`analysis.mode` default `frames`) | Real vendor upload not on shipped CLI |
 | Live YouTube / vendor adapters | OpenRouter and Ark Plan adapters plus dated `@pytest.mark.live` runs | **Excluded** from default `pytest`; full gold/visual/human gates remain open |
+| PR #15 ～につき lesson-quality follow-up | Four supported cause examples, concise summary, learner-copy cleanup, and page-local source times have offline regression tests | **Live VGQ6/Ark and exported-slide visual acceptance remain open**; the supplied `lesson.pdf` is an earlier failure sample, not a regenerated result |
 | Root `LICENSE` file | Not present in repository | **Add before public release**; verify notices manually |
 | GitHub Actions / CI workflow | `.github/workflows/ci.yml` runs `uv run pytest -q` on PRs and `master` | **Offline gate only**; live provider calls remain opt-in |
 

@@ -39,24 +39,34 @@ console.log(JSON.stringify({ seconds }));
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node required")
-def test_summary_seek_uses_monotonic_floor():
+def test_page_seek_uses_its_own_evidence_and_unanchored_summary_has_no_footer():
     root = renderer_root()
     script = """
-import { buildSeekLink } from "./src/layouts/links.mjs";
-let deckSeekSeconds = 120;
-const page = { type: "summary", citation_ids: ["ev-cap-1"] };
+import { buildSeekLink, primarySeekSeconds } from "./src/layouts/links.mjs";
+const pageAt257 = { type: "content", layout: "text", citation_ids: ["ev-cap-1"] };
+const pageAt99 = { type: "content", layout: "text", citation_ids: ["ev-cap-2"] };
+const summary = { type: "summary", citation_ids: ["ev-cap-1", "ev-cap-2"] };
+const anchoredSummary = { type: "summary", citation_ids: ["ev-cap-1"] };
+const noEvidence = { type: "content", layout: "text", citation_ids: ["ev-missing"] };
 const evidenceById = {
-  "ev-cap-1": { id: "ev-cap-1", kind: "transcript", start_seconds: 10.0 },
+  "ev-cap-1": { id: "ev-cap-1", kind: "transcript", start_seconds: 257.0 },
+  "ev-cap-2": { id: "ev-cap-2", kind: "transcript", start_seconds: 99.0 },
 };
-const link = buildSeekLink(
-  { source: { kind: "local", media_path: "media/lesson.mp4" } },
-  page,
-  {},
-  {},
-  evidenceById,
-  deckSeekSeconds,
-);
-console.log(JSON.stringify({ label: link.label }));
+const spec = { source: { kind: "local", media_path: "media/lesson.mp4" } };
+const first = buildSeekLink(spec, pageAt257, {}, {}, evidenceById);
+const second = buildSeekLink(spec, pageAt99, {}, {}, evidenceById);
+const summaryLink = buildSeekLink(spec, summary, {}, {}, evidenceById);
+const anchoredSummaryLink = buildSeekLink(spec, anchoredSummary, {}, {}, evidenceById);
+const absent = buildSeekLink(spec, noEvidence, {}, {}, evidenceById);
+console.log(JSON.stringify({
+  first: first?.label ?? null,
+  second: second?.label ?? null,
+  summary: summaryLink?.label ?? null,
+  anchoredSummary: anchoredSummaryLink?.label ?? null,
+  absent: absent?.label ?? null,
+  summarySeconds: primarySeekSeconds(summary, {}, {}, evidenceById),
+  absentSeconds: primarySeekSeconds(noEvidence, {}, {}, evidenceById),
+}));
 """
     result = subprocess.run(
         ["node", "--input-type=module", "-e", script],
@@ -66,4 +76,38 @@ console.log(JSON.stringify({ label: link.label }));
         text=True,
     )
     payload = json.loads(result.stdout.strip())
-    assert "02:00" in payload["label"]
+    assert payload["first"] == "来源 04:17"
+    assert payload["second"] == "来源 01:39"
+    assert payload["summary"] is None
+    assert payload["anchoredSummary"] == "来源 04:17"
+    assert payload["absent"] is None
+    assert payload["summarySeconds"] is None
+    assert payload["absentSeconds"] is None
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node required")
+def test_content_bullets_prefer_learner_lines_over_claim_ids():
+    root = renderer_root()
+    script = """
+import { contentBulletLines, formatLocalSeek } from "./src/layouts/links.mjs";
+const lines = contentBulletLines(
+  { bullets: ["1時間につき1500円", "一日につき300円"] },
+  ["cap-0148 raw claim"],
+);
+const fallback = contentBulletLines({ bullets: [] }, ["雨天につき延期"]);
+const label = formatLocalSeek("media/d344652e6eddd447.webm", 257);
+console.log(JSON.stringify({ lines, fallback, label }));
+"""
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(result.stdout.strip())
+    assert payload["lines"] == ["1時間につき1500円", "一日につき300円"]
+    assert payload["fallback"] == ["雨天につき延期"]
+    assert "webm" not in payload["label"].lower()
+    assert "cap-" not in payload["label"]
+    assert "04:17" in payload["label"]

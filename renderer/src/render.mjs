@@ -9,7 +9,7 @@ import { renderSequence } from "./layouts/sequence.mjs";
 import { renderSummary } from "./layouts/summary.mjs";
 import { renderQuiz } from "./layouts/quiz.mjs";
 import { detectCjkFont, resolveFont } from "./layouts/theme.mjs";
-import { buildSeekLink, primarySeekSeconds } from "./layouts/links.mjs";
+import { buildSeekLink } from "./layouts/links.mjs";
 
 function parseArgs(argv) {
   const args = {};
@@ -40,7 +40,6 @@ export async function renderSpec(spec, runRoot, outputPath) {
     evidenceById[item.id] = item;
     if (item.kind === "frame") frameEvidence[item.asset_id] = item;
   }
-  let deckSeekSeconds = 0;
   const ctx = {
     spec,
     fontFace,
@@ -59,23 +58,12 @@ export async function renderSpec(spec, runRoot, outputPath) {
       return ev?.timestamp_seconds ?? 0;
     },
     seekLinkForPage(page) {
-      const raw = primarySeekSeconds(page, assets, frameEvidence, evidenceById);
-      let seconds = raw;
-      if (page.type === "summary" || page.type === "quiz") {
-        seconds = deckSeekSeconds;
-      } else if (page.type === "cover") {
-        seconds = raw;
-      } else {
-        seconds = Math.max(raw, deckSeekSeconds);
-        deckSeekSeconds = seconds;
-      }
       return buildSeekLink(
         spec,
         page,
         assets,
         frameEvidence,
         evidenceById,
-        seconds,
       );
     },
   };

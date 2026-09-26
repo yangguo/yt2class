@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { imageSize } from "image-size";
 import { THEME } from "./theme.mjs";
 
 export const SLIDE = { w: 10, h: 5.625 };
@@ -31,14 +33,22 @@ export function addBullets(slide, lines, opts = {}) {
 }
 
 export function addImageContain(slide, imagePath, box, extra = {}) {
+  const { width: sourceWidth, height: sourceHeight } = imageSize(
+    readFileSync(imagePath),
+  );
+  if (!sourceWidth || !sourceHeight) {
+    throw new Error(`cannot determine image dimensions: ${imagePath}`);
+  }
+  const scale = Math.min(box.w / sourceWidth, box.h / sourceHeight);
+  const width = sourceWidth * scale;
+  const height = sourceHeight * scale;
   slide.addImage({
     path: imagePath,
-    x: box.x,
-    y: box.y,
-    w: box.w,
-    h: box.h,
-    sizing: { type: "contain", w: box.w, h: box.h },
     ...extra,
+    x: box.x + (box.w - width) / 2,
+    y: box.y + (box.h - height) / 2,
+    w: width,
+    h: height,
   });
 }
 

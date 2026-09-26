@@ -4,7 +4,9 @@ Turn course videos into source-faithful PPTX lecture notes: transcript and visua
 
 **Shipped (M0–M7 foundation):** versioned contracts, evidence extraction, analysis, editorial/verify/review, bind/render, `build-run` / `batch` / `resume` / `doctor`, OpenRouter and Volcengine Ark Agent Plan vision providers, OCR/ASR fallbacks, and opt-in `native-video` / `hybrid` analysis modes.
 
-**Quality status:** pull-request and `master` CI run the full offline suite. A dated Ark Plan VGQ6 run passed structural checks for 用法一/二/三, the 用法二 summary, monotonic seek links, and mandatory-sense selection. Visual QA, gold-outline compression, and final human review remain open; see [known limits](docs/examples/m7-known-limits.md).
+**Quality status:** pull-request and `master` CI run the full offline suite. A prior dated Ark Plan VGQ6 run checked structural sense coverage and mandatory selection on an earlier revision. The PR #15 follow-up adds source-backed topic summaries and claim-level coverage diagnostics across course types. Existing grammar-specific selection and transcription rules are still a compatibility path, not a general quality guarantee. The current revision still needs a fresh VGQ6/Ark run, visual QA, gold-outline comparison, and human review; see [known limits](docs/examples/m7-known-limits.md) and the [generic quality design and rule inventory](docs/plans/2026-09-26-generic-editorial-quality.md).
+
+The seven-page example is a compact regression case, not a fixed deck length. `editor.target_pages` and `editor.max_pages` are configurable for the video's length and complexity; the default course configuration uses 12 and 20, respectively.
 
 **Roadmap:** complete dated live scorecards, visual QA, human-review closure, and release hardening — see the [implementation plan](docs/plans/2026-08-11-youtube-to-ppt-implementation.md).
 
@@ -175,12 +177,26 @@ runs/<run-id>/
   evidence/
   analysis/
   editorial/
+    content-coverage.json
   delivery/lesson.pptx
   delivery/slide-spec.v3.json
   previews/
 ```
 
 `doctor --json` checks tools, renderer bundle, ASR/OCR availability, fonts, and configured Ark credentials without printing secrets.
+
+`editorial/content-coverage.json` traces knowledge claims to body-page references,
+summary-only references, explicit omissions, or unaccounted content. It also
+reports inconsistent references and missing topic summaries. A claim ID on a page
+proves structural linkage only: the report does not certify that the visible
+wording expresses the claim, that the evidence is semantically correct, or that
+all facts in the original video were extracted. See the
+[generic quality design](docs/plans/2026-09-26-generic-editorial-quality.md).
+
+Resume preserves existing editorial plans, including human edits. To evaluate a
+new editing policy, generate a fresh plan/run; do not assume resuming an old run
+replaces its saved plan. Coverage diagnostics are refreshed against the plan
+actually used for delivery.
 
 ## Legacy prototype: `build --links`
 

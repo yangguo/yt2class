@@ -142,6 +142,78 @@ def test_human_edit_survives_resume_with_revision_zero(tmp_path: Path, monkeypat
     assert any(page.title == "人工修订标题" for page in reloaded.pages)
 
 
+def test_content_coverage_is_written_and_tracks_the_final_plan_after_resume(tmp_path: Path):
+    import json
+
+    from yt2class.domain.knowledge import KnowledgeDocument
+    from yt2class.domain.transcript import TranscriptDocument
+    from yt2class.domain.verification import VerificationReport
+    from yt2class.domain.visual import VisualCatalogue
+    from yt2class.stages.content_coverage import build_content_coverage_report
+
+    workspace, bundle = build_evidence_bundle(tmp_path)
+    cfg = CourseConfig()
+    build = BuildSource(source_id=bundle.source_id)
+    execute_run(
+        tmp_path,
+        build=build,
+        config=cfg,
+        run_id=workspace.root.name,
+        evidence_bundle=bundle,
+        stop_after="verify_claims",
+    )
+
+    editorial = workspace.root / "editorial"
+    coverage_path = editorial / "content-coverage.json"
+    assert coverage_path.is_file()
+    first_plan = EditorialPlan.model_validate_json(
+        (editorial / "editorial-plan.json").read_text(encoding="utf-8")
+    )
+    edited = first_plan.model_copy(
+        update={"pages": [first_plan.pages[0].model_copy(update={"title": "人工修订标题"}), *first_plan.pages[1:]]}
+    )
+    (editorial / "editorial-plan.json").write_text(edited.model_dump_json(indent=2), encoding="utf-8")
+
+    execute_run(
+        tmp_path,
+        build=BuildSource(source_id=bundle.source_id, run_id=workspace.root.name),
+        config=cfg,
+        run_id=workspace.root.name,
+        evidence_bundle=bundle,
+        resume=True,
+        stop_after="verify_claims",
+    )
+
+    final_plan = EditorialPlan.model_validate_json(
+        (editorial / "editorial-plan.json").read_text(encoding="utf-8")
+    )
+    final_knowledge = KnowledgeDocument.model_validate_json(
+        (editorial / "knowledge.json").read_text(encoding="utf-8")
+    )
+    final_verification = VerificationReport.model_validate_json(
+        (editorial / "verification-report.json").read_text(encoding="utf-8")
+    )
+    transcript = TranscriptDocument.model_validate_json(
+        (workspace.root / "evidence" / "transcript-document.json").read_text(encoding="utf-8")
+    )
+    visual = VisualCatalogue.model_validate_json(
+        (workspace.root / "evidence" / "visual-catalogue.json").read_text(encoding="utf-8")
+    )
+    coverage = json.loads(coverage_path.read_text(encoding="utf-8"))
+    expected = build_content_coverage_report(
+        final_knowledge,
+        final_plan,
+        transcript=transcript,
+        visual=visual,
+        verification=final_verification,
+    )
+    assert any(page.title == "人工修订标题" for page in final_plan.pages)
+    assert coverage == expected
+    assert coverage["digests"]["editorial_plan_sha256"] != build_content_coverage_report(
+        final_knowledge, first_plan, transcript=transcript, visual=visual, verification=final_verification
+    )["digests"]["editorial_plan_sha256"]
+
+
 def test_downloaded_caption_change_invalidates_extract_inputs(tmp_path):
     import json
     from types import SimpleNamespace

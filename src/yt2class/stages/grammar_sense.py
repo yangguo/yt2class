@@ -69,6 +69,21 @@ _RATE_EXAMPLE_RE = re.compile(
     r"時間につき[0-9０-９]+|[0-9０-９]+円|ごとに|每[一個人匹本]"
 )
 _TSUKI_LESSON_RE = re.compile(r"(?:～|〜)?につき")
+CONNECTIVE_HEADING = "接续：名詞／数量詞＋につき"
+_EXPLICIT_CONNECTIVE_RE = re.compile(r"接续|接続|连接")
+_CONNECTIVE_PATTERN_RE = re.compile(
+    r"(?:名词|名詞|数量词|数量詞|数量).{0,16}(?:につき|つき)|"
+    r"(?:につき|つき).{0,20}(?:接续|接続|连接|名词|名詞|数量词|数量詞|数量)|"
+    r"(?:接在|前面接|后接).{0,12}(?:につき|つき)"
+)
+_BEFORE_TSUKI_RE = re.compile(
+    r"what\s+goes\s+before.{0,40}(?:につき|つき)|"
+    r"goes\s+before.{0,24}(?:につき|つき)|"
+    r"\bbefore\s*(?:～|〜)?(?:につき|つき)",
+    re.I,
+)
+_CONNECTIVE_MIN_SCORE = 4.0
+_SENSE_DOMINANCE = 6.0
 
 
 def _is_tsuki_lesson(
@@ -95,6 +110,132 @@ def _text_signals_rate(text: str) -> bool:
     return _RATE_EXAMPLE_RE.search(text) is not None
 
 
+def _proportion_sample(text: str) -> str:
+    """Drop whitespace so `1日 につき300円` matches the same way as `1日につき300円`."""
+
+    return re.sub(r"\s+", "", text.replace("について", ""))
+
+
+def text_is_rate_proportion(text: str) -> bool:
+    """True for a complete 比例・単位 example, not a truncated `1時間につき` fragment."""
+
+    if not text or not text.strip():
+        return False
+    sample = _proportion_sample(text)
+    if re.search(r"(?:[0-9０-９]+)?時間につき[0-9０-９,，]+円", sample):
+        return True
+    if re.search(r"(?:一日|1日|１日|[0-9０-９]+日)につき[0-9０-９,，]+円", sample):
+        return True
+    if re.search(r"[0-9０-９]+円分?.{0,18}(?:お)?買い物につき[0-9０-９]+ポイント", sample):
+        return True
+    if re.search(r"につき[0-9０-９]+ポイント", sample):
+        return True
+    if re.search(r"一[個匹本枚]につき", sample) and re.search(r"[0-9０-９]+円|円", sample):
+        return True
+    if re.search(r"(?:円|ポイント).{0,24}につき", sample) and re.search(r"[0-9０-９]", sample):
+        return True
+    return False
+
+
+def representative_rate_snippets(texts: list[str]) -> list[str]:
+    """One learner snippet per rate kind: hourly fee, shopping points, daily fee.
+
+    Incomplete ASR such as `1時間につき` with no amount is ignored. Shopping points
+    are recognized from a close variant that names the purchase unit and the points
+    even when `につき` was split across captions.
+    """
+
+    best: dict[str, tuple[float, str]] = {}
+
+    def offer(kind: str, snippet: str, score: float) -> None:
+        cleaned = snippet.strip()
+        if not cleaned:
+            return
+        current = best.get(kind)
+        if current is None or score > current[0]:
+            best[kind] = (score, cleaned[:80])
+
+    for raw in texts:
+        if not raw or not str(raw).strip():
+            continue
+        sample = _proportion_sample(raw)
+        hourly = re.search(r"([0-9０-９]+)時間につき([0-9０-９,，]+)円", sample)
+        if hourly:
+            amount = re.sub(r"[,，]", "", hourly.group(2))
+            score = 5.0
+            if any(token in raw for token in ("できます", "利用", "活動センター")):
+                score += 1.0
+            if raw.strip().startswith("ましょう"):
+                score -= 2.0
+            offer("hourly", f"{hourly.group(1)}時間につき{amount}円", score)
+        daily = re.search(r"(一日|1日|１日)につき([0-9０-９,，]+)円", sample)
+        if daily:
+            amount = re.sub(r"[,，]", "", daily.group(2))
+            day = "一日" if "一日" in sample else "1日"
+            score = 5.0 + (1.0 if day == "一日" else 0.0)
+            if any(token in raw for token in ("お支払い", "いただきます", "いたします")):
+                score += 2.0
+            offer("daily", f"{day}につき{amount}円", score)
+        points = re.search(
+            r"([0-9０-９]+)円分?.{0,18}?(?:お)?買い物につき([0-9０-９]+)ポイント",
+            sample,
+        )
+        if points:
+            offer(
+                "points",
+                f"{points.group(1)}円分のお買い物につき{points.group(2)}ポイント",
+                8.0,
+            )
+        else:
+            amount = re.search(r"([0-9０-９]+)円分?.{0,24}(?:お)?買い物", sample)
+            count = re.search(r"([0-9０-９]+)ポイント", sample)
+            if amount and count:
+                offer(
+                    "points",
+                    f"{amount.group(1)}円分のお買い物につき{count.group(1)}ポイント",
+                    4.0,
+                )
+    return [best[kind][1] for kind in ("hourly", "points", "daily") if kind in best]
+
+
+def iter_rate_sentences(text: str) -> list[str]:
+    """Return proportion sentences inside a claim, OCR line, or caption."""
+
+    if not text or not text.strip():
+        return []
+    sentences = [part.strip() for part in re.split(r"[。．！？\n]", text) if part.strip()]
+    found = [
+        sentence
+        for sentence in sentences
+        if text_is_rate_proportion(sentence) and not text_is_connective_attachment(sentence)
+    ]
+    if found:
+        return found
+    stripped = text.strip()
+    if text_is_rate_proportion(stripped) and not text_is_connective_attachment(stripped):
+        return [stripped]
+    return []
+
+
+def text_is_rate_only(text: str) -> bool:
+    """True when the copy is proportion examples and not a cause/about sentence."""
+
+    sentences = [part.strip() for part in re.split(r"[。．！？\n]", text or "") if part.strip()]
+    if not sentences:
+        return False
+    saw_rate = False
+    for sentence in sentences:
+        if text_is_connective_attachment(sentence):
+            continue
+        if text_is_rate_proportion(sentence):
+            saw_rate = True
+            continue
+        bare = sentence.replace("について", "")
+        if "につき" in bare or "について" in sentence:
+            return False
+    return saw_rate
+
+
 def is_connective_topic(title: str) -> bool:
     text = title.strip()
     lowered = text.lower()
@@ -107,6 +248,120 @@ def is_connective_topic(title: str) -> bool:
     if lowered in {"cover", "intro", "introduction", "overview"}:
         return True
     return False
+
+
+def _is_connective_gloss(text: str) -> bool:
+    """Grammatical attachment note (接续 / 名詞＋につき), not a usage sentence."""
+
+    if not text or not text.strip():
+        return False
+    if _EXPLICIT_CONNECTIVE_RE.search(text):
+        return True
+    if _BEFORE_TSUKI_RE.search(text):
+        return True
+    return _CONNECTIVE_PATTERN_RE.search(text) is not None
+
+
+def text_is_connective_attachment(text: str, topic: Topic | None = None) -> bool:
+    """True when copy teaches what attaches to につき, even inside a cause topic."""
+
+    if not _is_connective_gloss(text):
+        return False
+    if topic is not None and _topic_kind(topic) == "rate" and _text_signals_rate(text):
+        return False
+    if (
+        topic is not None
+        and _topic_kind(topic) == "about"
+        and "について" in text
+        and not _EXPLICIT_CONNECTIVE_RE.search(text)
+    ):
+        return False
+    return True
+
+
+def unit_is_connective_attachment(
+    unit: KnowledgeUnit,
+    topic: Topic | None = None,
+) -> bool:
+    return text_is_connective_attachment(_unit_text(unit), topic)
+
+
+def is_tsuki_grammar_lesson(
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument | None,
+) -> bool:
+    return _is_tsuki_lesson(course_map, knowledge)
+
+
+def _non_gloss_cause_strength(topic: Topic, knowledge: KnowledgeDocument) -> float:
+    score = 0.0
+    for unit in knowledge.units:
+        if unit.topic_id != topic.id:
+            continue
+        text = _unit_text(unit)
+        if _is_connective_gloss(text):
+            continue
+        if "につき" in text and "について" not in text and not _text_signals_rate(text):
+            score += 6.0 if unit.kind == "example" else 3.0
+    return score
+
+
+def connective_topic_score(topic: Topic, knowledge: KnowledgeDocument) -> float:
+    """How strongly this topic teaches 名詞／数量詞＋につき attachment."""
+
+    units = [unit for unit in knowledge.units if unit.topic_id == topic.id]
+    if not units:
+        return 0.0
+    if _topic_kind(topic) in _KIND_TO_ORDINAL:
+        return 0.0
+    if _topic_sense_strength(topic, "rate", knowledge) >= _SENSE_DOMINANCE:
+        return 0.0
+    if _topic_sense_strength(topic, "about", knowledge) >= _SENSE_DOMINANCE:
+        return 0.0
+    explicit = bool(
+        _EXPLICIT_CONNECTIVE_RE.search(topic.title)
+        or _EXPLICIT_CONNECTIVE_RE.search(topic.goal)
+    )
+    gloss_units = 0
+    for unit in units:
+        text = _unit_text(unit)
+        if _EXPLICIT_CONNECTIVE_RE.search(text):
+            explicit = True
+        if _is_connective_gloss(text):
+            gloss_units += 1
+    if _non_gloss_cause_strength(topic, knowledge) >= _SENSE_DOMINANCE and not explicit:
+        return 0.0
+    score = 5.0 if explicit else 1.0 if is_connective_topic(topic.title) else 0.0
+    score += 4.0 * gloss_units
+    return score
+
+
+def is_grammar_connective_topic(
+    topic: Topic,
+    knowledge: KnowledgeDocument | None,
+    course_map: CourseMap | None = None,
+) -> bool:
+    if knowledge is None or not _is_tsuki_lesson(course_map, knowledge):
+        return False
+    return connective_topic_score(topic, knowledge) >= _CONNECTIVE_MIN_SCORE
+
+
+def topic_for_connective(
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument | None,
+) -> Topic | None:
+    """Best topic that teaches the ～につき attachment pattern."""
+
+    if knowledge is None or not _is_tsuki_lesson(course_map, knowledge):
+        return None
+    best_topic: Topic | None = None
+    best_score = 0.0
+    for topic in iter_topics(course_map, knowledge):
+        score = connective_topic_score(topic, knowledge)
+        if score >= _CONNECTIVE_MIN_SCORE and score > best_score:
+            best_score = score
+            best_topic = topic
+    return best_topic
 
 
 def _topic_kind(topic: Topic) -> str:
@@ -140,6 +395,8 @@ def is_grammar_usage_topic(
     topic: Topic,
     knowledge: KnowledgeDocument | None = None,
 ) -> bool:
+    if is_grammar_connective_topic(topic, knowledge):
+        return False
     kind = topic_kind(topic, knowledge)
     if kind in _KIND_TO_ORDINAL:
         return True
@@ -247,9 +504,11 @@ def topic_kind(
     kind = _topic_kind(topic)
     if kind != "other":
         return kind
-    if knowledge is not None:
-        return _infer_topic_kind_from_knowledge(topic.id, knowledge)
-    return "other"
+    if knowledge is None:
+        return "other"
+    if is_grammar_connective_topic(topic, knowledge):
+        return "other"
+    return _infer_topic_kind_from_knowledge(topic.id, knowledge)
 
 
 def _topic_sense_strength(
@@ -300,6 +559,12 @@ def topic_for_sense_ordinal(
         if kind != want and strength <= 0:
             continue
         if (
+            want == "cause"
+            and knowledge is not None
+            and is_grammar_connective_topic(topic, knowledge, course_map)
+        ):
+            continue
+        if (
             is_connective_topic(topic.title)
             and kind != want
             and strength < 6.0
@@ -335,6 +600,8 @@ def sense_ordinal(
 
 def is_fixed_sense_heading(title: str) -> bool:
     text = title.strip()
+    if text.startswith(CONNECTIVE_HEADING):
+        return True
     return any(text.startswith(sense_heading(ordinal)) for ordinal in (1, 2, 3))
 
 
@@ -357,7 +624,20 @@ def learner_page_title(
     course_map: CourseMap | None,
     fallback_title: str,
     knowledge: KnowledgeDocument | None = None,
+    unit_text: str | None = None,
 ) -> str:
+    topic = next(
+        (item for item in iter_topics(course_map, knowledge) if item.id == topic_id),
+        None,
+    )
+    if unit_text and is_tsuki_grammar_lesson(course_map, knowledge):
+        if text_is_rate_only(unit_text):
+            return sense_heading(2)
+        if text_is_connective_attachment(unit_text, topic):
+            return CONNECTIVE_HEADING
+    connective = topic_for_connective(course_map, knowledge)
+    if connective is not None and connective.id == topic_id:
+        return CONNECTIVE_HEADING
     ordinal = sense_ordinal(topic_id, course_map, knowledge=knowledge)
     if ordinal is not None:
         return sense_heading(ordinal)
@@ -406,10 +686,15 @@ def pick_summary_unit(
         for unit in units:
             if _text_signals_rate(_unit_text(unit)):
                 return unit
+
+    def _usage_units(rows: list[KnowledgeUnit]) -> list[KnowledgeUnit]:
+        plain = [unit for unit in rows if not _is_connective_gloss(_unit_text(unit))]
+        return plain or rows
+
     if examples:
-        return examples[0]
+        return _usage_units(examples)[0]
     if concepts:
-        return concepts[0]
+        return _usage_units(concepts)[0]
     return units[0]
 
 
@@ -448,9 +733,12 @@ def pick_summary_unit_for_topic(
 
 
 __all__ = [
+    "CONNECTIVE_HEADING",
     "is_connective_topic",
+    "is_tsuki_grammar_lesson",
     "is_fixed_sense_heading",
     "is_fixed_sense_summary_line",
+    "is_grammar_connective_topic",
     "is_grammar_usage_topic",
     "iter_topics",
     "learner_page_title",
@@ -460,7 +748,14 @@ __all__ = [
     "sense_ordinal",
     "sense_topic_ids",
     "summary_bullet_for_sense",
+    "iter_rate_sentences",
+    "representative_rate_snippets",
+    "text_is_connective_attachment",
+    "text_is_rate_only",
+    "text_is_rate_proportion",
+    "topic_for_connective",
     "topic_for_sense_ordinal",
     "topic_kind",
+    "unit_is_connective_attachment",
     "usage_topics",
 ]

@@ -29,6 +29,7 @@ from yt2class.domain.verification import (
     strict_closure_errors,
 )
 from yt2class.domain.visual import VisualCatalogue
+from yt2class.stages.grammar_sense import is_tsuki_grammar_lesson
 from yt2class.stages.llm_util import (
     allowed_evidence_ids,
     attach_provider_payload,
@@ -623,6 +624,68 @@ def _sync_claim_status(knowledge: KnowledgeDocument, verdicts: list[ClaimVerdict
     return knowledge.model_copy(update={"units": units})
 
 
+_SENSE_ROLE_PREFIXES = (
+    "用法一：原因・理由",
+    "用法二：比例・単位",
+    "用法三：关于",
+)
+
+
+def _is_protected_sense_summary(page: PageIntent) -> bool:
+    """Keep claim ids aligned with compact 用法一/二/三 summary lines.
+
+    Soft-failing the 用法三 advice claim must not leave the bullet in place
+    while removing its claim id; bind would then drop the line.
+    """
+
+    if page.type != "summary" or not page.claim_ids or not page.body_points:
+        return False
+    points = [point.strip() for point in page.body_points if point.strip()]
+    if not points or len(points) != len(page.claim_ids):
+        return False
+    return all(point.startswith(_SENSE_ROLE_PREFIXES) for point in points)
+
+
+def _is_protected_connective_page(page: PageIntent, knowledge: KnowledgeDocument) -> bool:
+    """True for a learner 接续 page on a ～につき / ～つき lesson.
+
+    Soft-failed gloss claims must not delete this page. The pre-verify plan
+    already decided the page is mandatory; formalization only keeps it.
+    """
+
+    if page.type != "content":
+        return False
+    marked = page.title.startswith("接续") or "mandatory-connective" in page.selection_reason
+    if not marked:
+        return False
+    if is_tsuki_grammar_lesson(None, knowledge):
+        return True
+    blob = f"{page.title}\n{page.notes}\n" + "\n".join(page.body_points)
+    return "につき" in blob or "～つき" in blob or "〜つき" in blob
+
+
+def _summary_body_for_claims(page: PageIntent, keep: list[str]) -> list[str]:
+    """Keep learner bullets index-aligned with the summary claims that remain.
+
+    ``body_points[i]`` is the display line for ``claim_ids[i]``. Dropping a
+    claim without its bullet leaves bind with more bullets than claim ids.
+    """
+
+    if page.type != "summary" or not page.body_points:
+        return list(page.body_points)
+    keep_ids = set(keep)
+    aligned = [
+        page.body_points[index]
+        for index, claim_id in enumerate(page.claim_ids)
+        if claim_id in keep_ids and index < len(page.body_points)
+    ]
+    # A bullet with no claim slot was not paired with a claim removed here.
+    # Sense-summary realignment may attach the missing id; do not discard it.
+    if len(page.body_points) > len(page.claim_ids):
+        aligned.extend(page.body_points[len(page.claim_ids) :])
+    return aligned
+
+
 def formalize_plan(
     plan: EditorialPlan,
     *,
@@ -635,9 +698,12 @@ def formalize_plan(
     provider: Provider | None = None,
 ) -> EditorialPlan:
     supported = {item.claim_id for item in verdicts if item.verdict == "supported"}
+    removed_ids = set(removed)
     pages: list[PageIntent] = []
     extra_omissions: list[Omission] = list(plan.omissions)
     for page in plan.pages:
+        protected = _is_protected_connective_page(page, knowledge)
+        protected_summary = _is_protected_sense_summary(page)
         if quality_mode == "evidence-only":
             keep = list(page.claim_ids)
             dropped = []
@@ -645,11 +711,16 @@ def formalize_plan(
             keep = [claim_id for claim_id in page.claim_ids if claim_id in supported]
             dropped = [claim_id for claim_id in page.claim_ids if claim_id not in supported]
         else:
-            dropped = [claim_id for claim_id in page.claim_ids if claim_id in set(removed)]
-            keep = [claim_id for claim_id in page.claim_ids if claim_id not in set(removed)]
+            dropped = [claim_id for claim_id in page.claim_ids if claim_id in removed_ids]
+            keep = [claim_id for claim_id in page.claim_ids if claim_id not in removed_ids]
+        if protected or protected_summary:
+            # Soft-failed 接续 claims, and claims paired with compact 用法 lines,
+            # stay on the page so bind still has one claim per learner bullet.
+            keep = list(page.claim_ids)
+            dropped = []
         for claim_id in dropped:
             extra_omissions.append(Omission(claim_id=claim_id, reason="removed after verification"))
-        if page.type == "content" and page.claim_ids and not keep:
+        if page.claim_ids and not keep and page.type in {"content", "summary"}:
             continue
         if quality_mode == "evidence-only":
             label = "evidence-only"
@@ -657,7 +728,16 @@ def formalize_plan(
             label = "verified"
         else:
             label = "draft"
-        updated = page.model_copy(update={"claim_ids": keep})
+        if (protected or protected_summary) and quality_mode != "evidence-only" and any(
+            claim_id not in supported for claim_id in keep
+        ):
+            label = "draft"
+        updated = page.model_copy(
+            update={
+                "claim_ids": keep,
+                "body_points": _summary_body_for_claims(page, keep),
+            }
+        )
         if _is_practice(knowledge, keep) and updated.type == "content":
             updated = updated.model_copy(update={"type": "quiz"})
         pages.append(relabel_page(updated, label))
@@ -680,6 +760,17 @@ def formalize_plan(
             else:
                 checked.append(page)
         pages = checked
+    from yt2class.stages.edit_deck import _realign_sense_summary
+
+    pages = _realign_sense_summary(pages, course_map=None, knowledge=knowledge)
+    kept_ids = {claim_id for page in pages for claim_id in page.claim_ids}
+    extra_omissions = [
+        item
+        for item in extra_omissions
+        if not (
+            item.claim_id in kept_ids and item.reason == "removed after verification"
+        )
+    ]
     return plan.model_copy(update={"pages": pages, "omissions": extra_omissions})
 
 

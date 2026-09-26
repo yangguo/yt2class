@@ -38,7 +38,7 @@ from yt2class.domain.transcript import TranscriptDocument
 from yt2class.domain.verification import QualityMode, VerificationReport, require_strict_closure
 from yt2class.domain.visual import OcrRegion, VisualCatalogue, is_accepted_visual_occurrence
 from yt2class.orchestration.workspace import Workspace, WorkspacePathError
-from yt2class.stages.student_copy import sanitize_student_copy
+from yt2class.stages.student_copy import contains_student_meta, sanitize_student_copy
 from yt2class.stages.verify_claims import _is_practice
 
 PRODUCER_VERSION = "yt2class-bind-1.0"
@@ -167,7 +167,9 @@ def _collect_claims(
         if source_claim is None:
             raise BindError(f"unknown editorial claim {claim_id!r}")
         evidence_ids = _evidence_ids_for_knowledge_claim(source_claim)
-        display = sanitize_student_copy(source_claim.text) or source_claim.text
+        display = sanitize_student_copy(source_claim.text).strip()
+        if not display:
+            display = "…" if contains_student_meta(source_claim.text) else source_claim.text.strip()
         built[claim_id] = SlideClaim(
             id=claim_id,
             text=display,
@@ -319,7 +321,23 @@ def _validate_ocr_bbox(region: OcrRegion, visual: VisualCatalogue) -> None:
 
 
 def _page_notes(page: PageIntent) -> str:
-    return visible_quality_notes(page.quality_label, page.notes)
+    cleaned = sanitize_student_copy(page.notes)
+    if page.quality_label == "verified":
+        return cleaned
+    return visible_quality_notes(page.quality_label, cleaned)
+
+
+def _content_bullets(page: PageIntent) -> list[str]:
+    lines: list[str] = []
+    for point in page.body_points:
+        cleaned = sanitize_student_copy(point).strip()
+        if cleaned:
+            if len(cleaned) > 200:
+                raise BindError(
+                    f"learner bullet on page {page.id!r} exceeds the 200-character limit"
+                )
+            lines.append(cleaned)
+    return lines[:4]
 
 
 def _bind_cover(page: PageIntent, *, source_id: str, hero_asset_id: str | None) -> SlidePage:
@@ -386,7 +404,8 @@ def _bind_content_pages(
             asset = frame_assets.get(f"asset-{frame_id}")
             if asset is None:
                 raise BindError(f"sequence step missing asset for {frame_id!r}")
-            caption = page.body_points[index] if index < len(page.body_points) else None
+            raw_caption = page.body_points[index] if index < len(page.body_points) else None
+            caption = sanitize_student_copy(raw_caption)[:160] if raw_caption else None
             steps.append(
                 SequenceStep(asset_id=asset.id, claim_ids=[claim_id], caption=caption)
             )
@@ -416,7 +435,7 @@ def _bind_content_pages(
         if layout != "comparison":
             return []
         if len(page.body_points) >= 2:
-            return page.body_points[:2]
+            return [sanitize_student_copy(point)[:160] for point in page.body_points[:2]]
         if len(chunk_claim_ids) >= 2:
             return [claims[cid].text[:160] for cid in chunk_claim_ids[:2]]
         if chunk_claim_ids:
@@ -441,6 +460,7 @@ def _bind_content_pages(
             frame_ids = []
             captions = []
         frame_asset_ids = [frame_assets[f"asset-{fid}"].id for fid in frame_ids]
+        bullets = _content_bullets(page) if effective_layout in {"text", "image-text"} else []
         sub_page = page.model_copy(update={"claim_ids": chunk})
         citations = _citations_for_page(
             sub_page, slide_claims=claims, evidence=evidence, frame_assets=frame_assets
@@ -454,6 +474,7 @@ def _bind_content_pages(
                 point_claim_ids=chunk,
                 frame_asset_ids=frame_asset_ids,
                 captions=captions,
+                bullets=bullets,
                 citation_ids=citations,
                 notes_claim_ids=chunk,
                 notes=_page_notes(page),
@@ -481,6 +502,11 @@ def _summary_display_bullets(
 def _bind_summary(page: PageIntent, *, claims: dict[str, SlideClaim]) -> list[SlidePage]:
     if not page.claim_ids:
         raise BindError(f"summary page {page.id!r} requires at least one claim")
+    if page.body_points and len(page.body_points) > len(page.claim_ids):
+        raise BindError(
+            f"summary page {page.id!r} has {len(page.body_points)} learner bullets "
+            f"and {len(page.claim_ids)} claim ids"
+        )
     chunks = [page.claim_ids[i : i + 4] for i in range(0, len(page.claim_ids), 4)]
     pages: list[SlidePage] = []
     for index, chunk in enumerate(chunks):
