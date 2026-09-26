@@ -624,6 +624,28 @@ def _sync_claim_status(knowledge: KnowledgeDocument, verdicts: list[ClaimVerdict
     return knowledge.model_copy(update={"units": units})
 
 
+_SENSE_ROLE_PREFIXES = (
+    "用法一：原因・理由",
+    "用法二：比例・単位",
+    "用法三：关于",
+)
+
+
+def _is_protected_sense_summary(page: PageIntent) -> bool:
+    """Keep claim ids aligned with compact 用法一/二/三 summary lines.
+
+    Soft-failing the 用法三 advice claim must not leave the bullet in place
+    while removing its claim id; bind would then drop the line.
+    """
+
+    if page.type != "summary" or not page.claim_ids or not page.body_points:
+        return False
+    points = [point.strip() for point in page.body_points if point.strip()]
+    if not points or len(points) != len(page.claim_ids):
+        return False
+    return all(point.startswith(_SENSE_ROLE_PREFIXES) for point in points)
+
+
 def _is_protected_connective_page(page: PageIntent, knowledge: KnowledgeDocument) -> bool:
     """True for a learner 接续 page on a ～につき / ～つき lesson.
 
@@ -659,6 +681,7 @@ def formalize_plan(
     extra_omissions: list[Omission] = list(plan.omissions)
     for page in plan.pages:
         protected = _is_protected_connective_page(page, knowledge)
+        protected_summary = _is_protected_sense_summary(page)
         if quality_mode == "evidence-only":
             keep = list(page.claim_ids)
             dropped = []
@@ -668,9 +691,9 @@ def formalize_plan(
         else:
             dropped = [claim_id for claim_id in page.claim_ids if claim_id in removed_ids]
             keep = [claim_id for claim_id in page.claim_ids if claim_id not in removed_ids]
-        if protected:
-            # Soft-failed 接续 claims stay on the page so bind still has point claims
-            # and the learner-facing title/bullets are not discarded.
+        if protected or protected_summary:
+            # Soft-failed 接续 claims, and claims paired with compact 用法 lines,
+            # stay on the page so bind still has one claim per learner bullet.
             keep = list(page.claim_ids)
             dropped = []
         for claim_id in dropped:
@@ -683,7 +706,7 @@ def formalize_plan(
             label = "verified"
         else:
             label = "draft"
-        if protected and quality_mode != "evidence-only" and any(
+        if (protected or protected_summary) and quality_mode != "evidence-only" and any(
             claim_id not in supported for claim_id in keep
         ):
             label = "draft"
@@ -710,6 +733,17 @@ def formalize_plan(
             else:
                 checked.append(page)
         pages = checked
+    from yt2class.stages.edit_deck import _realign_sense_summary
+
+    pages = _realign_sense_summary(pages, course_map=None, knowledge=knowledge)
+    kept_ids = {claim_id for page in pages for claim_id in page.claim_ids}
+    extra_omissions = [
+        item
+        for item in extra_omissions
+        if not (
+            item.claim_id in kept_ids and item.reason == "removed after verification"
+        )
+    ]
     return plan.model_copy(update={"pages": pages, "omissions": extra_omissions})
 
 

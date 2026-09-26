@@ -3,7 +3,12 @@ from __future__ import annotations
 import pytest
 
 from yt2class.adapters.providers.base import FakeProvider
+from yt2class.domain.editorial import PageIntent
+from yt2class.domain.slide_spec_v3 import SlideClaim
+from yt2class.domain.verification import ClaimVerdict
+from yt2class.stages.bind_spec import BindError, _bind_summary
 from yt2class.stages.edit_deck import PageCandidate, build_deterministic_plan, edit_deck
+from yt2class.stages.verify_claims import formalize_plan
 from tests.helpers.m2 import frames_caps, make_transcript, make_visual
 from tests.helpers.m3 import concept_unit as make_unit, course_map, knowledge
 
@@ -378,7 +383,21 @@ def test_tight_budget_keeps_body_and_reports_topics_missing_from_summary():
     assert len(missing_summary_topics) == 2
 
 
-def _tsuki_summary_plan(*, include_about: bool = True):
+def _bound_summary_bullets(summary: PageIntent) -> list[str]:
+    claims = {
+        claim_id: SlideClaim(
+            id=claim_id,
+            text="源 claim",
+            evidence_ids=[f"ev-{claim_id}"],
+            verdict="supported",
+            provenance="source",
+        )
+        for claim_id in summary.claim_ids
+    }
+    return _bind_summary(summary, claims=claims)[0].bullets
+
+
+def _tsuki_summary_plan(*, include_about: bool = True, advice: bool = True):
     topic_rows = [
         ("topic-intro", "Introduction: what goes before につき", 0.0, 10.0),
         ("topic-cause", "用法1・原因", 10.0, 20.0),
@@ -406,8 +425,12 @@ def _tsuki_summary_plan(*, include_about: bool = True):
     if include_about:
         topic_rows.append(("topic-about", "用法3・について", 30.0, 40.0))
         long_about = (
-            "自衛隊の海外派遣について発言した；老师指出此处是关于的意思；"
-            "保留否定「使わないで」；关于这一用法较少见，通常使用「について」。"
+            (
+                "自衛隊の海外派遣について発言した；老师指出此处是关于的意思；"
+                "保留否定「使わないで」；关于这一用法较少见，通常使用「について」。"
+            )
+            if advice
+            else "自衛隊について発言した。"
         )
         units.append(
             make_unit(
@@ -417,8 +440,9 @@ def _tsuki_summary_plan(*, include_about: bool = True):
         )
         transcript_rows.append(("cap-about", 31.0, 39.0, long_about))
     topics = course_map(topic_rows)
-    return edit_deck(
-        knowledge(*units),
+    doc = knowledge(*units)
+    plan = edit_deck(
+        doc,
         course_map=topics,
         transcript=make_transcript(transcript_rows, duration=40.0),
         visual=make_visual([], duration=40.0),
@@ -427,10 +451,11 @@ def _tsuki_summary_plan(*, include_about: bool = True):
         max_pages=10,
         order="teaching",
     )
+    return plan, doc
 
 
 def test_summary_compares_senses_in_three_short_role_lines():
-    plan = _tsuki_summary_plan()
+    plan, _doc = _tsuki_summary_plan()
     summary = next(page for page in plan.pages if page.type == "summary")
     assert summary.body_points == [
         "用法一：原因・理由（公告等）",
@@ -441,8 +466,9 @@ def test_summary_compares_senses_in_three_short_role_lines():
     assert not any(marker in joined for marker in ("对比点", "保留否定", "老师指出"))
     assert "店内改装中につき" not in joined
     assert "1500" not in joined
-    assert len(summary.body_points) == len(summary.claim_ids)
+    assert len(summary.body_points) == len(summary.claim_ids) == 3
     assert all(len(point) <= 80 for point in summary.body_points)
+    assert _bound_summary_bullets(summary) == summary.body_points
     about = next(
         page for page in plan.pages
         if page.type == "content" and page.title.startswith("用法三")
@@ -450,9 +476,71 @@ def test_summary_compares_senses_in_three_short_role_lines():
     assert any("通常使用「について」" in point or "通常用「について」" in point for point in about.body_points)
 
 
+def test_summary_without_advice_wording_still_aligns_three_claim_ids():
+    plan, _doc = _tsuki_summary_plan(advice=False)
+    summary = next(page for page in plan.pages if page.type == "summary")
+    assert summary.body_points == [
+        "用法一：原因・理由（公告等）",
+        "用法二：比例・単位（每个单位）",
+        "用法三：关于",
+    ]
+    assert summary.claim_ids[-1] == "claim-about"
+    assert len(summary.body_points) == len(summary.claim_ids) == 3
+    assert _bound_summary_bullets(summary) == summary.body_points
+
+
+def test_formalize_restores_usage_three_claim_when_summary_claims_were_truncated():
+    plan, doc = _tsuki_summary_plan()
+    summary = next(page for page in plan.pages if page.type == "summary")
+    assert len(summary.body_points) == len(summary.claim_ids) == 3
+    advice_id = summary.claim_ids[2]
+    truncated = summary.model_copy(update={"claim_ids": summary.claim_ids[:2]})
+    broken = plan.model_copy(
+        update={
+            "pages": [
+                truncated if page.id == summary.id else page for page in plan.pages
+            ]
+        }
+    )
+    formal = formalize_plan(
+        broken,
+        verdicts=[
+            ClaimVerdict(claim_id=claim_id, verdict="insufficient", reason="soft-failed gloss")
+            for claim_id in summary.claim_ids
+        ],
+        knowledge=doc,
+        quality_mode="draft",
+        removed=[advice_id],
+    )
+    restored = next(page for page in formal.pages if page.type == "summary")
+    assert restored.body_points == summary.body_points
+    assert len(restored.claim_ids) == len(restored.body_points) == 3
+    assert restored.claim_ids[2] == advice_id
+    assert _bound_summary_bullets(restored) == restored.body_points
+
+
+def test_bind_summary_rejects_triad_when_a_claim_id_is_missing():
+    page = PageIntent(
+        id="intent-summary",
+        type="summary",
+        title="本课总结",
+        claim_ids=["claim-cause", "claim-rate"],
+        notes="",
+        selection_reason="总结",
+        quality_label="draft",
+        body_points=[
+            "用法一：原因・理由（公告等）",
+            "用法二：比例・単位（每个单位）",
+            "用法三：关于（罕用，通常用「について」）",
+        ],
+    )
+    with pytest.raises(BindError, match="learner bullets"):
+        _bind_summary(page, claims={})
+
+
 def test_summary_does_not_claim_about_sense_when_missing():
     summary = next(
-        page for page in _tsuki_summary_plan(include_about=False).pages if page.type == "summary"
+        page for page in _tsuki_summary_plan(include_about=False)[0].pages if page.type == "summary"
     )
     assert summary.body_points == [
         "用法一：原因・理由（公告等）",

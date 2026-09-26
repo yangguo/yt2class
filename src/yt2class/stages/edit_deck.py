@@ -1838,12 +1838,12 @@ def _sense_role_summary_rows(
             claim = _source_claim_on_page(page, knowledge)
             if claim is not None:
                 break
-        if claim is None:
-            continue
         if ordinal == 3:
             advice = _about_advice_claim(course_map, knowledge)
             if advice is not None:
                 claim = advice
+        if claim is None:
+            continue
         if ordinal == 3 and not (
             "について" in claim.text and _ADVICE_MARKER_RE.search(claim.text)
         ):
@@ -2289,6 +2289,70 @@ def _about_pages_are_duplicates(left: PageIntent, right: PageIntent) -> bool:
     return False
 
 
+def _role_ordinal(text: str) -> int | None:
+    stripped = text.strip()
+    for ordinal, prefix in ((1, "用法一"), (2, "用法二"), (3, "用法三")):
+        if stripped.startswith(prefix):
+            return ordinal
+    return None
+
+
+def _realign_sense_summary(
+    pages: list[PageIntent],
+    *,
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument,
+) -> list[PageIntent]:
+    """Give each compact 用法 summary line its own source claim id."""
+
+    rows = _sense_role_summary_rows(course_map, knowledge, pages) or []
+    claim_by_ordinal: dict[int, str] = {}
+    for _, claim_id, bullet in rows:
+        ordinal = _role_ordinal(bullet)
+        if ordinal is not None:
+            claim_by_ordinal[ordinal] = claim_id
+    advice = _about_advice_claim(course_map, knowledge)
+    if advice is not None:
+        claim_by_ordinal[3] = advice.id
+    if not rows and advice is None:
+        return pages
+    updated: list[PageIntent] = []
+    replaced = False
+    for page in pages:
+        if page.type != "summary" or replaced:
+            updated.append(page)
+            continue
+        points = [point.strip() for point in page.body_points if point.strip()]
+        role_shaped = bool(points) and all(_role_ordinal(point) for point in points)
+        if role_shaped:
+            new_ids: list[str] = []
+            for index, point in enumerate(points):
+                ordinal = _role_ordinal(point)
+                existing = page.claim_ids[index] if index < len(page.claim_ids) else None
+                chosen = claim_by_ordinal.get(ordinal) or existing
+                if not chosen:
+                    new_ids = []
+                    break
+                new_ids.append(chosen)
+            if len(new_ids) == len(points):
+                page = page.model_copy(update={"claim_ids": new_ids, "body_points": points})
+            replaced = True
+            updated.append(page)
+            continue
+        if rows:
+            page = page.model_copy(
+                update={
+                    "title": "本课总结",
+                    "claim_ids": [claim_id for _, claim_id, _ in rows][:4],
+                    "body_points": [bullet for _, _, bullet in rows][:4],
+                    "selection_reason": "总结",
+                }
+            )
+            replaced = True
+        updated.append(page)
+    return updated
+
+
 def _polish_learner_plan(
     plan: EditorialPlan,
     *,
@@ -2393,6 +2457,11 @@ def _polish_learner_plan(
                 update={"body_points": _dedupe_lines(points)[:4] or page.body_points}
             )
         )
+    rewritten = _realign_sense_summary(
+        rewritten,
+        course_map=course_map,
+        knowledge=knowledge,
+    )
     return _apply_pedagogical_page_order(
         plan.model_copy(update={"pages": rewritten}),
         knowledge=knowledge,

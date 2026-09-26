@@ -502,6 +502,11 @@ def _summary_display_bullets(
 def _bind_summary(page: PageIntent, *, claims: dict[str, SlideClaim]) -> list[SlidePage]:
     if not page.claim_ids:
         raise BindError(f"summary page {page.id!r} requires at least one claim")
+    if page.body_points and len(page.body_points) > len(page.claim_ids):
+        raise BindError(
+            f"summary page {page.id!r} has {len(page.body_points)} learner bullets "
+            f"and {len(page.claim_ids)} claim ids"
+        )
     chunks = [page.claim_ids[i : i + 4] for i in range(0, len(page.claim_ids), 4)]
     pages: list[SlidePage] = []
     for index, chunk in enumerate(chunks):
