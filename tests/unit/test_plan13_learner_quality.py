@@ -195,14 +195,16 @@ def test_plan13_rate_examples_frames_and_learner_copy():
     summary = plan.pages[-1]
     assert summary.type == "summary"
     summary_text = " ".join(summary.body_points)
-    assert "比例" in summary_text
-    assert "每个单位" in summary_text
-    assert "1500" not in summary_text
-    assert "ポイント" not in summary_text
-    assert "300円" not in summary_text
-    about_summary = next(point for point in summary.body_points if point.startswith("用法三"))
-    assert "使わない" not in about_summary
-    assert len(about_summary) < 80
+    body_claim_ids = {
+        claim_id
+        for page in plan.pages
+        if page.type in {"content", "quiz"}
+        for claim_id in page.claim_ids
+    }
+    assert summary.claim_ids
+    assert set(summary.claim_ids) <= body_claim_ids
+    assert "cap-" not in summary_text
+    assert "occ-" not in summary_text
 
     def indexes(prefix: str) -> list[int]:
         return [index for index, title in enumerate(titles) if title.startswith(prefix)]

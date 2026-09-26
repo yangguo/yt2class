@@ -20,9 +20,10 @@ from yt2class.domain.editorial import (
     PageQualityLabel,
     relabel_page,
 )
-from yt2class.domain.knowledge import KnowledgeDocument, KnowledgeUnit
+from yt2class.domain.knowledge import KnowledgeClaim, KnowledgeDocument, KnowledgeUnit
 from yt2class.domain.transcript import TranscriptDocument
 from yt2class.domain.visual import VisualCatalogue, is_accepted_visual_occurrence
+from yt2class.domain.resolvers import evidence_universe
 from yt2class.stages.llm_util import (
     attach_provider_payload,
     contains_path_literal,
@@ -39,7 +40,6 @@ from yt2class.stages.grammar_sense import (
     iter_rate_sentences,
     learner_page_title,
     representative_rate_snippets,
-    pick_summary_unit,
     pick_summary_unit_for_topic,
     sense_heading,
     sense_ordinal,
@@ -1753,97 +1753,130 @@ def _cover_page(
 def _summary_units_for_topics(
     course_map: CourseMap | None,
     knowledge: KnowledgeDocument,
-    selected: list[PageCandidate],
+    displayed_pages: list[PageIntent],
+    *,
+    valid_evidence_ids: set[str] | None = None,
 ) -> list[tuple[str, str, str]]:
-    """Return compact, evidence-backed role descriptions and their real claims."""
+    """Index retained topics using complete, source-backed claims when concise."""
 
-    rows: list[tuple[str, str, str]] = []
-    for ordinal in (1, 2, 3):
-        pool = sorted(
-            (row for row in selected if _candidate_ordinal(row, course_map, knowledge) == ordinal),
-            key=lambda row: (0 if row.kind == "example" else 1, row.start_seconds, row.id),
-        )
-        claim = None
-        for picked in pool:
-            unit = _unit_by_id(knowledge, picked.unit_id)
+    claims = {claim.id: claim for claim in knowledge.iter_claims()}
+    units_by_claim = {
+        claim.id: unit
+        for unit in knowledge.units
+        for claim in unit.claims
+    }
+    pages_by_topic: dict[str, PageIntent] = {}
+    claims_by_topic: dict[str, list[tuple[int, KnowledgeClaim]]] = {}
+    sequence = 0
+    for page in displayed_pages:
+        if page.type not in {"content", "quiz"}:
+            continue
+        for claim_id in page.claim_ids:
+            unit = units_by_claim.get(claim_id)
             if unit is None:
                 continue
-            claim = next(
-                (
-                    item for item in unit.claims
-                    if item.id in picked.claim_ids
-                    and item.provenance == "source"
-                    and item.evidence_ids
-                ),
-                None,
-            )
-            if claim is not None:
-                break
-        if claim is None:
+            pages_by_topic.setdefault(unit.topic_id, page)
+            claims_by_topic.setdefault(unit.topic_id, []).append((sequence, claims[claim_id]))
+            sequence += 1
+
+    kind_priority = {
+        "concept": 0,
+        "recap": 0,
+        "warning": 1,
+        "procedure": 2,
+        "comparison": 3,
+        "example": 4,
+    }
+    rows: list[tuple[str, str, str]] = []
+    for topic_id, topic_claims in claims_by_topic.items():
+        eligible: list[tuple[int, int, KnowledgeClaim]] = []
+        for sequence, claim in topic_claims:
+            evidence_ids = set(claim.evidence_ids)
+            if claim.provenance != "source" or not evidence_ids:
+                continue
+            if valid_evidence_ids is not None and not evidence_ids.intersection(valid_evidence_ids):
+                continue
+            unit = units_by_claim[claim.id]
+            eligible.append((kind_priority.get(unit.kind, 5), sequence, claim))
+        if not eligible:
             continue
-        if ordinal == 3:
-            advice_claim = next(
-                (
-                    source_claim
-                    for unit in knowledge.units
-                    if sense_ordinal(unit.topic_id, course_map, knowledge=knowledge) == 3
-                    for source_claim in unit.claims
-                    if source_claim.provenance == "source"
-                    and source_claim.evidence_ids
-                    and "について" in source_claim.text
-                    and re.search(
-                        r"通常|一般|普通|多数|多く|主に|常用|更常用",
-                        source_claim.text,
-                    )
-                ),
-                None,
-            )
-            if advice_claim is not None:
-                claim = advice_claim
-        if ordinal == 1:
-            bullet = "用法一：原因・理由（公告等）"
-        elif ordinal == 2:
-            bullet = "用法二：比例・単位（每个单位）"
-        elif "について" in claim.text and re.search(
-            r"通常|一般|普通|多数|多く|主に|常用|更常用",
-            claim.text,
-        ):
-            bullet = "用法三：关于（罕用，通常用「について」）"
+        _, _, claim = min(eligible, key=lambda row: (row[0], row[1]))
+        source_copy = sanitize_student_copy(claim.text).strip()
+        if source_copy and len(source_copy) <= 120:
+            bullet = source_copy
         else:
-            bullet = "用法三：关于"
-        rows.append(
-            (
-                sense_heading(ordinal),
-                claim.id,
-                bullet[:80],
+            bullet = _summary_topic_label(
+                topic_id,
+                course_map=course_map,
+                knowledge=knowledge,
+                page=pages_by_topic[topic_id],
             )
-        )
+        rows.append((topic_id, claim.id, bullet))
     return rows
 
 
-def _summary_page(
-    selected: list[PageCandidate],
+def _summary_topic_label(
+    topic_id: str,
     *,
     course_map: CourseMap | None,
     knowledge: KnowledgeDocument,
+    page: PageIntent,
+) -> str:
+    """Return a clean topic label for a long source claim, never an internal ID."""
+
+    topic = _topic_by_id(topic_id, course_map, knowledge)
+    topic_title = sanitize_student_copy(topic.title).strip() if topic is not None else ""
+    if topic_title and topic_title != topic_id and not contains_student_meta(topic_title):
+        return topic_title
+    page_title = sanitize_student_copy(page.title).strip()
+    if (
+        page_title
+        and page_title != topic_id
+        and not re.fullmatch(r"(?:topic|unit|claim)[-_][A-Za-z0-9_.-]+", page_title, re.I)
+        and not contains_student_meta(page_title)
+    ):
+        return page_title
+    return "课程要点"
+
+
+def _summary_page(
+    rows: list[tuple[str, str, str]],
+    *,
+    page_index: int = 0,
+    notes: str = "",
 ) -> PageIntent:
-    rows = _summary_units_for_topics(course_map, knowledge, selected)
-    claims = [claim_id for _, claim_id, _ in rows][:12]
-    body_points = [bullet for _, _, bullet in rows][:4]
-    if not claims:
-        claims = [claim_id for item in selected for claim_id in item.claim_ids][:4]
-        body_points = [sanitize_student_copy(item.title)[:80] for item in selected[:4]]
+    page_rows = rows[page_index * 4 : page_index * 4 + 4]
+    page_id = "intent-summary" if page_index == 0 else f"intent-summary-{page_index + 1}"
     return PageIntent(
-        id="intent-summary",
+        id=page_id,
         type="summary",
-        title="本课总结",
-        claim_ids=claims,
+        title="课程要点回顾",
+        claim_ids=[claim_id for _, claim_id, _ in page_rows],
         frame_ids=[],
-        notes="总结按课程主题覆盖各用法，并附代表性例句。",
-        selection_reason="总结",
+        notes=notes or "本页按保留的课程主题索引来源内容。",
+        selection_reason="来源内容回顾",
         quality_label="draft",
-        body_points=body_points,
+        body_points=[bullet for _, _, bullet in page_rows],
     )
+
+
+def _summary_evidence_ids(
+    knowledge: KnowledgeDocument,
+    transcript: TranscriptDocument | None,
+    visual: VisualCatalogue | None,
+) -> set[str] | None:
+    """Return source-matched evidence IDs for extractive summary selection."""
+
+    if transcript is None or visual is None:
+        return None
+    if transcript.source_id != knowledge.source_id or visual.source_id != knowledge.source_id:
+        return None
+    ids = evidence_universe(transcript, visual)
+    # Empty catalogues are common in offline fixtures and mean that the
+    # resolver cannot validate claim IDs; retain source-provenance claims and
+    # let the coverage diagnostic report evidence as unchecked instead of
+    # silently deleting every summary row.
+    return ids or None
 
 
 def _content_page(
@@ -2246,10 +2279,10 @@ def _polish_learner_plan(
         for point in page.body_points:
             cleaned = sanitize_student_copy(point).strip()
             if cleaned:
-                points.append(cleaned[:80])
+                points.append(cleaned[:200])
         rewritten.append(
             page.model_copy(
-                update={"body_points": _dedupe_lines(points)[:3] or page.body_points}
+                update={"body_points": _dedupe_lines(points)[:4] or page.body_points}
             )
         )
     return _apply_pedagogical_page_order(
@@ -2303,19 +2336,73 @@ def build_deterministic_plan(
                 knowledge=knowledge,
             )
         )
-    if any(item.claim_ids for item in selected):
-        pages.append(_summary_page(selected, course_map=course_map, knowledge=knowledge))
-    if len(pages) > max_pages:
-        body = _trim_content_pages(
-            pages[1:-1],
+
+    body = pages[1:]
+    content_budget = max(0, max_pages - 2)
+    if len(body) > content_budget:
+        trimmed = _trim_content_pages(
+            body,
             selected,
-            max_content=max(0, max_pages - 2),
+            max_content=content_budget,
             course_map=course_map,
             knowledge=knowledge,
         )
-        pages = [pages[0], *body, pages[-1]]
-        if len(pages) > max_pages:
-            pages = pages[:max_pages]
+        kept_ids = {page.id for page in trimmed}
+        for page in body:
+            if page.id in kept_ids:
+                continue
+            for claim_id in page.claim_ids:
+                if not any(item.claim_id == claim_id for item in omissions):
+                    omissions.append(
+                        Omission(
+                            topic_id=None,
+                            claim_id=claim_id,
+                            reason="page budget or representative-example compression",
+                        )
+                    )
+        body = trimmed[:content_budget]
+
+    summary_rows = _summary_units_for_topics(
+        course_map,
+        knowledge,
+        body,
+        valid_evidence_ids=_summary_evidence_ids(knowledge, transcript, visual),
+    )
+    available_summary_pages = max(0, max_pages - len(body) - 1)
+    summary_page_count = (len(summary_rows) + 3) // 4 if summary_rows else 0
+    if summary_page_count > available_summary_pages:
+        keep_count = available_summary_pages * 4
+        for topic_id, _claim_id, _bullet in summary_rows[keep_count:]:
+            if not any(item.topic_id == topic_id and item.claim_id is None for item in omissions):
+                omissions.append(
+                    Omission(
+                        topic_id=topic_id,
+                        claim_id=None,
+                        reason="summary coverage exceeds page budget; review required",
+                    )
+                )
+        summary_rows = summary_rows[:keep_count]
+        summary_page_count = available_summary_pages
+    elif not summary_rows and body:
+        for page in body:
+            for claim_id in page.claim_ids:
+                unit = _unit_for_claim_ids(knowledge, [claim_id])
+                if unit is None or any(
+                    item.topic_id == unit.topic_id and item.claim_id is None for item in omissions
+                ):
+                    continue
+                omissions.append(
+                    Omission(
+                        topic_id=unit.topic_id,
+                        claim_id=None,
+                        reason="no source-backed summary content available; review required",
+                    )
+                )
+    summaries = [
+        _summary_page(summary_rows, page_index=index)
+        for index in range(summary_page_count)
+    ]
+    pages = [pages[0], *body, *summaries]
     summary_claims = {
         claim_id
         for page in pages
@@ -2456,12 +2543,13 @@ def apply_model_organization(
     if extra:
         raise EditorContractError(f"model added pages outside the selected partition {sorted(extra)}")
     cover = next(page for page in fallback.pages if page.type == "cover")
-    summary = next((page for page in fallback.pages if page.type == "summary"), None)
-    body = [page for page in fallback.pages if page.id not in {cover.id, *( [summary.id] if summary else [])}]
+    summaries = [page for page in fallback.pages if page.type == "summary"]
+    summary_ids = {page.id for page in summaries}
+    body = [page for page in fallback.pages if page.id != cover.id and page.id not in summary_ids]
     model_body_order = [
         page.id
         for page in planned.pages
-        if page.id not in {cover.id, *( [summary.id] if summary else [])}
+        if page.id != cover.id and page.id not in summary_ids
     ]
     if set(model_body_order) != {page.id for page in body}:
         raise EditorContractError("model changed the selected page partition")
@@ -2497,7 +2585,7 @@ def apply_model_organization(
     merged = [overlay(cover, model_by_id[cover.id])]
     for page_id in model_body_order:
         merged.append(overlay(fallback_by_id[page_id], model_by_id[page_id]))
-    if summary is not None:
+    for summary in summaries:
         merged.append(overlay(summary, model_by_id[summary.id]))
     return fallback.model_copy(update={"pages": merged, "omissions": list(fallback.omissions)})
 

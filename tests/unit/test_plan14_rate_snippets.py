@@ -197,12 +197,15 @@ def test_plan14_usage_two_keeps_three_kinds_from_other_topics():
     assert "claim-points" in usage_two[0].claim_ids
 
     summary = next(page for page in plan.pages if page.type == "summary")
-    rate_summary = next(point for point in summary.body_points if point.startswith("用法二"))
-    assert rate_summary.startswith("用法二：比例・単位")
-    assert "每个单位" in rate_summary
-    assert "1時間につき1500円" not in rate_summary
-    assert "10ポイント" not in rate_summary
-    assert "300円" not in rate_summary
+    body_claim_ids = {
+        claim_id
+        for page in plan.pages
+        if page.type in {"content", "quiz"}
+        for claim_id in page.claim_ids
+    }
+    assert summary.claim_ids
+    assert set(summary.claim_ids) <= body_claim_ids
+    assert any("1時間につき" in point for point in summary.body_points)
 
     def indexes(prefix: str) -> list[int]:
         return [index for index, title in enumerate(titles) if title.startswith(prefix)]

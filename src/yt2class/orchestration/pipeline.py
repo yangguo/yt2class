@@ -57,7 +57,13 @@ from yt2class.orchestration.run_request import (
 )
 from yt2class.orchestration.tool_probe import probe_tool_versions
 from yt2class.orchestration.delivery import bind_plan_to_spec, render_spec
-from yt2class.orchestration.edit import plan_deck, verify_plan, write_editorial_artifacts
+from yt2class.orchestration.edit import (
+    load_persisted_knowledge,
+    plan_deck,
+    verify_plan,
+    write_content_coverage_artifact,
+    write_editorial_artifacts,
+)
 from yt2class.orchestration.manifest_io import (
     ALL_STAGES,
     initial_manifest,
@@ -498,6 +504,7 @@ def run_editorial_stages(ctx: RunContext, analysis: AnalysisResult, bundle: Evid
     transcript = bundle.transcript
     visual = analysis.visual
     course_map = analysis.course_map
+    editorial_dir = ctx.workspace.root / "editorial"
     revision = ctx.review_revision()
 
     plan_key = compute_cache_key(
@@ -580,7 +587,7 @@ def run_editorial_stages(ctx: RunContext, analysis: AnalysisResult, bundle: Evid
     if validated_cache_hit(ctx.workspace.root, "verify_claims", verify_key, _validate_report):
         report = load_validated_json(report_path, VerificationReport)
         outcome_plan = plan
-        outcome_knowledge = knowledge
+        outcome_knowledge = load_persisted_knowledge(editorial_dir, knowledge)
         ctx.manifest = set_stage_status(ctx.manifest, "verify_claims", "complete", cache_key=verify_key)
         _persist(ctx)
     else:
@@ -606,7 +613,6 @@ def run_editorial_stages(ctx: RunContext, analysis: AnalysisResult, bundle: Evid
             outcome_plan = outcome.plan
         outcome_knowledge = outcome.knowledge
 
-    editorial_dir = ctx.workspace.root / "editorial"
     if revision > 0:
         disk_plan = _load_editorial_plan(ctx)
         if disk_plan is not None:
@@ -626,7 +632,18 @@ def run_editorial_stages(ctx: RunContext, analysis: AnalysisResult, bundle: Evid
             editorial_dir,
             report=report,
             knowledge=outcome_knowledge,
+            transcript=transcript,
+            visual=visual,
         )
+    final_plan = _load_editorial_plan(ctx) or outcome_plan
+    write_content_coverage_artifact(
+        outcome_knowledge,
+        final_plan,
+        editorial_dir,
+        transcript=transcript,
+        visual=visual,
+        verification=report,
+    )
     if ctx.config.quality.mode == "strict" and report.quality_mode != "strict":
         review_path = editorial_dir / "review.html"
         raise PipelinePaused(

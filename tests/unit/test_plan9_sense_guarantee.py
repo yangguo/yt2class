@@ -224,7 +224,12 @@ def test_edit_deck_plan9_style_opaque_blocks(tmp_path):
     content_titles = [page.title for page in plan.pages if page.type == "content"]
     assert any(t.startswith("用法二：比例・単位") for t in content_titles)
     summary = next(page for page in plan.pages if page.type == "summary")
-    rate_line = next(line for line in summary.body_points if line.startswith("用法二"))
-    assert "比例・単位" in rate_line
-    assert "每个单位" in rate_line
-    assert "1500" not in rate_line and "1時間" not in rate_line
+    body_claim_ids = {
+        claim_id
+        for page in plan.pages
+        if page.type in {"content", "quiz"}
+        for claim_id in page.claim_ids
+    }
+    assert summary.claim_ids
+    assert set(summary.claim_ids) <= body_claim_ids
+    assert any("1時間につき1500円" in line for line in summary.body_points)

@@ -133,5 +133,12 @@ def test_plan12_empty_intro_attachment_under_cause_locks_connective_before_sense
     assert plan.pages[-1].type == "summary"
     summary = plan.pages[-1]
     joined = " ".join(summary.body_points)
-    assert "用法一" in joined and "用法二" in joined and "用法三" in joined
-    assert "每个单位" in joined
+    body_claim_ids = {
+        claim_id
+        for page in plan.pages
+        if page.type in {"content", "quiz"}
+        for claim_id in page.claim_ids
+    }
+    assert summary.claim_ids
+    assert set(summary.claim_ids) <= body_claim_ids
+    assert "につき" in joined

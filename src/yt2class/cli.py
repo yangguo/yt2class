@@ -259,7 +259,13 @@ def plan(
             order=order,  # type: ignore[arg-type]
             provider=provider,
         )
-        paths = write_editorial_artifacts(result, output)
+        paths = write_editorial_artifacts(
+            result,
+            output,
+            knowledge=doc,
+            transcript=speech,
+            visual=frames,
+        )
     except (OSError, ValueError) as error:
         typer.echo(f"Plan failed: {error}", err=True)
         raise typer.Exit(code=1) from error
@@ -302,7 +308,12 @@ def verify(
             provider=provider,
         )
         paths = write_editorial_artifacts(
-            outcome.plan, output, report=outcome.report, knowledge=outcome.knowledge
+            outcome.plan,
+            output,
+            report=outcome.report,
+            knowledge=outcome.knowledge,
+            transcript=speech,
+            visual=frames,
         )
     except StrictVerificationError as error:
         typer.echo(f"Verify refused strict output: {error}", err=True)
@@ -312,6 +323,8 @@ def verify(
                 output,
                 report=error.outcome.report,
                 knowledge=error.outcome.knowledge,
+                transcript=speech,
+                visual=frames,
             )
         raise typer.Exit(code=2) from error
     except (OSError, ValueError) as error:
@@ -465,7 +478,13 @@ def review(
                 invalidate_stage_tree(resolved_run, "bind_spec")
                 output = resolved_run / "editorial"
         paths = write_editorial_artifacts(
-            planned, output, report=report, bundle=bundle, knowledge=doc
+            planned,
+            output,
+            report=report,
+            bundle=bundle,
+            knowledge=doc,
+            transcript=speech,
+            visual=frames,
         )
     except StrictClosureError as error:
         typer.echo(f"Review refused strict render: {error}", err=True)

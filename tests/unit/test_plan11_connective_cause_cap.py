@@ -156,10 +156,15 @@ def test_plan11_cause_crowd_keeps_connective_and_caps_usage_one():
     assert "mandatory-connective lock" in connective.selection_reason
     summary = next(page for page in plan.pages if page.type == "summary")
     joined = " ".join(summary.body_points)
-    assert "用法一" in joined
-    assert "用法二" in joined
-    assert "用法三" in joined
-    assert "每个单位" in joined
+    body_claim_ids = {
+        claim_id
+        for page in plan.pages
+        if page.type in {"content", "quiz"}
+        for claim_id in page.claim_ids
+    }
+    assert summary.claim_ids
+    assert set(summary.claim_ids) <= body_claim_ids
+    assert "につき" in joined
 
 
 def test_connective_gloss_does_not_consume_cause_ordinal():

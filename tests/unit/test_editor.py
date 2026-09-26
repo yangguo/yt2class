@@ -777,9 +777,10 @@ def test_summary_lists_each_course_topic():
     )
     summary = next(page for page in plan.pages if page.type == "summary")
     joined = " ".join(summary.body_points)
-    assert "用法一" in joined
-    assert "用法二" in joined
-    assert "用法三" in joined
+    assert set(summary.claim_ids) == {"claim-u1", "claim-u2", "claim-u3"}
+    assert "用法1：原因理由の例。" in joined
+    assert "用法2：一個につき五百円。" in joined
+    assert "用法3：自衛隊について。" in joined
 
 
 def test_meta_transition_units_are_not_selected_for_slides():
