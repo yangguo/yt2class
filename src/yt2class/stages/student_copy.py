@@ -50,6 +50,10 @@ _TIMING_RANGE_RE = re.compile(
     re.I,
 )
 _TIMING_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9.])\d+(?:\.\d+)?s\b", re.I)
+# Media offsets such as 「约374.46秒起」, not a taught duration like 「约30秒」.
+_APPROX_OFFSET_RE = re.compile(
+    r"[，,、]?\s*(?:大约|大約|约|約)\s*(?:\d{3,}(?:\.\d+)?|\d+\.\d+)\s*秒(?:起)?"
+)
 _EMPTY_BOARD_FRAME_RE = re.compile(r"板书帧\s*[（(]\s*[）)]")
 _BOARD_LABEL_RE = re.compile(r"板书对应\s*[:：]?")
 _PROPORTION_TSUKI_RE = re.compile(
@@ -105,7 +109,8 @@ def _strip_diagnostic_residue(text: str) -> str:
 
 
 def _strip_timing_scaffolds(text: str) -> str:
-    cleaned = _TIMING_RANGE_RE.sub("", text)
+    cleaned = _APPROX_OFFSET_RE.sub("", text)
+    cleaned = _TIMING_RANGE_RE.sub("", cleaned)
     cleaned = _TIMING_TOKEN_RE.sub("", cleaned)
     cleaned = _EMPTY_BOARD_FRAME_RE.sub("", cleaned)
     cleaned = _BOARD_LABEL_RE.sub("", cleaned)

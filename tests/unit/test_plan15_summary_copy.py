@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from yt2class.adapters.providers.base import FakeProvider
-from yt2class.domain.editorial import PageIntent
+from yt2class.domain.editorial import EditorialPlan, PageIntent
 from yt2class.domain.slide_spec_v3 import SlideClaim
 from yt2class.domain.verification import ClaimVerdict
 from yt2class.stages.bind_spec import BindError, _bind_summary
@@ -517,6 +517,114 @@ def test_formalize_restores_usage_three_claim_when_summary_claims_were_truncated
     assert len(restored.claim_ids) == len(restored.body_points) == 3
     assert restored.claim_ids[2] == advice_id
     assert _bound_summary_bullets(restored) == restored.body_points
+
+
+def _generic_summary_plan(claim_ids: list[str], bullets: list[str]) -> tuple[EditorialPlan, object]:
+    doc = knowledge(
+        *[
+            make_unit(
+                f"unit-{claim_id}",
+                claim_id,
+                bullets[index],
+                [f"cap-{index}"],
+                topic_id=f"topic-{index}",
+                start=float(index),
+                end=float(index) + 1.0,
+            )
+            for index, claim_id in enumerate(claim_ids)
+        ]
+    )
+    plan = EditorialPlan(
+        schema_version="1.0",
+        source_id="src-demo",
+        target_pages=4,
+        max_pages=8,
+        pages=[
+            PageIntent(
+                id="cover",
+                type="cover",
+                title="课程导入",
+                claim_ids=[],
+                notes="",
+                selection_reason="封面",
+                quality_label="draft",
+            ),
+            PageIntent(
+                id="intent-summary",
+                type="summary",
+                title="课程要点回顾",
+                claim_ids=claim_ids,
+                notes="",
+                selection_reason="来源内容回顾",
+                quality_label="draft",
+                body_points=bullets,
+            ),
+        ],
+    )
+    return plan, doc
+
+
+def test_formalize_drops_generic_summary_bullet_when_its_claim_is_removed():
+    bullets = [
+        "本节承接上一部分，还有一小部分い形容词。",
+        "「に」也表示时间点。",
+        "警察在犯人离开超市时逮捕了他。",
+        "正在吃午餐时，上司打来紧急联络。",
+    ]
+    claim_ids = ["claim-a", "claim-b", "claim-c", "claim-d"]
+    plan, doc = _generic_summary_plan(claim_ids, bullets)
+    verdicts = [
+        ClaimVerdict(claim_id=claim_id, verdict="insufficient", reason="soft-failed gloss")
+        for claim_id in claim_ids
+    ]
+    formal = formalize_plan(
+        plan,
+        verdicts=verdicts,
+        knowledge=doc,
+        quality_mode="draft",
+        removed=["claim-a"],
+    )
+    summary = next(page for page in formal.pages if page.type == "summary")
+    assert summary.claim_ids == ["claim-b", "claim-c", "claim-d"]
+    assert summary.body_points == bullets[1:]
+    assert len(summary.body_points) == len(summary.claim_ids)
+    assert _bound_summary_bullets(summary) == summary.body_points
+
+    middle = formalize_plan(
+        plan,
+        verdicts=verdicts,
+        knowledge=doc,
+        quality_mode="draft",
+        removed=["claim-c"],
+    )
+    middle_summary = next(page for page in middle.pages if page.type == "summary")
+    assert middle_summary.claim_ids == ["claim-a", "claim-b", "claim-d"]
+    assert middle_summary.body_points == [bullets[0], bullets[1], bullets[3]]
+    assert _bound_summary_bullets(middle_summary) == middle_summary.body_points
+
+    strict = formalize_plan(
+        plan,
+        verdicts=[
+            ClaimVerdict(claim_id="claim-a", verdict="insufficient", reason="ungrounded"),
+            *[
+                ClaimVerdict(
+                    claim_id=claim_id,
+                    verdict="supported",
+                    supporting_ids=[f"cap-{index}"],
+                    reason="grounded",
+                )
+                for index, claim_id in enumerate(claim_ids)
+                if claim_id != "claim-a"
+            ],
+        ],
+        knowledge=doc,
+        quality_mode="strict",
+        removed=[],
+    )
+    strict_summary = next(page for page in strict.pages if page.type == "summary")
+    assert strict_summary.claim_ids == ["claim-b", "claim-c", "claim-d"]
+    assert strict_summary.body_points == bullets[1:]
+    assert _bound_summary_bullets(strict_summary) == strict_summary.body_points
 
 
 def test_bind_summary_rejects_triad_when_a_claim_id_is_missing():

@@ -664,6 +664,28 @@ def _is_protected_connective_page(page: PageIntent, knowledge: KnowledgeDocument
     return "につき" in blob or "～つき" in blob or "〜つき" in blob
 
 
+def _summary_body_for_claims(page: PageIntent, keep: list[str]) -> list[str]:
+    """Keep learner bullets index-aligned with the summary claims that remain.
+
+    ``body_points[i]`` is the display line for ``claim_ids[i]``. Dropping a
+    claim without its bullet leaves bind with more bullets than claim ids.
+    """
+
+    if page.type != "summary" or not page.body_points:
+        return list(page.body_points)
+    keep_ids = set(keep)
+    aligned = [
+        page.body_points[index]
+        for index, claim_id in enumerate(page.claim_ids)
+        if claim_id in keep_ids and index < len(page.body_points)
+    ]
+    # A bullet with no claim slot was not paired with a claim removed here.
+    # Sense-summary realignment may attach the missing id; do not discard it.
+    if len(page.body_points) > len(page.claim_ids):
+        aligned.extend(page.body_points[len(page.claim_ids) :])
+    return aligned
+
+
 def formalize_plan(
     plan: EditorialPlan,
     *,
@@ -698,7 +720,7 @@ def formalize_plan(
             dropped = []
         for claim_id in dropped:
             extra_omissions.append(Omission(claim_id=claim_id, reason="removed after verification"))
-        if page.type == "content" and page.claim_ids and not keep:
+        if page.claim_ids and not keep and page.type in {"content", "summary"}:
             continue
         if quality_mode == "evidence-only":
             label = "evidence-only"
@@ -710,7 +732,12 @@ def formalize_plan(
             claim_id not in supported for claim_id in keep
         ):
             label = "draft"
-        updated = page.model_copy(update={"claim_ids": keep})
+        updated = page.model_copy(
+            update={
+                "claim_ids": keep,
+                "body_points": _summary_body_for_claims(page, keep),
+            }
+        )
         if _is_practice(knowledge, keep) and updated.type == "content":
             updated = updated.model_copy(update={"type": "quiz"})
         pages.append(relabel_page(updated, label))

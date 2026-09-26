@@ -180,6 +180,17 @@ def test_sanitize_keeps_real_kouka_and_calendar_month():
     assert sanitize_student_copy("2月1日から改定します。") == "2月1日から改定します。"
 
 
+def test_sanitize_strips_approximate_media_offsets():
+    raw = "例1（直接作用的動作，约374.46秒起）：警察在犯人离开超市时逮捕了他。"
+    cleaned = sanitize_student_copy(raw)
+    assert cleaned == "例1（直接作用的動作）：警察在犯人离开超市时逮捕了他。"
+    assert "374.46" not in cleaned
+    titled = sanitize_student_copy("例1（直接作用的動作，約374.46秒起）：板书例句")
+    assert "374.46" not in titled
+    assert "約" not in titled
+    assert sanitize_student_copy("请等约30秒。") == "请等约30秒。"
+
+
 def test_sanitize_strips_board_sync_and_teacher_confirm():
     raw = "板书同步 timed 老师确认用法二"
     cleaned = sanitize_student_copy(raw)
