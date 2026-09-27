@@ -4,7 +4,9 @@ Turn course videos into source-faithful PPTX lecture notes: transcript and visua
 
 **Shipped (M0–M7 foundation):** versioned contracts, evidence extraction, analysis, editorial/verify/review, bind/render, `build-run` / `batch` / `resume` / `doctor`, OpenRouter and Volcengine Ark Agent Plan vision providers, OCR/ASR fallbacks, and opt-in `native-video` / `hybrid` analysis modes.
 
-**Quality status:** pull-request and `master` CI run the full offline suite. A dated Ark Plan VGQ6 run passed structural checks for 用法一/二/三, the 用法二 summary, monotonic seek links, and mandatory-sense selection. Visual QA, gold-outline compression, and final human review remain open; see [known limits](docs/examples/m7-known-limits.md).
+**Quality status:** pull-request and `master` CI run the full offline suite. A prior dated Ark Plan VGQ6 run checked structural sense coverage and mandatory selection on an earlier revision. The PR #15 follow-up adds source-backed topic summaries and claim-level coverage diagnostics across course types. Existing grammar-specific selection and transcription rules are still a compatibility path, not a general quality guarantee. The current revision still needs a fresh VGQ6/Ark run, visual QA, gold-outline comparison, and human review; see [known limits](docs/examples/m7-known-limits.md) and the [generic quality design and rule inventory](docs/plans/2026-09-26-generic-editorial-quality.md).
+
+The seven-page example is a compact regression case, not a fixed deck length. `editor.target_pages` and `editor.max_pages` are configurable for the video's length and complexity; the default course configuration uses 12 and 20, respectively.
 
 **Roadmap:** complete dated live scorecards, visual QA, human-review closure, and release hardening — see the [implementation plan](docs/plans/2026-08-11-youtube-to-ppt-implementation.md).
 
@@ -70,6 +72,24 @@ uv run yt2class gemini-preview --links courses.txt --output output/gemini-list
 ```
 
 `courses.txt` supports blank lines and `#` comments. Install `yt-dlp` to expand playlists. Use `--prompt-file prompt.txt` for a custom analysis prompt and `--model MODEL` to select another Gemini model with YouTube video input support. Requests run once per video without automatic retries; failures do not stop the remaining items. Check current free-tier limits and data-use terms in [Google AI Studio](https://ai.google.dev/gemini-api/docs/rate-limits) before analyzing sensitive content.
+
+### Direct Gemini video preview (experimental)
+
+`gemini-preview` sends a **public YouTube video URL directly to Google's Gemini Developer API** with `gemini-3.8-flash`. It produces one Markdown analysis and one JSON record (source URL, model, exact prompt, response, token usage) per video. It is a comparison tool: its output is **not** a verified lesson or a PPTX, and its generated timestamps must be checked against the source video. The command uses neither OpenRouter nor local video download.
+
+```bash
+export GEMINI_API_KEY="your-Google-AI-Studio-key"
+uv run yt2class gemini-preview \
+  --url 'https://www.youtube.com/watch?v=VGQ6KuiZKKA' \
+  --output output/gemini-preview
+
+# For several independent videos, use repeated --url or a UTF-8 file with one URL per line:
+uv run yt2class gemini-preview --links courses.txt --output output/gemini-preview
+```
+
+The default Chinese prompt asks for a summary, every identifiable example, important facts, timestamped chapters, and uncertain details. Use `--prompt-file prompt.txt` to keep an alternative prompt identical across comparisons. A link file may contain blank lines and `#` comments; playlist URLs are not supported. A failed item does not stop the remaining list. The command makes one request per video without automatic retries, so a free-tier `429` is reported rather than repeatedly consuming quota.
+
+Google lists Gemini 3.8 Flash input/output as free **for projects on its API Free Tier**; a key attached to a paid project may be billed. Free-tier rate limits vary by project and are visible in [Google AI Studio](https://ai.google.dev/gemini-api/docs/rate-limits). Google's [YouTube input documentation](https://ai.google.dev/gemini-api/docs/generate-content/video-understanding) says the URL feature is in preview, accepts public videos, and caps free-tier YouTube input at eight hours per day; terms and limits may change. Free-tier content may be used to improve Google's products; consult the [current pricing and data-use table](https://ai.google.dev/gemini-api/docs/pricing) before submitting sensitive material.
 
 Example configs:
 
@@ -213,12 +233,26 @@ runs/<run-id>/
   evidence/
   analysis/
   editorial/
+    content-coverage.json
   delivery/lesson.pptx
   delivery/slide-spec.v3.json
   previews/
 ```
 
 `doctor --json` checks tools, renderer bundle, ASR/OCR availability, fonts, and configured Ark credentials without printing secrets.
+
+`editorial/content-coverage.json` traces knowledge claims to body-page references,
+summary-only references, explicit omissions, or unaccounted content. It also
+reports inconsistent references and missing topic summaries. A claim ID on a page
+proves structural linkage only: the report does not certify that the visible
+wording expresses the claim, that the evidence is semantically correct, or that
+all facts in the original video were extracted. See the
+[generic quality design](docs/plans/2026-09-26-generic-editorial-quality.md).
+
+Resume preserves existing editorial plans, including human edits. To evaluate a
+new editing policy, generate a fresh plan/run; do not assume resuming an old run
+replaces its saved plan. Coverage diagnostics are refreshed against the plan
+actually used for delivery.
 
 ## Legacy prototype: `build --links`
 

@@ -5,6 +5,7 @@ Independent of the prototype ``yt2class build`` pipeline and of M4 SlideSpec.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from yt2class.adapters.providers.base import Provider
@@ -18,6 +19,7 @@ from yt2class.domain.transcript import TranscriptDocument
 from yt2class.domain.verification import QualityMode, VerificationReport
 from yt2class.domain.visual import VisualCatalogue
 from yt2class.orchestration.analyze import default_capabilities
+from yt2class.stages.content_coverage import build_content_coverage_report
 from yt2class.stages.edit_deck import edit_deck
 from yt2class.stages.review import build_review_bundle, render_review_html
 from yt2class.stages.verify_claims import StrictVerificationError, VerifyOutcome, verify_claims
@@ -76,6 +78,8 @@ def write_editorial_artifacts(
     report: VerificationReport | None = None,
     bundle: ReviewBundle | None = None,
     knowledge: KnowledgeDocument | None = None,
+    transcript: TranscriptDocument | None = None,
+    visual: VisualCatalogue | None = None,
 ) -> dict[str, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     paths = {"plan": output_dir / "editorial-plan.json"}
@@ -83,6 +87,14 @@ def write_editorial_artifacts(
     if knowledge is not None:
         paths["knowledge"] = output_dir / "knowledge.json"
         paths["knowledge"].write_text(knowledge.model_dump_json(indent=2), encoding="utf-8")
+        paths["content_coverage"] = write_content_coverage_artifact(
+            knowledge,
+            plan,
+            output_dir,
+            transcript=transcript,
+            visual=visual,
+            verification=report,
+        )
     if report is not None:
         paths["report"] = output_dir / "verification-report.json"
         paths["report"].write_text(report.model_dump_json(indent=2), encoding="utf-8")
@@ -92,6 +104,33 @@ def write_editorial_artifacts(
         paths["review_json"].write_text(bundle.model_dump_json(indent=2), encoding="utf-8")
         paths["review_html"].write_text(render_review_html(bundle), encoding="utf-8")
     return paths
+
+
+def write_content_coverage_artifact(
+    knowledge: KnowledgeDocument,
+    plan: EditorialPlan,
+    output_dir: Path,
+    *,
+    transcript: TranscriptDocument | None = None,
+    visual: VisualCatalogue | None = None,
+    verification: VerificationReport | None = None,
+) -> Path:
+    """Write the deterministic reference-level report without replacing plan artifacts."""
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / "content-coverage.json"
+    report = build_content_coverage_report(
+        knowledge,
+        plan,
+        transcript=transcript,
+        visual=visual,
+        verification=verification,
+    )
+    path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return path
 
 
 def load_persisted_knowledge(output_dir: Path, fallback: KnowledgeDocument) -> KnowledgeDocument:
@@ -167,5 +206,6 @@ __all__ = [
     "load_persisted_revision",
     "plan_deck",
     "verify_plan",
+    "write_content_coverage_artifact",
     "write_editorial_artifacts",
 ]

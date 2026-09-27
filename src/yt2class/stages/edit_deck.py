@@ -20,9 +20,10 @@ from yt2class.domain.editorial import (
     PageQualityLabel,
     relabel_page,
 )
-from yt2class.domain.knowledge import KnowledgeDocument, KnowledgeUnit
+from yt2class.domain.knowledge import KnowledgeClaim, KnowledgeDocument, KnowledgeUnit
 from yt2class.domain.transcript import TranscriptDocument
 from yt2class.domain.visual import VisualCatalogue, is_accepted_visual_occurrence
+from yt2class.domain.resolvers import evidence_universe
 from yt2class.stages.llm_util import (
     attach_provider_payload,
     contains_path_literal,
@@ -30,16 +31,25 @@ from yt2class.stages.llm_util import (
     model_request,
 )
 from yt2class.stages.grammar_sense import (
+    CONNECTIVE_HEADING,
+    is_connective_topic,
     is_fixed_sense_heading,
     is_fixed_sense_summary_line,
+    is_grammar_connective_topic,
+    is_tsuki_grammar_lesson,
+    iter_rate_sentences,
     learner_page_title,
-    pick_summary_unit,
+    representative_rate_snippets,
     pick_summary_unit_for_topic,
     sense_heading,
     sense_ordinal,
     sense_topic_ids,
     summary_bullet_for_sense,
+    text_is_rate_only,
+    text_is_rate_proportion,
+    topic_for_connective,
     topic_for_sense_ordinal,
+    unit_is_connective_attachment,
 )
 from yt2class.stages.student_copy import contains_student_meta, sanitize_student_copy
 
@@ -53,6 +63,16 @@ KIND_IMPORTANCE = {
 }
 
 _MAX_EXAMPLES_PER_TOPIC = 2
+_MAX_CAUSE_CONTENT_PAGES = 2
+_MAX_ABOUT_CONTENT_PAGES = 1
+_CONVERSATION_RE = re.compile(
+    r"会話|对话|對話|會話|ネットカフェ|网咖|網咖|conversation|dialogue",
+    re.I,
+)
+_PEDAGOGICAL_CONNECTIVE_RE = re.compile(r"接续|接続|连接|名詞|名词|数量詞|数量词")
+_ENGLISH_INTRO_RE = re.compile(
+    r"(?i)\b(?:introduction|intro|overview|what\s+goes\s+before)\b"
+)
 
 
 class EditorContractError(ValueError):
@@ -81,6 +101,93 @@ class PageCandidate:
 
 def _unit_by_id(knowledge: KnowledgeDocument, unit_id: str) -> KnowledgeUnit | None:
     return next((unit for unit in knowledge.units if unit.id == unit_id), None)
+
+
+def _unit_for_claim_ids(
+    knowledge: KnowledgeDocument,
+    claim_ids: list[str],
+) -> KnowledgeUnit | None:
+    wanted = set(claim_ids)
+    if not wanted:
+        return None
+    return next(
+        (
+            unit
+            for unit in knowledge.units
+            if any(claim.id in wanted for claim in unit.claims)
+        ),
+        None,
+    )
+
+
+def _candidate_is_connective(
+    item: PageCandidate,
+    knowledge: KnowledgeDocument,
+    course_map: CourseMap | None,
+) -> bool:
+    if not is_tsuki_grammar_lesson(course_map, knowledge):
+        return False
+    unit = _unit_by_id(knowledge, item.unit_id)
+    if unit is None:
+        return False
+    topic = _topic_by_id(item.topic_id, course_map, knowledge)
+    return unit_is_connective_attachment(unit, topic)
+
+
+def _row_is_rate_only(
+    item: PageCandidate,
+    knowledge: KnowledgeDocument,
+) -> bool:
+    unit = _unit_by_id(knowledge, item.unit_id)
+    text = _unit_display_text(unit) if unit is not None else item.notes
+    return text_is_rate_only(text)
+
+
+def _row_has_rate_snippet(
+    item: PageCandidate,
+    knowledge: KnowledgeDocument,
+) -> bool:
+    unit = _unit_by_id(knowledge, item.unit_id)
+    text = _unit_display_text(unit) if unit is not None else item.notes
+    return bool(representative_rate_snippets([text]))
+
+
+def _candidate_ordinal(
+    item: PageCandidate,
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument,
+) -> int | None:
+    """Sense slot for ordering. Proportion copy is 用法二 even on a cause topic."""
+
+    if _candidate_is_connective(item, knowledge, course_map):
+        return None
+    if _row_is_rate_only(item, knowledge):
+        return 2
+    return sense_ordinal(item.topic_id, course_map, knowledge=knowledge)
+
+
+def _is_usage_cause_page(
+    item: PageCandidate,
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument,
+) -> bool:
+    """用法一 page that is not an attachment gloss or a proportion example."""
+
+    if _candidate_is_connective(item, knowledge, course_map):
+        return False
+    if _row_is_rate_only(item, knowledge):
+        return False
+    return sense_ordinal(item.topic_id, course_map, knowledge=knowledge) == 1
+
+
+def _is_usage_about_page(
+    item: PageCandidate,
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument,
+) -> bool:
+    if _candidate_is_connective(item, knowledge, course_map) or _row_is_rate_only(item, knowledge):
+        return False
+    return sense_ordinal(item.topic_id, course_map, knowledge=knowledge) == 3
 
 
 def prerequisite_parents(knowledge: KnowledgeDocument) -> dict[str, set[str]]:
@@ -156,12 +263,102 @@ def _frame_score(unit: KnowledgeUnit, occurrence: object, candidate: object | No
     return 0.45 * relevance + 0.30 * legibility + 0.15 * complete + 0.10 * represent
 
 
+def _frame_ocr_text(frame_id: str, visual: VisualCatalogue) -> str:
+    return "\n".join(
+        region.text
+        for region in visual.ocr_regions
+        if region.parent_occurrence_id == frame_id
+    )
+
+
+def _frame_context_text(
+    frame_id: str,
+    visual: VisualCatalogue,
+    transcript: TranscriptDocument | None,
+) -> str:
+    parts = [_frame_ocr_text(frame_id, visual)]
+    occurrence = next((item for item in visual.occurrences if item.id == frame_id), None)
+    if occurrence is not None and transcript is not None:
+        stamp = _occurrence_time(occurrence)
+        for segment in transcript.segments:
+            if segment.start_seconds - 1 <= stamp <= segment.end_seconds + 1:
+                parts.append(segment.text_original)
+    return "\n".join(part for part in parts if part.strip())
+
+
+def _frame_is_conversation(
+    frame_id: str,
+    visual: VisualCatalogue,
+    transcript: TranscriptDocument | None,
+) -> bool:
+    return _CONVERSATION_RE.search(_frame_context_text(frame_id, visual, transcript)) is not None
+
+
+def _frame_shows_rate(
+    frame_id: str,
+    visual: VisualCatalogue,
+    transcript: TranscriptDocument | None,
+) -> bool:
+    """A 例文 board or nearby caption that would show a proportion line."""
+
+    ocr = _frame_ocr_text(frame_id, visual)
+    if any(text_is_rate_proportion(sentence) for sentence in iter_rate_sentences(ocr)):
+        return True
+    if text_is_rate_proportion(ocr):
+        return True
+    mixed_board = "例文" in ocr or len(re.findall(r"につき|つき", ocr)) >= 2
+    if not mixed_board or transcript is None:
+        return False
+    occurrence = next((item for item in visual.occurrences if item.id == frame_id), None)
+    if occurrence is None:
+        return False
+    stamp = _occurrence_time(occurrence)
+    for segment in transcript.segments:
+        midpoint = (segment.start_seconds + segment.end_seconds) / 2
+        if abs(midpoint - stamp) > 45:
+            continue
+        if iter_rate_sentences(segment.text_original):
+            return True
+    return False
+
+
+def _frame_is_pedagogical_connective(
+    frame_id: str,
+    visual: VisualCatalogue,
+    transcript: TranscriptDocument | None,
+) -> bool:
+    text = _frame_context_text(frame_id, visual, transcript)
+    if _CONVERSATION_RE.search(text):
+        return False
+    if _frame_shows_rate(frame_id, visual, transcript):
+        return False
+    return _PEDAGOGICAL_CONNECTIVE_RE.search(text) is not None
+
+
+def _clean_claim_frame_ids(unit: KnowledgeUnit, occurrences: set[str]) -> set[str]:
+    """Frames cited by learner sentences, not alignment notes."""
+
+    cited: set[str] = set()
+    for claim in unit.claims:
+        cleaned = sanitize_student_copy(claim.text)
+        if not cleaned.strip():
+            continue
+        if contains_student_meta(claim.text) and not cleaned.strip():
+            continue
+        for evidence_id in claim.evidence_ids:
+            if evidence_id in occurrences:
+                cited.add(evidence_id)
+    return cited
+
+
 def assign_frames(
     unit: KnowledgeUnit,
     visual: VisualCatalogue,
     *,
     used_frames: set[str],
     used_assets: set[str],
+    role: str = "other",
+    transcript: TranscriptDocument | None = None,
 ) -> tuple[list[str], PageLayout]:
     assets = {asset.id: asset for asset in visual.assets}
     occurrences = {
@@ -172,6 +369,7 @@ def assign_frames(
     by_candidate = {item.frame_id: item for item in unit.visual_candidates}
     cited = [item for claim in unit.claims for item in claim.evidence_ids if item in occurrences]
     pool = list(dict.fromkeys([*by_candidate, *cited]))
+    clean_ids = _clean_claim_frame_ids(unit, set(occurrences))
     scored: list[tuple[float, str]] = []
     for frame_id in pool:
         occurrence = occurrences.get(frame_id)
@@ -182,11 +380,30 @@ def assign_frames(
             penalty = 0.35
         if occurrence.cluster_id and occurrence.cluster_id in used_assets:
             penalty = 0.35
+        if frame_id in clean_ids:
+            penalty -= 0.45
+        elif clean_ids:
+            penalty += 0.75
+        if role == "connective" and _frame_is_pedagogical_connective(frame_id, visual, transcript):
+            penalty -= 0.8
         scored.append((_frame_score(unit, occurrence, by_candidate.get(frame_id)) - penalty, frame_id))
     scored.sort(key=lambda item: (-item[0], item[1]))
     wanted = 2 if unit.kind == "comparison" else 3 if unit.kind == "procedure" else 1
+
+    def allowed(frame_id: str) -> bool:
+        if role == "connective" and (
+            _frame_is_conversation(frame_id, visual, transcript)
+            or _frame_shows_rate(frame_id, visual, transcript)
+        ):
+            return False
+        if role == "cause" and _frame_shows_rate(frame_id, visual, transcript):
+            return False
+        return True
+
     picked: list[str] = []
     for _score, frame_id in scored:
+        if not allowed(frame_id):
+            continue
         occurrence = occurrences[frame_id]
         if frame_id in used_frames or occurrence.asset_id in used_assets:
             continue
@@ -248,7 +465,11 @@ def score_candidates(
     return candidates
 
 
-def _example_keep(candidates: Iterable[PageCandidate]) -> set[str]:
+def _example_keep(
+    candidates: Iterable[PageCandidate],
+    *,
+    expanded_cause_units: set[str] | None = None,
+) -> set[str]:
     per_topic: dict[str, list[PageCandidate]] = {}
     for item in candidates:
         if item.kind != "example":
@@ -259,7 +480,40 @@ def _example_keep(candidates: Iterable[PageCandidate]) -> set[str]:
         ranked = sorted(rows, key=lambda row: (-row.score, row.start_seconds, row.id))
         for row in ranked[:_MAX_EXAMPLES_PER_TOPIC]:
             kept.add(row.unit_id)
+    expanded = sorted(
+        (row for rows in per_topic.values() for row in rows
+         if row.unit_id in (expanded_cause_units or set())),
+        key=lambda row: (-row.score, row.start_seconds, row.id),
+    )
+    kept.update(
+        row.unit_id for row in expanded[: 2 * _MAX_CAUSE_CONTENT_PAGES]
+    )
     return kept
+
+
+def _cause_example_signature(
+    item: PageCandidate,
+    knowledge: KnowledgeDocument,
+) -> str | None:
+    if item.kind != "example":
+        return None
+    unit = _unit_by_id(knowledge, item.unit_id)
+    if unit is None:
+        return None
+    sentence = next(
+        (
+            sanitize_student_copy(claim.text).strip()
+            for claim in unit.claims
+            if claim.id in item.claim_ids
+            and claim.provenance == "source"
+            and _script_profile(claim.text) == "ja"
+            and "につき" in claim.text
+        ),
+        None,
+    )
+    if not sentence:
+        return None
+    return re.sub(r"\s+", "", sentence).rstrip("。．.!！?？")
 
 
 _KANA_RE = re.compile(r"[\u3040-\u30ff\u3100-\u312f]")
@@ -411,6 +665,19 @@ def _restore_sense_content_titles(
         if topic_id is None:
             pages.append(page)
             continue
+        unit = _unit_for_claim_ids(knowledge, page.claim_ids)
+        topic = _topic_by_id(topic_id, course_map, knowledge) if unit is not None else None
+        if is_tsuki_grammar_lesson(course_map, knowledge) and unit is not None:
+            if text_is_rate_only(_unit_display_text(unit)):
+                pages.append(page.model_copy(update={"title": sense_heading(2)}))
+                continue
+            if unit_is_connective_attachment(unit, topic):
+                pages.append(page.model_copy(update={"title": CONNECTIVE_HEADING}))
+                continue
+        connective = topic_for_connective(course_map, knowledge)
+        if connective is not None and topic_id == connective.id:
+            pages.append(page.model_copy(update={"title": CONNECTIVE_HEADING}))
+            continue
         ordinal = sense_ordinal(topic_id, course_map, knowledge=knowledge)
         if ordinal is None:
             pages.append(page)
@@ -535,18 +802,72 @@ def _pick_mandatory_sense_candidate(
     demoted: set[str],
     knowledge: KnowledgeDocument,
     course_map: CourseMap | None,
+    lock_note: str = "mandatory-sense lock",
+    ordinal: int | None = None,
 ) -> PageCandidate | None:
-    lock_note = "mandatory-sense lock"
+    want_connective = "mandatory-connective" in lock_note
+
+    def matches_ordinal(row: PageCandidate) -> bool:
+        if ordinal == 1 and (
+            _row_is_rate_only(row, knowledge) or _row_has_rate_snippet(row, knowledge)
+        ):
+            return False
+        if ordinal == 2 and not _row_is_rate_only(row, knowledge):
+            return False
+        return True
+
+    if ordinal == 2:
+        rate_rows = [
+            row
+            for row in ranked
+            if _row_is_rate_only(row, knowledge) and row.unit_id not in demoted
+        ]
+        on_topic = [row for row in rate_rows if row.topic_id == topic_id]
+        rate_pool = on_topic or rate_rows
+        examples = [row for row in rate_pool if row.kind == "example"]
+        chosen_pool = examples or rate_pool
+        if chosen_pool:
+            row = sorted(chosen_pool, key=lambda item: (-item.score, item.start_seconds, item.id))[0]
+            return replace(
+                row,
+                selection_reason=f"{lock_note}; {row.selection_reason}"[:400],
+            )
+
+    def narrow(pool: list[PageCandidate]) -> list[PageCandidate]:
+        if want_connective:
+            matched = [
+                row
+                for row in pool
+                if _candidate_is_connective(row, knowledge, course_map)
+            ]
+            return matched or pool
+        plain = [
+            row
+            for row in pool
+            if not _candidate_is_connective(row, knowledge, course_map) and matches_ordinal(row)
+        ]
+        if ordinal in {1, 2}:
+            return plain
+        return plain or pool
+
     pools = [
-        [
-            item
-            for item in ranked
-            if item.topic_id == topic_id
-            and item.unit_id not in demoted
-            and not _is_meta_page_candidate(item, knowledge)
-        ],
-        [item for item in ranked if item.topic_id == topic_id and item.unit_id not in demoted],
-        [item for item in ranked if item.topic_id == topic_id],
+        narrow(
+            [
+                item
+                for item in ranked
+                if item.topic_id == topic_id
+                and item.unit_id not in demoted
+                and not _is_meta_page_candidate(item, knowledge)
+            ]
+        ),
+        narrow(
+            [
+                item
+                for item in ranked
+                if item.topic_id == topic_id and item.unit_id not in demoted
+            ]
+        ),
+        narrow([item for item in ranked if item.topic_id == topic_id]),
     ]
     for pool in pools:
         examples = sorted(
@@ -571,6 +892,11 @@ def _pick_mandatory_sense_candidate(
     unit = _mandatory_unit_for_topic(topic, knowledge, course_map=course_map)
     if unit is None:
         return None
+    unit_text = _unit_display_text(unit)
+    if ordinal == 2 and not text_is_rate_only(unit_text):
+        return None
+    if ordinal == 1 and text_is_rate_only(unit_text):
+        return None
     return _candidate_from_unit(unit, knowledge, ranked=ranked, lock_note=lock_note)
 
 
@@ -582,7 +908,7 @@ def _selected_sense_ordinals(
 ) -> set[int]:
     ordinals: set[int] = set()
     for item in selected:
-        ordinal = sense_ordinal(item.topic_id, course_map, knowledge=knowledge)
+        ordinal = _candidate_ordinal(item, course_map, knowledge)
         if ordinal is not None:
             ordinals.add(ordinal)
     return ordinals
@@ -602,6 +928,8 @@ def _drop_weakest_page_for_sense(
         if sense_ordinal(item.topic_id, course_map, knowledge=knowledge) == ordinal
         and item.unit_id not in protected_unit_ids
         and "mandatory-sense lock" not in item.selection_reason
+        and not _candidate_is_connective(item, knowledge, course_map)
+        and not _row_is_rate_only(item, knowledge)
     ]
     if len(matches) < 2:
         return selected
@@ -636,10 +964,11 @@ def _enforce_mandatory_sense_pages(
             demoted=demoted,
             knowledge=knowledge,
             course_map=course_map,
+            ordinal=ordinal,
         )
         if pick is None:
             continue
-        if len(updated) >= content_max:
+        if _candidate_page_count(updated, course_map=course_map, knowledge=knowledge) >= content_max:
             if ordinal == 2:
                 updated = _drop_weakest_page_for_sense(
                     updated,
@@ -648,7 +977,7 @@ def _enforce_mandatory_sense_pages(
                     knowledge=knowledge,
                     protected_unit_ids=selected_ids,
                 )
-            elif len(updated) >= content_max:
+            elif _candidate_page_count(updated, course_map=course_map, knowledge=knowledge) >= content_max:
                 updated = sorted(
                     updated,
                     key=lambda row: (row.score, row.start_seconds, row.id),
@@ -682,6 +1011,191 @@ def _pick_topic_representative(
     return usable[0]
 
 
+def _cause_keep_key(item: PageCandidate, knowledge: KnowledgeDocument) -> tuple:
+    """Lower sorts first: locked example pages survive the 用法一 cap."""
+
+    locked = 0 if "mandatory-sense lock" in item.selection_reason else 1
+    example = 0 if item.kind == "example" else 1
+    meta = 1 if _is_meta_page_candidate(item, knowledge) else 0
+    return (locked, example, meta, -item.score, item.start_seconds, item.id)
+
+
+def _stamp_connective_lock(
+    selected: list[PageCandidate],
+    unit_ids: set[str],
+) -> list[PageCandidate]:
+    stamped: list[PageCandidate] = []
+    for item in selected:
+        if item.unit_id not in unit_ids or "mandatory-connective lock" in item.selection_reason:
+            stamped.append(item)
+            continue
+        stamped.append(
+            replace(
+                item,
+                selection_reason=f"mandatory-connective lock; {item.selection_reason}"[:400],
+            )
+        )
+    return stamped
+
+
+def _drop_duplicate_cause_page(
+    selected: list[PageCandidate],
+    *,
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument,
+) -> list[PageCandidate]:
+    """Drop the weakest extra 用法一 page, keeping the locked example."""
+
+    cause = [
+        item
+        for item in selected
+        if _is_usage_cause_page(item, course_map, knowledge)
+    ]
+    if len(cause) < 2:
+        return selected
+    worst = max(cause, key=lambda row: _cause_keep_key(row, knowledge))
+    return [item for item in selected if item.unit_id != worst.unit_id]
+
+
+def _drop_nonprotected_for_connective(
+    selected: list[PageCandidate],
+    *,
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument,
+) -> list[PageCandidate]:
+    """Drop a filler page so 接续 can fit without removing 用法二/三 or the last 用法一."""
+
+    cause = [
+        item
+        for item in selected
+        if _is_usage_cause_page(item, course_map, knowledge)
+    ]
+    protected_cause = {
+        min(cause, key=lambda row: _cause_keep_key(row, knowledge)).unit_id
+    } if cause else set()
+
+    def droppable(item: PageCandidate) -> bool:
+        if _candidate_is_connective(item, knowledge, course_map):
+            return False
+        ordinal = sense_ordinal(item.topic_id, course_map, knowledge=knowledge)
+        if ordinal in {2, 3}:
+            return False
+        if ordinal == 1 and item.unit_id in protected_cause:
+            return False
+        return True
+
+    candidates = [item for item in selected if droppable(item)]
+    if not candidates:
+        return selected
+    weakest = min(candidates, key=lambda row: (row.score, -row.start_seconds, row.id))
+    return [item for item in selected if item.unit_id != weakest.unit_id]
+
+
+def _connective_units(
+    knowledge: KnowledgeDocument,
+    course_map: CourseMap | None,
+) -> list[KnowledgeUnit]:
+    if not is_tsuki_grammar_lesson(course_map, knowledge):
+        return []
+    topics = {topic.id: topic for topic in (course_map.topics if course_map else [])}
+    found: list[KnowledgeUnit] = []
+    for unit in knowledge.units:
+        topic = topics.get(unit.topic_id) or _topic_by_id(unit.topic_id, course_map, knowledge)
+        if unit_is_connective_attachment(unit, topic):
+            found.append(unit)
+    return found
+
+
+def _pick_connective_candidate(
+    ranked: list[PageCandidate],
+    *,
+    demoted: set[str],
+    knowledge: KnowledgeDocument,
+    course_map: CourseMap | None,
+) -> PageCandidate | None:
+    """Best attachment unit, including glosses filed under a cause topic."""
+
+    units = _connective_units(knowledge, course_map)
+    if units:
+        def rank(unit: KnowledgeUnit) -> tuple:
+            text = " ".join(claim.text for claim in unit.claims)
+            meta = 1 if contains_student_meta(text) else 0
+            example = 0 if unit.kind == "example" else 1
+            return (meta, example, unit.start_seconds, unit.id)
+
+        best = min(units, key=rank)
+        existing = next((row for row in ranked if row.unit_id == best.id), None)
+        if existing is not None:
+            return replace(
+                existing,
+                selection_reason=f"mandatory-connective lock; {existing.selection_reason}"[:400],
+            )
+        return _candidate_from_unit(
+            best,
+            knowledge,
+            ranked=ranked,
+            lock_note="mandatory-connective lock",
+        )
+    topic = topic_for_connective(course_map, knowledge)
+    if topic is None:
+        return None
+    return _pick_mandatory_sense_candidate(
+        topic.id,
+        ranked,
+        demoted=demoted,
+        knowledge=knowledge,
+        course_map=course_map,
+        lock_note="mandatory-connective lock",
+    )
+
+
+def _ensure_connective_page(
+    selected: list[PageCandidate],
+    *,
+    ranked: list[PageCandidate],
+    demoted: set[str],
+    knowledge: KnowledgeDocument,
+    course_map: CourseMap | None,
+    content_max: int,
+) -> list[PageCandidate]:
+    """Force one 接续 page when attachment knowledge exists, on any topic."""
+
+    pick = _pick_connective_candidate(
+        ranked,
+        demoted=demoted,
+        knowledge=knowledge,
+        course_map=course_map,
+    )
+    if pick is None:
+        return selected
+    present = [
+        item
+        for item in selected
+        if item.unit_id == pick.unit_id or _candidate_is_connective(item, knowledge, course_map)
+    ]
+    if present:
+        return _stamp_connective_lock(selected, {item.unit_id for item in present})
+    updated = list(selected)
+    if _candidate_page_count(updated, course_map=course_map, knowledge=knowledge) >= content_max:
+        updated = _drop_duplicate_cause_page(
+            updated,
+            course_map=course_map,
+            knowledge=knowledge,
+        )
+    if _candidate_page_count(updated, course_map=course_map, knowledge=knowledge) >= content_max:
+        updated = _drop_nonprotected_for_connective(
+            updated,
+            course_map=course_map,
+            knowledge=knowledge,
+        )
+    if _candidate_page_count(updated, course_map=course_map, knowledge=knowledge) >= content_max:
+        return updated
+    if any(item.unit_id == pick.unit_id for item in updated):
+        return _stamp_connective_lock(updated, {pick.unit_id})
+    updated.append(pick)
+    return updated
+
+
 def _rank_key(item: PageCandidate, *, demoted: set[str]) -> tuple[float, float, str]:
     penalty = 5.0 if item.unit_id in demoted else 0.0
     return (-(item.score - penalty), item.start_seconds, item.id)
@@ -694,23 +1208,137 @@ def select_candidates(
     max_pages: int,
     knowledge: KnowledgeDocument,
     course_map: CourseMap | None = None,
+    valid_evidence_ids: set[str] | None = None,
 ) -> tuple[list[PageCandidate], list[Omission]]:
     sense_slots = len(sense_topic_ids(course_map, knowledge))
     content_target = max(1, min(target_pages, max_pages) - 2)
     content_max = max(1, max_pages - 2, sense_slots)
     parents = prerequisite_parents(knowledge)
-    keep_examples = _example_keep(candidates)
     demoted = _demote_translation_duplicate_units(candidates, knowledge)
-    ranked = sorted(candidates, key=lambda item: _rank_key(item, demoted=demoted))
+    unsupported_cause_ids: set[str] = set()
+    invalid_cause_claims: dict[str, tuple[str, ...]] = {}
+    expanded_cause_units: set[str] = set()
+    ranked_candidates: list[PageCandidate] = []
+    for item in candidates:
+        if (
+            valid_evidence_ids is None
+            or not _is_usage_cause_page(item, course_map, knowledge)
+        ):
+            ranked_candidates.append(item)
+            continue
+        unit = _unit_by_id(knowledge, item.unit_id)
+        source_claims = [
+            claim
+            for claim in (unit.claims if unit else [])
+            if claim.id in item.claim_ids
+            and claim.provenance == "source"
+            and set(claim.evidence_ids) & valid_evidence_ids
+        ]
+        other_claim_ids = tuple(
+            claim_id for claim_id in item.claim_ids
+            if claim_id not in {claim.id for claim in source_claims}
+        )
+        if other_claim_ids:
+            invalid_cause_claims[item.unit_id] = other_claim_ids
+        if not source_claims:
+            unsupported_cause_ids.add(item.unit_id)
+            continue
+        bullets = _learner_bullets_for_claims(source_claims)
+        if not bullets or any(len(bullet) > 200 for bullet in bullets):
+            invalid_cause_claims[item.unit_id] = tuple(item.claim_ids)
+            unsupported_cause_ids.add(item.unit_id)
+            continue
+        if (
+            valid_evidence_ids is not None
+            and item.kind == "example"
+            and _is_usage_cause_page(item, course_map, knowledge)
+            and any(
+                _script_profile(claim.text) == "ja" and "につき" in claim.text
+                for claim in source_claims
+            )
+        ):
+            expanded_cause_units.add(item.unit_id)
+        ranked_candidates.append(
+            replace(
+                item,
+                claim_ids=[claim.id for claim in source_claims],
+                body_points=bullets,
+                notes="。".join(bullets),
+            )
+        )
+    ranked = sorted(
+        [item for item in ranked_candidates if item.unit_id not in unsupported_cause_ids],
+        key=lambda item: _rank_key(item, demoted=demoted),
+    )
+    deduplicated: list[PageCandidate] = []
+    seen_cause_examples: set[str] = set()
+    duplicate_cause_ids: set[str] = set()
+    for item in ranked:
+        signature = (
+            _cause_example_signature(item, knowledge)
+            if item.unit_id in expanded_cause_units
+            else None
+        )
+        if signature is not None and signature in seen_cause_examples:
+            duplicate_cause_ids.add(item.unit_id)
+            continue
+        if signature is not None:
+            seen_cause_examples.add(signature)
+        deduplicated.append(item)
+    ranked = deduplicated
+    keep_examples = _example_keep(
+        ranked,
+        expanded_cause_units=expanded_cause_units - duplicate_cause_ids,
+    )
     selected: list[PageCandidate] = []
     selected_ids: set[str] = set()
+
+    def cause_example_count() -> int:
+        return sum(
+            1
+            for row in selected
+            if row.kind == "example"
+            and _is_usage_cause_page(row, course_map, knowledge)
+        )
+
+    def about_count() -> int:
+        return sum(
+            1 for row in selected if _is_usage_about_page(row, course_map, knowledge)
+        )
 
     def add(item: PageCandidate, *, force: bool = False) -> None:
         if item.unit_id in selected_ids:
             return
         if item.unit_id in demoted and not force:
             return
-        if len(selected) >= content_max and not force:
+        if (
+            item.kind == "example"
+            and _is_usage_cause_page(item, course_map, knowledge)
+            and cause_example_count() >= 2 * _MAX_CAUSE_CONTENT_PAGES
+        ):
+            return
+        if (
+            not force
+            and _is_usage_about_page(item, course_map, knowledge)
+            and about_count() >= _MAX_ABOUT_CONTENT_PAGES
+        ):
+            return
+        if (
+            not force
+            and is_tsuki_grammar_lesson(course_map, knowledge)
+            and (_row_is_rate_only(item, knowledge) or _row_has_rate_snippet(item, knowledge))
+            and 2 in _selected_sense_ordinals(selected, course_map=course_map, knowledge=knowledge)
+        ):
+            return
+        if (
+            _candidate_page_count(
+                [*selected, item],
+                course_map=course_map,
+                knowledge=knowledge,
+            )
+            > content_max
+            and not force
+        ):
             return
         selected.append(item)
         selected_ids.add(item.unit_id)
@@ -722,15 +1350,21 @@ def select_candidates(
                 add(parent, force=force)
         add(item, force=force)
 
-    for topic_id in sense_topic_ids(course_map, knowledge):
-        if any(row.topic_id == topic_id for row in selected):
+    for ordinal in (1, 2, 3):
+        if ordinal in _selected_sense_ordinals(selected, course_map=course_map, knowledge=knowledge):
+            continue
+        topic = topic_for_sense_ordinal(course_map, ordinal, knowledge=knowledge)
+        if topic is None or not any(unit.topic_id == topic.id for unit in knowledge.units):
+            continue
+        if ordinal != 2 and any(row.topic_id == topic.id for row in selected):
             continue
         pick = _pick_mandatory_sense_candidate(
-            topic_id,
+            topic.id,
             ranked,
             demoted=demoted,
             knowledge=knowledge,
             course_map=course_map,
+            ordinal=ordinal,
         )
         if pick is not None:
             add_with_prerequisites(pick, force=True)
@@ -784,7 +1418,7 @@ def select_candidates(
             if extra.unit_id == pick.unit_id:
                 continue
             add_with_prerequisites(extra)
-            if len(selected) >= content_max:
+            if _candidate_page_count(selected, course_map=course_map, knowledge=knowledge) >= content_max:
                 break
 
     for item in ranked:
@@ -794,26 +1428,205 @@ def select_candidates(
             continue
         if item.unit_id in selected_ids:
             continue
-        if len(selected) >= content_target and item.unit_id not in selected_ids:
+        if (
+            _candidate_page_count(selected, course_map=course_map, knowledge=knowledge)
+            >= content_target
+            and item.unit_id not in selected_ids
+        ):
             if item.required_prerequisite:
                 add_with_prerequisites(item)
             continue
         add_with_prerequisites(item)
 
+    selected = _ensure_connective_page(
+        selected,
+        ranked=ranked,
+        demoted=demoted,
+        knowledge=knowledge,
+        course_map=course_map,
+        content_max=content_max,
+    )
     selected_ids = {item.unit_id for item in selected}
+    capacity_omission_ids = {
+        item.unit_id
+        for item in candidates
+        if item.kind == "example"
+        and _is_usage_cause_page(item, course_map, knowledge)
+        and item.unit_id not in selected_ids
+        and item.unit_id not in unsupported_cause_ids
+        and cause_example_count() >= 2 * _MAX_CAUSE_CONTENT_PAGES
+    }
     omissions: list[Omission] = []
     for item in candidates:
-        if item.unit_id in selected_ids:
-            continue
-        for claim_id in item.claim_ids:
+        for claim_id in invalid_cause_claims.get(item.unit_id, ()):
             omissions.append(
                 Omission(
                     topic_id=item.topic_id,
                     claim_id=claim_id,
-                    reason="page budget or representative-example compression",
+                    reason=_cause_omission_reason(item, knowledge, valid_evidence_ids),
+                )
+            )
+    for item in candidates:
+        if item.unit_id in selected_ids:
+            continue
+        for claim_id in item.claim_ids:
+            if any(omission.claim_id == claim_id for omission in omissions):
+                continue
+            omissions.append(
+                Omission(
+                    topic_id=item.topic_id,
+                    claim_id=claim_id,
+                    reason=(
+                        _cause_omission_reason(item, knowledge, valid_evidence_ids)
+                        if item.unit_id in unsupported_cause_ids
+                        else "duplicate source-backed cause example"
+                        if item.unit_id in duplicate_cause_ids
+                        else "cause-example capacity (four supported examples across two pages)"
+                        if item.unit_id in capacity_omission_ids
+                        else "page budget or representative-example compression"
+                    ),
                 )
             )
     return selected, omissions
+
+
+def _learner_bullets_for_claims(claims: list[object]) -> list[str]:
+    """Pair source-language text and its existing translation in one bullet."""
+
+    lines = [sanitize_student_copy(str(getattr(claim, "text", ""))).strip() for claim in claims]
+    lines = [line for line in lines if line]
+    japanese = next((line for line in lines if _script_profile(line) == "ja"), None)
+    chinese = next((line for line in lines if _script_profile(line) == "zh"), None)
+    if japanese and chinese:
+        paired = f"{japanese}（{chinese}）"
+        return [paired, *(line for line in lines if line not in {japanese, chinese})]
+    return lines
+
+
+def _group_cause_candidates(
+    selected: list[PageCandidate],
+    *,
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument,
+) -> list[PageCandidate]:
+    """Represent up to two source-backed examples on each of at most two pages."""
+
+    cause = [item for item in selected if _is_usage_cause_page(item, course_map, knowledge)]
+    if len(cause) < 2:
+        return selected
+    examples = [item for item in cause if item.kind == "example"][: 2 * _MAX_CAUSE_CONTENT_PAGES]
+    supporting = [item for item in cause if item.kind != "example"]
+    groups = [examples[index : index + 2] for index in range(0, len(examples), 2)]
+    if not groups:
+        groups = [supporting[:2]]
+        supporting = supporting[2:]
+    grouped: dict[str, PageCandidate] = {}
+    consumed = {item.unit_id for item in cause}
+
+    def group_claims(group: list[PageCandidate]) -> list[object]:
+        return [
+            claim
+            for member in group
+            for claim in (
+                _unit_by_id(knowledge, member.unit_id).claims
+                if _unit_by_id(knowledge, member.unit_id)
+                else []
+            )
+            if claim.id in member.claim_ids
+        ]
+
+    def group_bullet_count(group: list[PageCandidate]) -> int:
+        return len(_learner_bullets_for_claims(group_claims(group)))
+
+    for item in supporting:
+        unit = _unit_by_id(knowledge, item.unit_id)
+        if unit is None:
+            continue
+        points = _learner_bullets_for_claims(
+            [claim for claim in unit.claims if claim.id in item.claim_ids]
+        )
+        target = next(
+            (
+                group for group in groups
+                if group_bullet_count(group) + len(points) <= 4
+                and len([*group_claims(group), *unit.claims]) <= 8
+            ),
+            None,
+        )
+        if target is not None and all(len(point) <= 200 for point in points):
+            target.append(item)
+    for group in groups[:_MAX_CAUSE_CONTENT_PAGES]:
+        first = group[0]
+        claim_ids: list[str] = []
+        frame_ids: list[str] = []
+        body_points: list[str] = []
+        for item in group:
+            claim_ids.extend(item.claim_ids)
+            frame_ids.extend(item.frame_ids)
+            unit = _unit_by_id(knowledge, item.unit_id)
+            if unit:
+                claims = [claim for claim in unit.claims if claim.id in item.claim_ids]
+                bullets = _learner_bullets_for_claims(claims)
+                if all(len(point) <= 200 for point in bullets):
+                    body_points.extend(bullets)
+                else:
+                    claim_ids = claim_ids[:-len(item.claim_ids)]
+        grouped[first.unit_id] = replace(
+            first,
+            id=f"intent-cause-group-{first.unit_id}",
+            claim_ids=list(dict.fromkeys(claim_ids))[:8],
+            frame_ids=list(dict.fromkeys(frame_ids))[:3],
+            body_points=body_points[:4],
+            notes="。".join(body_points)[:4000],
+            selection_reason="source-backed cause examples; " + first.selection_reason[:300],
+        )
+    result: list[PageCandidate] = []
+    inserted_groups: set[str] = set()
+    for item in selected:
+        if item.unit_id not in consumed:
+            result.append(item)
+            continue
+        owner = next((group[0].unit_id for group in groups[:_MAX_CAUSE_CONTENT_PAGES] if item in group), None)
+        if owner and owner not in inserted_groups:
+            result.append(grouped[owner])
+            inserted_groups.add(owner)
+    return result
+
+
+def _candidate_page_count(
+    selected: list[PageCandidate],
+    *,
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument,
+) -> int:
+    """Count the pages candidates will occupy after cause examples are grouped."""
+
+    return len(
+        _group_cause_candidates(
+            selected,
+            course_map=course_map,
+            knowledge=knowledge,
+        )
+    )
+
+
+def _cause_omission_reason(
+    item: PageCandidate,
+    knowledge: KnowledgeDocument,
+    valid_evidence_ids: set[str] | None,
+) -> str:
+    unit = _unit_by_id(knowledge, item.unit_id)
+    claims = [claim for claim in (unit.claims if unit else []) if claim.id in item.claim_ids]
+    if valid_evidence_ids is None or any(
+        claim.provenance != "source"
+        or not set(claim.evidence_ids) & valid_evidence_ids
+        for claim in claims
+    ):
+        return "source evidence is unavailable for this example"
+    bullets = _learner_bullets_for_claims(claims)
+    if bullets and any(len(bullet) > 200 for bullet in bullets):
+        return "learner copy exceeds the 200-character limit; review required"
+    return "source claim lacks valid evidence or source provenance"
 
 
 def sort_candidates(
@@ -853,10 +1666,26 @@ def sort_candidates(
     return ordered
 
 
+def _candidate_role(
+    item: PageCandidate,
+    knowledge: KnowledgeDocument,
+    course_map: CourseMap | None,
+) -> str:
+    if _candidate_is_connective(item, knowledge, course_map):
+        return "connective"
+    if _row_is_rate_only(item, knowledge):
+        return "rate"
+    ordinal = sense_ordinal(item.topic_id, course_map, knowledge=knowledge)
+    return {1: "cause", 2: "rate", 3: "about"}.get(ordinal or 0, "other")
+
+
 def _apply_frames(
     selected: list[PageCandidate],
     knowledge: KnowledgeDocument,
     visual: VisualCatalogue,
+    *,
+    course_map: CourseMap | None = None,
+    transcript: TranscriptDocument | None = None,
 ) -> list[PageCandidate]:
     used_frames: set[str] = set()
     used_assets: set[str] = set()
@@ -868,7 +1697,12 @@ def _apply_frames(
             updated.append(item)
             continue
         frames, layout = assign_frames(
-            unit, visual, used_frames=used_frames, used_assets=used_assets
+            unit,
+            visual,
+            used_frames=used_frames,
+            used_assets=used_assets,
+            role=_candidate_role(item, knowledge, course_map),
+            transcript=transcript,
         )
         for frame_id in frames:
             used_frames.add(frame_id)
@@ -886,10 +1720,24 @@ def _apply_frames(
     return updated
 
 
-def _cover_page(course_map: CourseMap | None, source_id: str) -> PageIntent:
-    title = "课程讲义"
-    if course_map and course_map.topics:
-        title = course_map.topics[0].title[:80]
+def _learner_cover_title(
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument | None,
+    source_id: str,
+) -> str:
+    raw = course_map.topics[0].title.strip() if course_map and course_map.topics else ""
+    if knowledge is not None and is_tsuki_grammar_lesson(course_map, knowledge):
+        if not raw or _ENGLISH_INTRO_RE.search(raw):
+            return "～につき"
+    return (raw or "课程讲义")[:80] or source_id
+
+
+def _cover_page(
+    course_map: CourseMap | None,
+    source_id: str,
+    knowledge: KnowledgeDocument | None = None,
+) -> PageIntent:
+    title = _learner_cover_title(course_map, knowledge, source_id)
     return PageIntent(
         id="intent-cover",
         type="cover",
@@ -902,83 +1750,241 @@ def _cover_page(course_map: CourseMap | None, source_id: str) -> PageIntent:
     )
 
 
-def _summary_units_for_topics(
-    course_map: CourseMap | None,
-    knowledge: KnowledgeDocument,
-    selected: list[PageCandidate],
-) -> list[tuple[str, str, str]]:
-    """Return (topic_title, claim_id, bullet) per grammar usage sense."""
-
-    selected_by_topic: dict[str, list[PageCandidate]] = {}
-    for item in selected:
-        selected_by_topic.setdefault(item.topic_id, []).append(item)
-    rows: list[tuple[str, str, str]] = []
-    for ordinal in (1, 2, 3):
-        topic = topic_for_sense_ordinal(course_map, ordinal, knowledge=knowledge)
-        if topic is None:
-            continue
-        pool = selected_by_topic.get(topic.id) or []
-        unit: KnowledgeUnit | None = None
-        if pool:
-            picked = sorted(
-                pool,
-                key=lambda row: (
-                    0 if row.kind == "example" else 1,
-                    row.start_seconds,
-                    row.id,
-                ),
-            )[0]
-            unit = _unit_by_id(knowledge, picked.unit_id)
-        if unit is None:
-            unit = pick_summary_unit_for_topic(topic, knowledge, course_map=course_map)
-        if unit is None or not unit.claims:
-            continue
-        claim = unit.claims[0]
-        bullet = sanitize_student_copy(claim.text)[:200]
-        if not bullet.strip():
-            continue
-        rows.append(
-            (
-                sense_heading(ordinal),
-                claim.id,
-                summary_bullet_for_sense(ordinal, bullet),
-            )
-        )
-    if rows:
-        return rows
-    fallback: list[tuple[str, str, str]] = []
-    for item in selected:
-        if not item.claim_ids:
-            continue
-        bullet = sanitize_student_copy(item.title)[:200]
-        if bullet.strip():
-            fallback.append((item.topic_id, item.claim_ids[0], bullet))
-    return fallback[:8]
+_ADVICE_MARKER_RE = re.compile(r"通常|一般|普通|多数|多く|主に|常用|更常用")
+_SENSE_ROLE_BULLETS = {
+    1: "用法一：原因・理由（公告等）",
+    2: "用法二：比例・単位（每个单位）",
+    3: "用法三：关于（罕用，通常用「について」）",
+}
 
 
-def _summary_page(
-    selected: list[PageCandidate],
+def _content_page_sense_ordinal(
+    page: PageIntent,
     *,
     course_map: CourseMap | None,
     knowledge: KnowledgeDocument,
+) -> int | None:
+    if page.type != "content":
+        return None
+    for ordinal, prefix in ((3, "用法三"), (2, "用法二"), (1, "用法一")):
+        if page.title.startswith(prefix):
+            return ordinal
+    unit = _unit_for_claim_ids(knowledge, page.claim_ids)
+    if unit is None:
+        return None
+    return sense_ordinal(unit.topic_id, course_map, knowledge=knowledge)
+
+
+def _source_claim_on_page(
+    page: PageIntent,
+    knowledge: KnowledgeDocument,
+) -> KnowledgeClaim | None:
+    claims = {claim.id: claim for claim in knowledge.iter_claims()}
+    for claim_id in page.claim_ids:
+        claim = claims.get(claim_id)
+        if claim is not None and claim.provenance == "source" and claim.evidence_ids:
+            return claim
+    return None
+
+
+def _about_advice_claim(
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument,
+) -> KnowledgeClaim | None:
+    """Source note that prefers 「について」 over the rare ～につき about-sense."""
+
+    for unit in knowledge.units:
+        if sense_ordinal(unit.topic_id, course_map, knowledge=knowledge) != 3:
+            continue
+        for claim in unit.claims:
+            if (
+                claim.provenance == "source"
+                and claim.evidence_ids
+                and "について" in claim.text
+                and _ADVICE_MARKER_RE.search(claim.text)
+            ):
+                return claim
+    return None
+
+
+def _sense_role_summary_rows(
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument,
+    displayed_pages: list[PageIntent],
+) -> list[tuple[str, str, str]] | None:
+    """Compact 用法一/二/三 lines for a ～につき lesson that kept those pages.
+
+    Returns None when this lesson should keep the generic extractive summary.
+    """
+
+    if not is_tsuki_grammar_lesson(course_map, knowledge):
+        return None
+    pages_by_ordinal: dict[int, list[PageIntent]] = {}
+    for page in displayed_pages:
+        ordinal = _content_page_sense_ordinal(
+            page, course_map=course_map, knowledge=knowledge
+        )
+        if ordinal in {1, 2, 3}:
+            pages_by_ordinal.setdefault(ordinal, []).append(page)
+    if not pages_by_ordinal:
+        return None
+    units_by_claim = {
+        claim.id: unit for unit in knowledge.units for claim in unit.claims
+    }
+    rows: list[tuple[str, str, str]] = []
+    for ordinal in (1, 2, 3):
+        claim: KnowledgeClaim | None = None
+        for page in pages_by_ordinal.get(ordinal, []):
+            claim = _source_claim_on_page(page, knowledge)
+            if claim is not None:
+                break
+        if ordinal == 3:
+            advice = _about_advice_claim(course_map, knowledge)
+            if advice is not None:
+                claim = advice
+        if claim is None:
+            continue
+        if ordinal == 3 and not (
+            "について" in claim.text and _ADVICE_MARKER_RE.search(claim.text)
+        ):
+            bullet = "用法三：关于"
+        else:
+            bullet = _SENSE_ROLE_BULLETS[ordinal]
+        unit = units_by_claim.get(claim.id)
+        topic_id = unit.topic_id if unit is not None else f"sense-{ordinal}"
+        rows.append((topic_id, claim.id, bullet))
+    return rows
+
+
+def _summary_units_for_topics(
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument,
+    displayed_pages: list[PageIntent],
+    *,
+    valid_evidence_ids: set[str] | None = None,
+) -> list[tuple[str, str, str]]:
+    """Index retained topics using complete, source-backed claims when concise."""
+
+    claims = {claim.id: claim for claim in knowledge.iter_claims()}
+    units_by_claim = {
+        claim.id: unit
+        for unit in knowledge.units
+        for claim in unit.claims
+    }
+    pages_by_topic: dict[str, PageIntent] = {}
+    claims_by_topic: dict[str, list[tuple[int, KnowledgeClaim]]] = {}
+    sequence = 0
+    for page in displayed_pages:
+        if page.type not in {"content", "quiz"}:
+            continue
+        for claim_id in page.claim_ids:
+            unit = units_by_claim.get(claim_id)
+            if unit is None:
+                continue
+            pages_by_topic.setdefault(unit.topic_id, page)
+            claims_by_topic.setdefault(unit.topic_id, []).append((sequence, claims[claim_id]))
+            sequence += 1
+
+    kind_priority = {
+        "concept": 0,
+        "recap": 0,
+        "warning": 1,
+        "procedure": 2,
+        "comparison": 3,
+        "example": 4,
+    }
+    rows: list[tuple[str, str, str]] = []
+    for topic_id, topic_claims in claims_by_topic.items():
+        eligible: list[tuple[int, int, KnowledgeClaim]] = []
+        for sequence, claim in topic_claims:
+            evidence_ids = set(claim.evidence_ids)
+            if claim.provenance != "source" or not evidence_ids:
+                continue
+            if valid_evidence_ids is not None and not evidence_ids.intersection(valid_evidence_ids):
+                continue
+            unit = units_by_claim[claim.id]
+            eligible.append((kind_priority.get(unit.kind, 5), sequence, claim))
+        if not eligible:
+            continue
+        _, _, claim = min(eligible, key=lambda row: (row[0], row[1]))
+        source_copy = sanitize_student_copy(claim.text).strip()
+        if source_copy and len(source_copy) <= 120:
+            bullet = source_copy
+        else:
+            bullet = _summary_topic_label(
+                topic_id,
+                course_map=course_map,
+                knowledge=knowledge,
+                page=pages_by_topic[topic_id],
+            )
+        rows.append((topic_id, claim.id, bullet))
+    return rows
+
+
+def _summary_topic_label(
+    topic_id: str,
+    *,
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument,
+    page: PageIntent,
+) -> str:
+    """Return a clean topic label for a long source claim, never an internal ID."""
+
+    topic = _topic_by_id(topic_id, course_map, knowledge)
+    topic_title = sanitize_student_copy(topic.title).strip() if topic is not None else ""
+    if topic_title and topic_title != topic_id and not contains_student_meta(topic_title):
+        return topic_title
+    page_title = sanitize_student_copy(page.title).strip()
+    if (
+        page_title
+        and page_title != topic_id
+        and not re.fullmatch(r"(?:topic|unit|claim)[-_][A-Za-z0-9_.-]+", page_title, re.I)
+        and not contains_student_meta(page_title)
+    ):
+        return page_title
+    return "课程要点"
+
+
+def _summary_page(
+    rows: list[tuple[str, str, str]],
+    *,
+    page_index: int = 0,
+    notes: str = "",
+    title: str = "课程要点回顾",
+    selection_reason: str = "来源内容回顾",
 ) -> PageIntent:
-    rows = _summary_units_for_topics(course_map, knowledge, selected)
-    claims = [claim_id for _, claim_id, _ in rows][:12]
-    body_points = [bullet for _, _, bullet in rows][:4]
-    if not claims:
-        claims = [claim_id for item in selected for claim_id in item.claim_ids][:8]
-        body_points = [sanitize_student_copy(item.title)[:200] for item in selected[:4]]
+    page_rows = rows[page_index * 4 : page_index * 4 + 4]
+    page_id = "intent-summary" if page_index == 0 else f"intent-summary-{page_index + 1}"
     return PageIntent(
-        id="intent-summary",
+        id=page_id,
         type="summary",
-        title="本课总结",
-        claim_ids=claims,
+        title=title,
+        claim_ids=[claim_id for _, claim_id, _ in page_rows],
         frame_ids=[],
-        notes="总结按课程主题覆盖各用法，并附代表性例句。",
-        selection_reason="总结",
+        notes=notes or "本页按保留的课程主题索引来源内容。",
+        selection_reason=selection_reason,
         quality_label="draft",
-        body_points=body_points,
+        body_points=[bullet for _, _, bullet in page_rows],
     )
+
+
+def _summary_evidence_ids(
+    knowledge: KnowledgeDocument,
+    transcript: TranscriptDocument | None,
+    visual: VisualCatalogue | None,
+) -> set[str] | None:
+    """Return source-matched evidence IDs for extractive summary selection."""
+
+    if transcript is None or visual is None:
+        return None
+    if transcript.source_id != knowledge.source_id or visual.source_id != knowledge.source_id:
+        return None
+    ids = evidence_universe(transcript, visual)
+    # Empty catalogues are common in offline fixtures and mean that the
+    # resolver cannot validate claim IDs; retain source-provenance claims and
+    # let the coverage diagnostic report evidence as unchecked instead of
+    # silently deleting every summary row.
+    return ids or None
 
 
 def _content_page(
@@ -994,7 +2000,23 @@ def _content_page(
         course_map=course_map,
         fallback_title=fallback,
         knowledge=knowledge,
+        unit_text=item.notes,
     )
+    notes = item.notes
+    if contains_student_meta(notes):
+        cleaned = sanitize_student_copy(notes)
+        notes = cleaned or " ".join(point for point in item.body_points if point.strip())[:4000]
+    body_points = item.body_points
+    unit = _unit_by_id(knowledge, item.unit_id) if knowledge is not None else None
+    if (
+        unit is not None
+        and _is_usage_cause_page(item, course_map, knowledge)
+        and item.kind == "example"
+        and not item.selection_reason.startswith("source-backed cause examples;")
+    ):
+        body_points = _learner_bullets_for_claims(
+            [claim for claim in unit.claims if claim.id in item.claim_ids]
+        )
     return PageIntent(
         id=item.id,
         type=page_type,  # type: ignore[arg-type]
@@ -1002,10 +2024,10 @@ def _content_page(
         title=title,
         claim_ids=item.claim_ids[:8],
         frame_ids=item.frame_ids[:3],
-        notes=item.notes,
+        notes=notes,
         selection_reason=item.selection_reason[:400],
         quality_label="draft",
-        body_points=item.body_points[:4],
+        body_points=body_points[:4],
     )
 
 
@@ -1021,36 +2043,430 @@ def _trim_content_pages(
         return content_pages
     by_id = {page.id: page for page in content_pages}
     ordered = [by_id[item.id] for item in selected if item.id in by_id]
-    protected: list[PageIntent] = []
+    selected_by_page = {item.id: item for item in selected}
+    connective = topic_for_connective(course_map, knowledge)
+    rate_about: list[PageIntent] = []
+    cause_pages: list[tuple[PageCandidate, PageIntent]] = []
+    connective_pages: list[PageIntent] = []
     optional: list[PageIntent] = []
     for page in ordered:
-        item = next((row for row in selected if row.id == page.id), None)
-        ordinal = (
-            sense_ordinal(item.topic_id, course_map, knowledge=knowledge) if item else None
-        )
-        if ordinal in {1, 2, 3}:
-            protected.append(page)
+        item = selected_by_page.get(page.id)
+        if item is None:
+            optional.append(page)
+            continue
+        if _candidate_is_connective(item, knowledge, course_map) or (
+            connective is not None and item.topic_id == connective.id and not _row_is_rate_only(item, knowledge)
+        ):
+            connective_pages.append(page)
+            continue
+        ordinal = _candidate_ordinal(item, course_map, knowledge)
+        if ordinal in {2, 3}:
+            rate_about.append(page)
+        elif ordinal == 1:
+            cause_pages.append((item, page))
         else:
             optional.append(page)
+    ranked_cause = [
+        page
+        for _, page in sorted(cause_pages, key=lambda row: _cause_keep_key(row[0], knowledge))
+    ]
+    primary_cause = ranked_cause[:1]
+    second_cause = ranked_cause[1:2]
+    extra_cause = ranked_cause[2:]
+    # 用法二/三, one 用法一, then 接续, then a second 用法一. Duplicate cause pages go last.
+    protected = [*rate_about, *primary_cause, *connective_pages, *second_cause]
     if len(protected) > max_content:
         max_content = len(protected)
-    body = list(protected)
-    for page in optional:
+    body: list[PageIntent] = []
+    for page in [*protected, *optional, *extra_cause]:
         if len(body) >= max_content:
             break
         if page not in body:
             body.append(page)
-    if len(body) > max_content:
-        protected_ids = {page.id for page in protected}
-        body = [page for page in body if page.id in protected_ids]
-        for page in optional:
-            if len(body) >= max_content:
-                break
-            if page.id not in protected_ids:
-                body.append(page)
-    order_map = {item.id: (item.start_seconds, item.id) for item in selected}
-    body.sort(key=lambda page: order_map.get(page.id, (0.0, page.id)))
+    if is_tsuki_grammar_lesson(course_map, knowledge):
+        by_item = {item.id: item for item in selected}
+        body.sort(
+            key=lambda page: _pedagogical_rank(by_item[page.id], course_map, knowledge)
+            if page.id in by_item
+            else (9, 0.0, page.id)
+        )
+    else:
+        order_map = {item.id: (item.start_seconds, item.id) for item in selected}
+        body.sort(key=lambda page: order_map.get(page.id, (0.0, page.id)))
     return body
+
+
+def _pedagogical_rank(
+    item: PageCandidate,
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument,
+) -> tuple[int, float, str]:
+    """Sense order: intro, 接续, 用法一, 用法二, 用法三, then other pages."""
+
+    if _candidate_is_connective(item, knowledge, course_map):
+        return (1, item.start_seconds, item.id)
+    if _row_is_rate_only(item, knowledge):
+        return (3, item.start_seconds, item.id)
+    topic = _topic_by_id(item.topic_id, course_map, knowledge)
+    if topic is not None and is_grammar_connective_topic(topic, knowledge, course_map):
+        return (1, item.start_seconds, item.id)
+    ordinal = sense_ordinal(item.topic_id, course_map, knowledge=knowledge)
+    if ordinal in {1, 2, 3}:
+        return (1 + ordinal, item.start_seconds, item.id)
+    if topic is not None and is_connective_topic(topic.title) and ordinal is None:
+        return (0, item.start_seconds, item.id)
+    return (5, item.start_seconds, item.id)
+
+
+def _order_lesson_pages(
+    selected: list[PageCandidate],
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument,
+) -> list[PageCandidate]:
+    if not is_tsuki_grammar_lesson(course_map, knowledge):
+        return selected
+    return sorted(
+        selected,
+        key=lambda item: _pedagogical_rank(item, course_map, knowledge),
+    )
+
+
+def _apply_pedagogical_page_order(
+    plan: EditorialPlan,
+    *,
+    knowledge: KnowledgeDocument,
+    course_map: CourseMap | None,
+) -> EditorialPlan:
+    """Put 接续 then 用法一/二/三 ahead of timestamp order. Cover and summary stay put."""
+
+    if not is_tsuki_grammar_lesson(course_map, knowledge):
+        return plan
+    cover = [page for page in plan.pages if page.type == "cover"]
+    summary = [page for page in plan.pages if page.type == "summary"]
+    body = [page for page in plan.pages if page.type not in {"cover", "summary"}]
+
+    def rank(page: PageIntent) -> tuple[int, float, str]:
+        unit = _unit_for_claim_ids(knowledge, page.claim_ids)
+        if unit is None:
+            return (5, 0.0, page.id)
+        topic = _topic_by_id(unit.topic_id, course_map, knowledge)
+        if text_is_rate_only(_unit_display_text(unit)):
+            group = 3
+        elif unit_is_connective_attachment(unit, topic) or (
+            topic is not None and is_grammar_connective_topic(topic, knowledge, course_map)
+        ):
+            group = 1
+        else:
+            ordinal = sense_ordinal(unit.topic_id, course_map, knowledge=knowledge)
+            if ordinal in {1, 2, 3}:
+                group = 1 + ordinal
+            elif topic is not None and is_connective_topic(topic.title) and ordinal is None:
+                group = 0
+            else:
+                group = 5
+        return (group, unit.start_seconds, page.id)
+
+    body.sort(key=rank)
+    return plan.model_copy(update={"pages": [*cover, *body, *summary]})
+
+
+def _sentences(text: str) -> list[str]:
+    return [part.strip() for part in re.split(r"[。．！？\n]", text or "") if part.strip()]
+
+
+def _dedupe_lines(lines: list[str]) -> list[str]:
+    seen: set[str] = set()
+    kept: list[str] = []
+    for line in lines:
+        key = re.sub(r"\s+", "", line)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        kept.append(line)
+    return kept
+
+
+def _transcript_windows(transcript: TranscriptDocument) -> list[str]:
+    """Join adjacent captions so a fee split across ASR segments can still match."""
+
+    segments = sorted(transcript.segments, key=lambda item: (item.start_seconds, item.id))
+    windows: list[str] = []
+    buffer: list[str] = []
+    buffer_end: float | None = None
+    for segment in segments:
+        if buffer and buffer_end is not None and segment.start_seconds - buffer_end > 2.0:
+            windows.append(" ".join(buffer))
+            buffer = []
+        buffer.append(segment.text_original)
+        buffer_end = segment.end_seconds
+        if len(buffer) >= 4:
+            windows.append(" ".join(buffer))
+            buffer = []
+            buffer_end = None
+    if buffer:
+        windows.append(" ".join(buffer))
+    return windows
+
+
+def _collect_rate_examples(
+    knowledge: KnowledgeDocument,
+    visual: VisualCatalogue | None,
+    transcript: TranscriptDocument | None,
+) -> list[str]:
+    texts = [claim.text for claim in knowledge.iter_claims()]
+    if visual is not None:
+        texts.extend(region.text for region in visual.ocr_regions)
+    if transcript is not None:
+        texts.extend(segment.text_original for segment in transcript.segments)
+        texts.extend(_transcript_windows(transcript))
+    return representative_rate_snippets(texts)
+
+
+def _rate_claim_ids(knowledge: KnowledgeDocument) -> list[str]:
+    ids: list[str] = []
+    for claim in knowledge.iter_claims():
+        if representative_rate_snippets([claim.text]):
+            ids.append(claim.id)
+    return ids
+
+
+def _lines_without_rate(lines: list[str]) -> list[str]:
+    kept: list[str] = []
+    for line in lines:
+        for sentence in _sentences(line) or [line]:
+            cleaned = sanitize_student_copy(sentence).strip()
+            if not cleaned or representative_rate_snippets([cleaned]):
+                continue
+            kept.append(cleaned[:200])
+    return _dedupe_lines(kept)[:4]
+
+
+def _short_about_bullet(text: str) -> str:
+    cleaned = sanitize_student_copy(text)
+    heading = sense_heading(3)
+    body = cleaned
+    if body.startswith(heading):
+        body = body[len(heading) :].lstrip("：: ")
+    parts = _sentences(body) or ([body.strip()] if body.strip() else [])
+    examples = [
+        part
+        for part in parts
+        if "について" in part and "中止形" not in part and len(part) <= 48
+    ]
+    chosen = examples[0] if examples else (min(parts, key=len) if parts else body)
+    return summary_bullet_for_sense(3, chosen or body)[:200]
+
+
+def _compact_rate_snippet(text: str) -> str:
+    snippets = representative_rate_snippets([text])
+    if snippets:
+        return snippets[0]
+    return text if len(text) <= 36 else text[:36]
+
+
+def _rate_summary_bullet(examples: list[str]) -> str:
+    snippets = [_compact_rate_snippet(text) for text in examples[:3]]
+    snippets = _dedupe_lines(snippets)
+    body = "；".join(snippets) if snippets else "比例・単位"
+    return summary_bullet_for_sense(2, body)[:200]
+
+
+def _about_pages_are_duplicates(left: PageIntent, right: PageIntent) -> bool:
+    markers = ("使わない", "自衛隊", "についてが普通", "について が普通")
+
+    def signature(page: PageIntent) -> tuple[str, ...]:
+        text = " ".join([page.notes, *page.body_points])
+        return tuple(marker for marker in markers if marker in text)
+
+    left_sig = signature(left)
+    right_sig = signature(right)
+    if len(left_sig) >= 2 and left_sig == right_sig:
+        return True
+    left_text = re.sub(r"\s+", "", " ".join(left.body_points))
+    right_text = re.sub(r"\s+", "", " ".join(right.body_points))
+    if len(left_text) >= 16 and len(right_text) >= 16:
+        return left_text in right_text or right_text in left_text
+    return False
+
+
+def _role_ordinal(text: str) -> int | None:
+    stripped = text.strip()
+    for ordinal, prefix in ((1, "用法一"), (2, "用法二"), (3, "用法三")):
+        if stripped.startswith(prefix):
+            return ordinal
+    return None
+
+
+def _realign_sense_summary(
+    pages: list[PageIntent],
+    *,
+    course_map: CourseMap | None,
+    knowledge: KnowledgeDocument,
+) -> list[PageIntent]:
+    """Give each compact 用法 summary line its own source claim id."""
+
+    rows = _sense_role_summary_rows(course_map, knowledge, pages) or []
+    claim_by_ordinal: dict[int, str] = {}
+    for _, claim_id, bullet in rows:
+        ordinal = _role_ordinal(bullet)
+        if ordinal is not None:
+            claim_by_ordinal[ordinal] = claim_id
+    advice = _about_advice_claim(course_map, knowledge)
+    if advice is not None:
+        claim_by_ordinal[3] = advice.id
+    if not rows and advice is None:
+        return pages
+    updated: list[PageIntent] = []
+    replaced = False
+    for page in pages:
+        if page.type != "summary" or replaced:
+            updated.append(page)
+            continue
+        points = [point.strip() for point in page.body_points if point.strip()]
+        role_shaped = bool(points) and all(_role_ordinal(point) for point in points)
+        if role_shaped:
+            new_ids: list[str] = []
+            for index, point in enumerate(points):
+                ordinal = _role_ordinal(point)
+                existing = page.claim_ids[index] if index < len(page.claim_ids) else None
+                chosen = claim_by_ordinal.get(ordinal) or existing
+                if not chosen:
+                    new_ids = []
+                    break
+                new_ids.append(chosen)
+            if len(new_ids) == len(points):
+                page = page.model_copy(update={"claim_ids": new_ids, "body_points": points})
+            replaced = True
+            updated.append(page)
+            continue
+        if rows:
+            page = page.model_copy(
+                update={
+                    "title": "本课总结",
+                    "claim_ids": [claim_id for _, claim_id, _ in rows][:4],
+                    "body_points": [bullet for _, _, bullet in rows][:4],
+                    "selection_reason": "总结",
+                }
+            )
+            replaced = True
+        updated.append(page)
+    return updated
+
+
+def _polish_learner_plan(
+    plan: EditorialPlan,
+    *,
+    knowledge: KnowledgeDocument,
+    course_map: CourseMap | None,
+    visual: VisualCatalogue | None = None,
+    transcript: TranscriptDocument | None = None,
+) -> EditorialPlan:
+    """Strip automation ids and keep proportion examples off 用法一."""
+
+    pages: list[PageIntent] = []
+    for page in plan.pages:
+        title = page.title
+        if page.type == "cover":
+            title = _learner_cover_title(course_map, knowledge, plan.source_id)
+        elif not is_fixed_sense_heading(title):
+            title = sanitize_student_copy(title)[:80] or title
+        notes = sanitize_student_copy(page.notes)
+        body = [
+            sanitize_student_copy(point)[:200]
+            for point in page.body_points
+            if sanitize_student_copy(point).strip()
+        ]
+        pages.append(page.model_copy(update={"title": title, "notes": notes, "body_points": body}))
+
+    if not is_tsuki_grammar_lesson(course_map, knowledge):
+        return plan.model_copy(update={"pages": pages})
+
+    examples = _collect_rate_examples(knowledge, visual, transcript)
+    rate_ids = [claim_id for claim_id in _rate_claim_ids(knowledge)]
+    polished: list[PageIntent] = []
+    for page in pages:
+        if page.type == "content" and page.title.startswith("用法一"):
+            body = _dedupe_lines(
+                [
+                    cleaned
+                    for point in page.body_points
+                    if (cleaned := sanitize_student_copy(point).strip())
+                    and not representative_rate_snippets([cleaned])
+                ]
+            )[:4]
+            notes = "。".join(body)[:4000]
+            claim_ids = [claim_id for claim_id in page.claim_ids if claim_id not in rate_ids]
+            if not claim_ids:
+                claim_ids = list(page.claim_ids)
+            polished.append(
+                page.model_copy(
+                    update={
+                        "body_points": body or _lines_without_rate(page.body_points),
+                        "notes": notes,
+                        "claim_ids": claim_ids[:8],
+                    }
+                )
+            )
+            continue
+        polished.append(page)
+
+    rate_pages = [page for page in polished if page.type == "content" and page.title.startswith("用法二")]
+    if rate_pages and examples:
+        primary = rate_pages[0]
+        merged_ids = list(dict.fromkeys([*rate_ids, *primary.claim_ids]))[:4]
+        body = [line[:200] for line in examples][:4]
+        updated = primary.model_copy(
+            update={"claim_ids": merged_ids, "body_points": body, "notes": "。".join(body)[:4000]}
+        )
+        polished = [
+            updated if page.id == primary.id else page
+            for page in polished
+            if page.id == primary.id or page not in rate_pages[1:]
+        ]
+
+    about_pages = [page for page in polished if page.type == "content" and page.title.startswith("用法三")]
+    drop_ids: set[str] = set()
+    if len(about_pages) > 1:
+        keeper = min(about_pages, key=lambda page: (len(" ".join(page.body_points)), page.id))
+        for page in about_pages:
+            if page.id != keeper.id and _about_pages_are_duplicates(keeper, page):
+                drop_ids.add(page.id)
+        if not drop_ids:
+            drop_ids = {page.id for page in about_pages if page.id != keeper.id}
+    polished = [page for page in polished if page.id not in drop_ids]
+
+    rewritten: list[PageIntent] = []
+    for page in polished:
+        if page.type != "summary":
+            if page.type == "content" and page.title.startswith("用法三"):
+                short = _short_about_bullet(" ".join(page.body_points) or page.notes)
+                body = _dedupe_lines(page.body_points)[:4] or [short.split("：", 1)[-1][:200]]
+                rewritten.append(
+                    page.model_copy(update={"body_points": body, "notes": short[:4000]})
+                )
+                continue
+            rewritten.append(page)
+            continue
+        points: list[str] = []
+        for point in page.body_points:
+            cleaned = sanitize_student_copy(point).strip()
+            if cleaned:
+                points.append(cleaned[:200])
+        rewritten.append(
+            page.model_copy(
+                update={"body_points": _dedupe_lines(points)[:4] or page.body_points}
+            )
+        )
+    rewritten = _realign_sense_summary(
+        rewritten,
+        course_map=course_map,
+        knowledge=knowledge,
+    )
+    return _apply_pedagogical_page_order(
+        plan.model_copy(update={"pages": rewritten}),
+        knowledge=knowledge,
+        course_map=course_map,
+    )
 
 
 def build_deterministic_plan(
@@ -1063,9 +2479,31 @@ def build_deterministic_plan(
     order: DeckOrder,
     course_map: CourseMap | None,
     knowledge: KnowledgeDocument,
+    visual: VisualCatalogue | None = None,
+    transcript: TranscriptDocument | None = None,
 ) -> EditorialPlan:
-    pages = [_cover_page(course_map, source_id)]
+    pages = [_cover_page(course_map, source_id, knowledge)]
+    displayed = _group_cause_candidates(
+        selected,
+        course_map=course_map,
+        knowledge=knowledge,
+    )
+    displayed_claim_ids = {claim_id for item in displayed for claim_id in item.claim_ids}
     for item in selected:
+        if not _is_usage_cause_page(item, course_map, knowledge):
+            continue
+        for claim_id in item.claim_ids:
+            if claim_id not in displayed_claim_ids and not any(
+                omission.claim_id == claim_id for omission in omissions
+            ):
+                omissions.append(
+                    Omission(
+                        topic_id=item.topic_id,
+                        claim_id=claim_id,
+                        reason="cause content exceeds the two-page learner-copy capacity; review required",
+                    )
+                )
+    for item in _order_lesson_pages(displayed, course_map, knowledge):
         page_type = "quiz" if _is_practice(knowledge, item.claim_ids) else "content"
         pages.append(
             _content_page(
@@ -1075,19 +2513,81 @@ def build_deterministic_plan(
                 knowledge=knowledge,
             )
         )
-    if any(item.claim_ids for item in selected):
-        pages.append(_summary_page(selected, course_map=course_map, knowledge=knowledge))
-    if len(pages) > max_pages:
-        body = _trim_content_pages(
-            pages[1:-1],
+
+    body = pages[1:]
+    content_budget = max(0, max_pages - 2)
+    if len(body) > content_budget:
+        trimmed = _trim_content_pages(
+            body,
             selected,
-            max_content=max(0, max_pages - 2),
+            max_content=content_budget,
             course_map=course_map,
             knowledge=knowledge,
         )
-        pages = [pages[0], *body, pages[-1]]
-        if len(pages) > max_pages:
-            pages = pages[:max_pages]
+        kept_ids = {page.id for page in trimmed}
+        for page in body:
+            if page.id in kept_ids:
+                continue
+            for claim_id in page.claim_ids:
+                if not any(item.claim_id == claim_id for item in omissions):
+                    omissions.append(
+                        Omission(
+                            topic_id=None,
+                            claim_id=claim_id,
+                            reason="page budget or representative-example compression",
+                        )
+                    )
+        body = trimmed[:content_budget]
+
+    sense_rows = _sense_role_summary_rows(course_map, knowledge, body)
+    summary_rows = sense_rows if sense_rows is not None else _summary_units_for_topics(
+        course_map,
+        knowledge,
+        body,
+        valid_evidence_ids=_summary_evidence_ids(knowledge, transcript, visual),
+    )
+    sense_summary = sense_rows is not None
+    available_summary_pages = max(0, max_pages - len(body) - 1)
+    summary_page_count = (len(summary_rows) + 3) // 4 if summary_rows else 0
+    if summary_page_count > available_summary_pages:
+        keep_count = available_summary_pages * 4
+        for topic_id, _claim_id, _bullet in summary_rows[keep_count:]:
+            if not any(item.topic_id == topic_id and item.claim_id is None for item in omissions):
+                omissions.append(
+                    Omission(
+                        topic_id=topic_id,
+                        claim_id=None,
+                        reason="summary coverage exceeds page budget; review required",
+                    )
+                )
+        summary_rows = summary_rows[:keep_count]
+        summary_page_count = available_summary_pages
+    elif not summary_rows and body:
+        for page in body:
+            for claim_id in page.claim_ids:
+                unit = _unit_for_claim_ids(knowledge, [claim_id])
+                if unit is None or any(
+                    item.topic_id == unit.topic_id and item.claim_id is None for item in omissions
+                ):
+                    continue
+                omissions.append(
+                    Omission(
+                        topic_id=unit.topic_id,
+                        claim_id=None,
+                        reason="no source-backed summary content available; review required",
+                    )
+                )
+    summaries = [
+        _summary_page(
+            summary_rows,
+            page_index=index,
+            title="本课总结" if sense_summary else "课程要点回顾",
+            notes="总结按课程主题覆盖各用法，并附代表性例句。" if sense_summary else "",
+            selection_reason="总结" if sense_summary else "来源内容回顾",
+        )
+        for index in range(summary_page_count)
+    ]
+    pages = [pages[0], *body, *summaries]
     summary_claims = {
         claim_id
         for page in pages
@@ -1106,10 +2606,17 @@ def build_deterministic_plan(
         pages=pages,
         omissions=filtered_omissions,
     )
-    return _restore_sense_content_titles(
+    restored = _restore_sense_content_titles(
         plan,
         knowledge=knowledge,
         course_map=course_map,
+    )
+    return _polish_learner_plan(
+        restored,
+        knowledge=knowledge,
+        course_map=course_map,
+        visual=visual,
+        transcript=transcript,
     )
 
 
@@ -1221,12 +2728,13 @@ def apply_model_organization(
     if extra:
         raise EditorContractError(f"model added pages outside the selected partition {sorted(extra)}")
     cover = next(page for page in fallback.pages if page.type == "cover")
-    summary = next((page for page in fallback.pages if page.type == "summary"), None)
-    body = [page for page in fallback.pages if page.id not in {cover.id, *( [summary.id] if summary else [])}]
+    summaries = [page for page in fallback.pages if page.type == "summary"]
+    summary_ids = {page.id for page in summaries}
+    body = [page for page in fallback.pages if page.id != cover.id and page.id not in summary_ids]
     model_body_order = [
         page.id
         for page in planned.pages
-        if page.id not in {cover.id, *( [summary.id] if summary else [])}
+        if page.id != cover.id and page.id not in summary_ids
     ]
     if set(model_body_order) != {page.id for page in body}:
         raise EditorContractError("model changed the selected page partition")
@@ -1242,13 +2750,15 @@ def apply_model_organization(
         else:
             title = base.title
         if base.type == "summary":
-            body_points = _merge_summary_body_points(base, incoming)
+            body_points = list(base.body_points)
         else:
             body_points = [
                 sanitize_student_copy(point)[:200]
                 for point in incoming.body_points
                 if sanitize_student_copy(point).strip()
             ] or base.body_points
+            if base.selection_reason.startswith("source-backed cause examples;"):
+                body_points = list(base.body_points)
         return base.model_copy(
             update={
                 "title": title,
@@ -1260,7 +2770,7 @@ def apply_model_organization(
     merged = [overlay(cover, model_by_id[cover.id])]
     for page_id in model_body_order:
         merged.append(overlay(fallback_by_id[page_id], model_by_id[page_id]))
-    if summary is not None:
+    for summary in summaries:
         merged.append(overlay(summary, model_by_id[summary.id]))
     return fallback.model_copy(update={"pages": merged, "omissions": list(fallback.omissions)})
 
@@ -1280,19 +2790,30 @@ def edit_deck(
 ) -> EditorialPlan:
     """Score coverage first, then let the model organize titles/order/copy."""
 
-    del transcript
     if max_pages < target_pages:
         raise EditorContractError("max_pages must be >= target_pages")
     scored = score_candidates(knowledge, visual=visual, course_map=course_map)
+    valid_evidence_ids = {
+        *(segment.id for segment in transcript.segments),
+        *(occurrence.id for occurrence in visual.occurrences),
+        *(region.id for region in visual.ocr_regions),
+    }
     selected, omissions = select_candidates(
         scored,
         target_pages=target_pages,
         max_pages=max_pages,
         knowledge=knowledge,
         course_map=course_map,
+        valid_evidence_ids=valid_evidence_ids,
     )
     selected = sort_candidates(selected, order=order, knowledge=knowledge)
-    selected = _apply_frames(selected, knowledge, visual)
+    selected = _apply_frames(
+        selected,
+        knowledge,
+        visual,
+        course_map=course_map,
+        transcript=transcript,
+    )
     fallback = build_deterministic_plan(
         selected,
         omissions=omissions,
@@ -1302,6 +2823,8 @@ def edit_deck(
         order=order,
         course_map=course_map,
         knowledge=knowledge,
+        visual=visual,
+        transcript=transcript,
     )
     allowed_claims, allowed_frames = allowed_editor_ids(knowledge, visual)
     payload = {
@@ -1350,6 +2873,18 @@ def edit_deck(
         planned,
         knowledge=knowledge,
         course_map=course_map,
+    )
+    planned = _apply_pedagogical_page_order(
+        planned,
+        knowledge=knowledge,
+        course_map=course_map,
+    )
+    planned = _polish_learner_plan(
+        planned,
+        knowledge=knowledge,
+        course_map=course_map,
+        visual=visual,
+        transcript=transcript,
     )
     labeled = []
     for page in planned.pages:

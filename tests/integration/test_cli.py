@@ -99,3 +99,61 @@ def test_build_run_pipeline_failure_is_reported(tmp_path, monkeypatch):
                                           "--output", str(tmp_path)])
     assert result.exit_code == 1
     assert "Run failed: fixture pipeline failure" in result.output
+
+
+def test_plan_cli_writes_content_coverage_with_source_evidence_ids(tmp_path: Path, monkeypatch):
+    from yt2class.domain.editorial import EditorialPlan, PageIntent
+    from tests.helpers.m3 import lecture_knowledge
+
+    knowledge, _topics, transcript, visual = lecture_knowledge()
+    claim = knowledge.iter_claims()[0]
+    plan = EditorialPlan(
+        schema_version="1.0",
+        source_id=knowledge.source_id,
+        target_pages=4,
+        max_pages=4,
+        pages=[
+            PageIntent(
+                id="page-content",
+                type="content",
+                title="Fixture lesson",
+                claim_ids=[claim.id],
+                selection_reason="fixture",
+            )
+        ],
+    )
+    monkeypatch.setattr(cli, "plan_deck", lambda *_args, **_kwargs: plan)
+
+    paths = {
+        "knowledge": tmp_path / "knowledge.json",
+        "transcript": tmp_path / "transcript.json",
+        "visual": tmp_path / "visual.json",
+    }
+    for key, document in (
+        ("knowledge", knowledge),
+        ("transcript", transcript),
+        ("visual", visual),
+    ):
+        paths[key].write_text(document.model_dump_json(indent=2), encoding="utf-8")
+    output = tmp_path / "editorial"
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "plan",
+            "--knowledge", str(paths["knowledge"]),
+            "--transcript", str(paths["transcript"]),
+            "--visual", str(paths["visual"]),
+            "--output", str(output),
+        ],
+        prog_name="yt2class",
+    )
+
+    assert result.exit_code == 0, result.output
+    report_path = output / "content-coverage.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    covered = next(item for item in report["claims"] if item["claim_id"] == claim.id)
+    assert report["evidence_validation"]["status"] == "checked"
+    assert covered["body_page_ids"] == ["page-content"]
+    assert covered["invalid_evidence_ids"] == []
+    assert "verification_report_sha256" in report["digests"]

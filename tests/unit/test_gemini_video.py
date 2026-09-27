@@ -96,3 +96,25 @@ def test_api_errors_do_not_leak_key():
         with pytest.raises(GeminiPreviewError) as raised:
             generate_video_preview("https://youtu.be/vid", api_key="secret", client=client)
     assert "secret" not in str(raised.value)
+
+
+def test_rate_limit_is_reported_without_automatic_retry():
+    calls = 0
+
+    def respond(_request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(429, json={"error": {"message": "quota exceeded"}})
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        with pytest.raises(GeminiPreviewError, match="quota exceeded"):
+            generate_video_preview("https://youtu.be/vid", api_key="test-key", client=client)
+    assert calls == 1
+
+
+def test_truncated_response_is_not_saved_as_complete():
+    with httpx.Client(transport=httpx.MockTransport(lambda _request: httpx.Response(
+        200, json={"candidates": [{"finishReason": "MAX_TOKENS", "content": {"parts": [{"text": "partial"}]}}]}
+    ))) as client:
+        with pytest.raises(GeminiPreviewError, match="MAX_TOKENS"):
+            generate_video_preview("https://youtu.be/vid", api_key="test-key", client=client)
