@@ -2,13 +2,13 @@
 
 Turn course videos into source-faithful PPTX lecture notes: transcript and visual evidence, full-timeline LLM understanding, claim verification, human review, and SlideSpec 3.0 rendering via PptxGenJS.
 
-**Shipped (M0–M7 foundation):** versioned contracts, evidence extraction, analysis, editorial/verify/review, bind/render, `build-run` / `batch` / `resume` / `doctor`, OpenRouter and Volcengine Ark Agent Plan vision providers, OCR/ASR fallbacks, and opt-in `native-video` / `hybrid` analysis modes.
+**Available today:** versioned contracts, evidence extraction, analysis, editorial planning and review, claim verification, PPTX rendering, and the `build-run` / `batch` / `resume` / `doctor` commands. Frame analysis supports OpenAI-compatible vision endpoints, OpenRouter, and Volcengine Ark Agent Plan; caption, OCR, and ASR paths are available. Direct Gemini YouTube analysis is a separate preview command. `native-video` and `hybrid` modes are opt-in.
 
-**Quality status:** pull-request and `master` CI run the full offline suite. A prior dated Ark Plan VGQ6 run checked structural sense coverage and mandatory selection on an earlier revision. The PR #15 follow-up adds source-backed topic summaries and claim-level coverage diagnostics across course types. Existing grammar-specific selection and transcription rules are still a compatibility path, not a general quality guarantee. The current revision still needs a fresh VGQ6/Ark run, visual QA, gold-outline comparison, and human review; see [known limits](docs/examples/m7-known-limits.md) and the [generic quality design and rule inventory](docs/plans/2026-09-26-generic-editorial-quality.md).
+**Quality status:** CI checks the offline contracts and fixtures. Source-backed topic summaries and claim-level coverage diagnostics are implemented, but structural linkage does not establish factual or visual quality. The current revision still needs a dated live course run, exported-slide visual QA, comparison with annotated reference outlines, and human review. See [known limits](docs/examples/m7-known-limits.md) and the [quality design and rule inventory](docs/plans/2026-09-26-generic-editorial-quality.md).
 
 The seven-page example is a compact regression case, not a fixed deck length. `editor.target_pages` and `editor.max_pages` are configurable for the video's length and complexity; the default course configuration uses 12 and 20, respectively.
 
-**Roadmap:** complete dated live scorecards, visual QA, human-review closure, and release hardening — see the [implementation plan](docs/plans/2026-08-11-youtube-to-ppt-implementation.md).
+**Next quality work:** publish dated live scorecards, complete visual and human review, and finish release checks. The [implementation plan](docs/plans/2026-08-11-youtube-to-ppt-implementation.md) records the original milestone design.
 
 ```text
 ingest → evidence → analyze → plan → verify → review → bind → render
@@ -31,7 +31,7 @@ uv run yt2class doctor
 
 Build the bundled renderer before packaging wheels (hatch build hook or `scripts/prepare_renderer_bundle.sh`).
 
-## Quick start (M5 product CLI)
+## Quick start
 
 The product path (`build-run`, `batch`, `resume`, and stage commands below) supports **`analysis.provider: fake`** (default, offline/CI), **`openai-compatible`** for any endpoint accepting OpenAI-style chat/completions with `image_url` parts, and dedicated **`openrouter`** and **`ark-plan`** (alias **`volcengine`**) adapters. Other provider names fail closed. Opt-in real-model experiments also live under `tests/live/`.
 
@@ -72,24 +72,6 @@ uv run yt2class gemini-preview --links courses.txt --output output/gemini-list
 ```
 
 `courses.txt` supports blank lines and `#` comments. Install `yt-dlp` to expand playlists. Use `--prompt-file prompt.txt` for a custom analysis prompt and `--model MODEL` to select another Gemini model with YouTube video input support. Requests run once per video without automatic retries; failures do not stop the remaining items. Check current free-tier limits and data-use terms in [Google AI Studio](https://ai.google.dev/gemini-api/docs/rate-limits) before analyzing sensitive content.
-
-### Direct Gemini video preview (experimental)
-
-`gemini-preview` sends a **public YouTube video URL directly to Google's Gemini Developer API** with `gemini-3.8-flash`. It produces one Markdown analysis and one JSON record (source URL, model, exact prompt, response, token usage) per video. It is a comparison tool: its output is **not** a verified lesson or a PPTX, and its generated timestamps must be checked against the source video. The command uses neither OpenRouter nor local video download.
-
-```bash
-export GEMINI_API_KEY="your-Google-AI-Studio-key"
-uv run yt2class gemini-preview \
-  --url 'https://www.youtube.com/watch?v=VGQ6KuiZKKA' \
-  --output output/gemini-preview
-
-# For several independent videos, use repeated --url or a UTF-8 file with one URL per line:
-uv run yt2class gemini-preview --links courses.txt --output output/gemini-preview
-```
-
-The default Chinese prompt asks for a summary, every identifiable example, important facts, timestamped chapters, and uncertain details. Use `--prompt-file prompt.txt` to keep an alternative prompt identical across comparisons. A link file may contain blank lines and `#` comments; playlist URLs are not supported. A failed item does not stop the remaining list. The command makes one request per video without automatic retries, so a free-tier `429` is reported rather than repeatedly consuming quota.
-
-Google lists Gemini 3.8 Flash input/output as free **for projects on its API Free Tier**; a key attached to a paid project may be billed. Free-tier rate limits vary by project and are visible in [Google AI Studio](https://ai.google.dev/gemini-api/docs/rate-limits). Google's [YouTube input documentation](https://ai.google.dev/gemini-api/docs/generate-content/video-understanding) says the URL feature is in preview, accepts public videos, and caps free-tier YouTube input at eight hours per day; terms and limits may change. Free-tier content may be used to improve Google's products; consult the [current pricing and data-use table](https://ai.google.dev/gemini-api/docs/pricing) before submitting sensitive material.
 
 Example configs:
 
@@ -256,7 +238,7 @@ actually used for delivery.
 
 ## Legacy prototype: `build --links`
 
-The original YouTube batch prototype uses a separate code path (`llm.py`) and **does not** run the M5 stage DAG or SlideSpec 3.0 product pipeline.
+The original YouTube batch prototype uses a separate code path (`llm.py`) and **does not** run the staged `build-run` pipeline or SlideSpec 3.0 rendering path.
 
 Optional vision HTTP for that legacy path only (`build --links`):
 
@@ -281,13 +263,13 @@ uv run pytest -q
 uv run pytest tests/contract/test_eval_contract.py -q
 ```
 
-GitHub Actions runs the same full suite on pull requests and pushes to `master` ([workflow](.github/workflows/ci.yml)). Live: `tests/live/` (`@pytest.mark.live`) and dated provider runs are kept separate from the offline gate. M5 matrix: [docs/examples/m5-mvp-matrix.md](docs/examples/m5-mvp-matrix.md). Recoverability coverage is split across `tests/integration/test_resume.py`, `tests/integration/test_render_cache_validation.py`, `tests/unit/test_runtime_policy.py`, and incremental checks in `tests/integration/test_m7_recoverability.py`.
+GitHub Actions runs the same full suite on pull requests and pushes to `master` ([workflow](.github/workflows/ci.yml)). Live tests in `tests/live/` (`@pytest.mark.live`) and dated provider runs are separate from the offline gate. The [CLI and recovery matrix](docs/examples/m5-mvp-matrix.md) records tested cases. Recovery tests cover resume, render-cache validation, and runtime policy.
 
-## M7 evaluation
+## Evaluation status
 
 - Manifest: [evals/manifest.yaml](evals/manifest.yaml) (10 short segments + 1 long-course slot)
-- Scoring: [evals/scoring.py](evals/scoring.py) — `evals/comparison.py` scores are **fixture projections**
-- Example scorecard: [evals/reports/scorecard.fixture.json](evals/reports/scorecard.fixture.json)
+- Scoring: [evals/scoring.py](evals/scoring.py) — `evals/comparison.py` scores are **fixture projections**, not live quality measurements
+- Example fixture scorecard: [evals/reports/scorecard.fixture.json](evals/reports/scorecard.fixture.json)
 - Release gate: [docs/release-checklist.md](docs/release-checklist.md)
 
 ## Design docs
