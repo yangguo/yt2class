@@ -35,6 +35,24 @@ Build the bundled renderer before packaging wheels (hatch build hook or `scripts
 
 The product path (`build-run`, `batch`, `resume`, and stage commands below) supports **`analysis.provider: fake`** (default, offline/CI), **`openrouter`** for [OpenRouter](https://openrouter.ai/) vision models, and **`ark-plan`** (alias **`volcengine`**) for Volcengine Ark **Agent Plan** chat/completions. Other provider names fail closed. Opt-in real-model experiments also live under `tests/live/`.
 
+### Direct Gemini video preview (experimental)
+
+`gemini-preview` sends a **public YouTube video URL directly to Google's Gemini Developer API** with `gemini-3.8-flash`. It produces one Markdown analysis and one JSON record (source URL, model, exact prompt, response, token usage) per video. It is a comparison tool: its output is **not** a verified lesson or a PPTX, and its generated timestamps must be checked against the source video. The command uses neither OpenRouter nor local video download.
+
+```bash
+export GEMINI_API_KEY="your-Google-AI-Studio-key"
+uv run yt2class gemini-preview \
+  --url 'https://www.youtube.com/watch?v=VGQ6KuiZKKA' \
+  --output output/gemini-preview
+
+# For several independent videos, use repeated --url or a UTF-8 file with one URL per line:
+uv run yt2class gemini-preview --links courses.txt --output output/gemini-preview
+```
+
+The default Chinese prompt asks for a summary, every identifiable example, important facts, timestamped chapters, and uncertain details. Use `--prompt-file prompt.txt` to keep an alternative prompt identical across comparisons. A link file may contain blank lines and `#` comments; playlist URLs are not supported. A failed item does not stop the remaining list. The command makes one request per video without automatic retries, so a free-tier `429` is reported rather than repeatedly consuming quota.
+
+Google lists Gemini 3.8 Flash input/output as free **for projects on its API Free Tier**; a key attached to a paid project may be billed. Free-tier rate limits vary by project and are visible in [Google AI Studio](https://ai.google.dev/gemini-api/docs/rate-limits). Google's [YouTube input documentation](https://ai.google.dev/gemini-api/docs/generate-content/video-understanding) says the URL feature is in preview, accepts public videos, and caps free-tier YouTube input at eight hours per day; terms and limits may change. Free-tier content may be used to improve Google's products; consult the [current pricing and data-use table](https://ai.google.dev/gemini-api/docs/pricing) before submitting sensitive material.
+
 Example configs:
 
 - Offline/CI: [docs/examples/course.fixture.json](docs/examples/course.fixture.json) (`"provider": "fake"`)

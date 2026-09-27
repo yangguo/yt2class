@@ -3,7 +3,9 @@
 from pathlib import Path
 from typing import Optional
 import json
+import os
 
+import httpx
 import typer
 from pydantic import ValidationError
 
@@ -18,6 +20,14 @@ from yt2class.domain.media_audit import MediaPrivacyAudit
 from yt2class.domain.slide_spec_v3 import AnalysisMode
 from yt2class.domain.visual import VisualCatalogue
 from yt2class.inputs import read_urls
+from yt2class.gemini_video import (
+    DEFAULT_PROMPT,
+    GeminiPreviewError,
+    collect_video_urls,
+    generate_video_preview,
+    read_video_candidates,
+    write_video_preview,
+)
 from yt2class.orchestration.analyze import analyze_evidence_bundle, write_analysis_artifacts
 from yt2class.orchestration.edit import (
     StrictVerificationError,
@@ -67,6 +77,67 @@ app = typer.Typer(
 @app.callback()
 def main() -> None:
     """Create study notes from one or more course videos."""
+
+
+@app.command("gemini-preview")
+def gemini_preview(
+    urls: list[str] = typer.Option([], "--url", help="One public YouTube video URL; repeat for a list."),
+    links: Optional[Path] = typer.Option(
+        None,
+        "--links",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        readable=True,
+        help="UTF-8 text file with one public YouTube video URL per line.",
+    ),
+    output: Path = typer.Option(
+        Path("output/gemini-preview"), "--output", "-o", help="Directory for per-video Markdown and JSON."
+    ),
+    prompt_file: Optional[Path] = typer.Option(
+        None,
+        "--prompt-file",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        readable=True,
+        help="Optional UTF-8 analysis prompt for repeatable comparisons.",
+    ),
+) -> None:
+    """Preview direct Gemini 3.8 Flash understanding of public YouTube videos."""
+
+    try:
+        video_candidates = read_video_candidates(urls, links)
+        prompt = prompt_file.read_text(encoding="utf-8") if prompt_file else DEFAULT_PROMPT
+        if not prompt.strip():
+            raise ValueError("Prompt file is empty")
+    except (OSError, ValueError) as error:
+        typer.echo(f"Gemini preview failed: {error}", err=True)
+        raise typer.Exit(code=EXIT_FAIL) from error
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        typer.echo("Gemini preview failed: GEMINI_API_KEY is required", err=True)
+        raise typer.Exit(code=EXIT_FAIL)
+    failures = 0
+    successes = 0
+    seen: set[str] = set()
+    with httpx.Client() as client:
+        for candidate in video_candidates:
+            try:
+                url = collect_video_urls([candidate], None)[0]
+                if url in seen:
+                    continue
+                seen.add(url)
+                preview = generate_video_preview(url, api_key=api_key, client=client, prompt=prompt)
+                markdown, record = write_video_preview(preview, output)
+            except (GeminiPreviewError, OSError, ValueError) as error:
+                failures += 1
+                typer.echo(f"FAIL {candidate}: {error}", err=True)
+                continue
+            successes += 1
+            typer.echo(f"OK {url} -> {markdown} ({record})")
+    if failures:
+        raise typer.Exit(code=EXIT_BATCH_PARTIAL if successes else EXIT_FAIL)
 
 
 @app.command()
