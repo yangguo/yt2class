@@ -94,7 +94,7 @@ def resolve_volcengine_ark_model(analysis: AnalysisConfig) -> str:
         model = analysis.model
         if model:
             return model
-    for key in ("YT2CLASS_ARK_MODEL", "ARK_MODEL", "VOLCENGINE_ARK_MODEL"):
+    for key in ("YT2CLASS_IMAGE_MODEL", "YT2CLASS_ARK_MODEL", "ARK_MODEL", "VOLCENGINE_ARK_MODEL"):
         value = os.getenv(key)
         if value:
             return value

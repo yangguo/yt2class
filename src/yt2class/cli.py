@@ -1,10 +1,13 @@
 """Command-line interface for yt2class."""
 
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 import json
+import os
 
+import httpx
 import typer
+from dotenv import load_dotenv
 from pydantic import ValidationError
 
 from yt2class.domain.course_map import CourseMap
@@ -18,6 +21,17 @@ from yt2class.domain.media_audit import MediaPrivacyAudit
 from yt2class.domain.slide_spec_v3 import AnalysisMode
 from yt2class.domain.visual import VisualCatalogue
 from yt2class.inputs import read_urls
+from yt2class.gemini_video import (
+    DEFAULT_PROMPT,
+    GEMINI_MODEL,
+    GeminiPreviewError,
+    VideoEntry,
+    expand_video_inputs,
+    generate_video_preview,
+    read_video_candidates,
+    write_batch_manifest,
+    write_video_preview,
+)
 from yt2class.orchestration.analyze import analyze_evidence_bundle, write_analysis_artifacts
 from yt2class.orchestration.edit import (
     StrictVerificationError,
@@ -67,6 +81,100 @@ app = typer.Typer(
 @app.callback()
 def main() -> None:
     """Create study notes from one or more course videos."""
+    load_dotenv(dotenv_path=Path.cwd() / ".env", override=False)
+
+
+@app.command("gemini-preview")
+def gemini_preview(
+    urls: list[str] = typer.Option([], "--url", help="YouTube video or playlist URL; repeatable."),
+    links: Optional[Path] = typer.Option(
+        None, "--links", exists=True, file_okay=True, dir_okay=False, readable=True,
+        help="UTF-8 file containing video or playlist URLs, one per line.",
+    ),
+    output: Path = typer.Option(Path("output/gemini-preview"), "--output", "-o"),
+    prompt_file: Optional[Path] = typer.Option(
+        None, "--prompt-file", exists=True, file_okay=True, dir_okay=False, readable=True,
+    ),
+    model: Optional[str] = typer.Option(
+        None, "--model", help="Gemini model supporting YouTube video input (overrides GEMINI_MODEL).",
+    ),
+) -> None:
+    """Analyze public YouTube videos or playlist entries directly with Gemini."""
+    selected_model = model if model is not None else os.getenv("GEMINI_MODEL", GEMINI_MODEL)
+    selected_model = selected_model.strip() or GEMINI_MODEL
+    try:
+        candidates = read_video_candidates(urls, links)
+        prompt = prompt_file.read_text(encoding="utf-8") if prompt_file else DEFAULT_PROMPT
+        if not prompt.strip():
+            raise ValueError("Prompt file is empty")
+    except (OSError, ValueError) as error:
+        typer.echo(f"Gemini preview failed: {error}", err=True)
+        raise typer.Exit(code=EXIT_FAIL) from error
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        typer.echo("Gemini preview failed: GEMINI_API_KEY is required (set it in .env or environment)", err=True)
+        raise typer.Exit(code=EXIT_FAIL)
+
+    work_items: list[VideoEntry | dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    for candidate in candidates:
+        try:
+            expanded = expand_video_inputs([candidate])
+        except (OSError, ValueError) as error:
+            work_items.append({
+                "url": candidate, "title": None, "playlist_url": None,
+                "playlist_index": None, "status": "failed", "error": str(error),
+            })
+            continue
+        for entry in expanded:
+            if entry.url not in seen_urls:
+                seen_urls.add(entry.url)
+                work_items.append(entry)
+
+    successes = 0
+    failures = 0
+    records: list[dict[str, Any]] = []
+    with httpx.Client() as client:
+        for item in work_items:
+            if isinstance(item, dict):
+                record = item
+                failures += 1
+                typer.echo(f"FAIL {record['url']}: {record['error']}", err=True)
+            else:
+                entry = item
+                record = {
+                    "url": entry.url, "title": entry.title, "playlist_url": entry.playlist_url,
+                    "playlist_index": entry.playlist_index, "status": "failed",
+                }
+                try:
+                    preview = generate_video_preview(
+                        entry.url, api_key=api_key, client=client, prompt=prompt, model=selected_model
+                    )
+                    preview.update({
+                        "title": entry.title,
+                        "playlist_url": entry.playlist_url,
+                        "playlist_index": entry.playlist_index,
+                    })
+                    markdown, json_path = write_video_preview(preview, output)
+                    record.update(status="success", markdown=str(markdown), json=str(json_path))
+                    successes += 1
+                    typer.echo(f"OK {entry.url} -> {markdown}")
+                except (GeminiPreviewError, OSError, ValueError) as error:
+                    record["error"] = str(error)
+                    failures += 1
+                    typer.echo(f"FAIL {entry.url}: {error}", err=True)
+            records.append(record)
+            try:
+                write_batch_manifest(records, output)
+            except OSError as error:
+                typer.echo(f"Could not update batch manifest: {error}", err=True)
+                raise typer.Exit(code=EXIT_FAIL) from error
+    typer.echo(
+        f"Gemini preview: {successes} succeeded, {failures} failed; "
+        f"manifest: {output / 'batch-manifest.json'}"
+    )
+    if failures:
+        raise typer.Exit(code=EXIT_BATCH_PARTIAL if successes else EXIT_FAIL)
 
 
 @app.command()

@@ -73,7 +73,7 @@ def resolve_openrouter_model(analysis: AnalysisConfig) -> str:
         model = analysis.model
         if model:
             return model
-    for key in ("YT2CLASS_OPENROUTER_MODEL", "OPENROUTER_MODEL"):
+    for key in ("YT2CLASS_IMAGE_MODEL", "YT2CLASS_OPENROUTER_MODEL", "OPENROUTER_MODEL"):
         value = os.getenv(key)
         if value:
             return value
@@ -145,6 +145,8 @@ class StructuredOutputUnsupported(ProviderError):
 
 class OpenRouterProvider(Provider):
     """HTTP vision provider; stages attach JSON payloads on ``last_payload``."""
+
+    PROVIDER_LABEL = "OpenRouter"
 
     def __init__(
         self,
@@ -269,14 +271,14 @@ class OpenRouterProvider(Provider):
             )
         return [{"role": "user", "content": content}]
 
-    @staticmethod
-    def _extract_message_content(data: dict[str, Any]) -> str:
+    @classmethod
+    def _extract_message_content(cls, data: dict[str, Any]) -> str:
         choices = data.get("choices")
         if not isinstance(choices, list) or not choices:
-            raise ProviderError("OpenRouter response missing choices")
+            raise ProviderError(f"{cls.PROVIDER_LABEL} response missing choices")
         message = choices[0].get("message")
         if not isinstance(message, dict):
-            raise ProviderError("OpenRouter response missing message")
+            raise ProviderError(f"{cls.PROVIDER_LABEL} response missing message")
         content = message.get("content", "")
         if isinstance(content, str):
             return content
@@ -288,7 +290,7 @@ class OpenRouterProvider(Provider):
             joined = "".join(parts)
             if joined:
                 return joined
-        raise ProviderError("OpenRouter response did not contain text content")
+        raise ProviderError(f"{cls.PROVIDER_LABEL} response did not contain text content")
 
     @staticmethod
     def _usage_from_response(request: ModelRequest, data: dict[str, Any]) -> Usage:
@@ -311,13 +313,13 @@ class OpenRouterProvider(Provider):
             video_seconds=request.video_seconds,
         )
 
-    @staticmethod
-    def _error_detail(body: dict[str, Any]) -> str:
+    @classmethod
+    def _error_detail(cls, body: dict[str, Any]) -> str:
         error = body.get("error")
         if isinstance(error, str) and error.strip():
             return error.strip()
         if not isinstance(error, dict):
-            return "OpenRouter request failed"
+            return f"{cls.PROVIDER_LABEL} request failed"
         parts: list[str] = []
         message = error.get("message")
         if message:
@@ -333,12 +335,12 @@ class OpenRouterProvider(Provider):
         code = error.get("code")
         if code is not None:
             parts.append(f"code={code}")
-        return "; ".join(parts) if parts else "OpenRouter request failed"
+        return "; ".join(parts) if parts else f"{cls.PROVIDER_LABEL} request failed"
 
     def _raise_for_status(self, response: httpx.Response) -> None:
         if response.status_code < 400:
             return
-        detail = "OpenRouter request failed"
+        detail = f"{self.PROVIDER_LABEL} request failed"
         try:
             body = response.json()
             if isinstance(body, dict):
@@ -391,21 +393,21 @@ class OpenRouterProvider(Provider):
             data = response.json()
         except httpx.ReadTimeout as error:
             raise RetryableError(
-                f"OpenRouter read timed out after {self._timeout:.0f}s"
+                f"{self.PROVIDER_LABEL} read timed out after {self._timeout:.0f}s"
             ) from error
         except httpx.ConnectTimeout as error:
             raise RetryableError(
-                f"OpenRouter connect timed out after {min(30.0, self._timeout):.0f}s"
+                f"{self.PROVIDER_LABEL} connect timed out after {min(30.0, self._timeout):.0f}s"
             ) from error
         except httpx.TimeoutException as error:
-            raise RetryableError(f"OpenRouter request timed out: {error}") from error
+            raise RetryableError(f"{self.PROVIDER_LABEL} request timed out: {error}") from error
         except httpx.HTTPError as error:
-            raise RetryableError(f"OpenRouter transport error: {error.__class__.__name__}") from error
+            raise RetryableError(f"{self.PROVIDER_LABEL} transport error: {error.__class__.__name__}") from error
         finally:
             if owns_client:
                 client.close()
         if not isinstance(data, dict):
-            raise ProviderError("OpenRouter response was not a JSON object")
+            raise ProviderError(f"{self.PROVIDER_LABEL} response was not a JSON object")
         return data
 
     def _complete_with_json_mode(
@@ -428,10 +430,10 @@ class OpenRouterProvider(Provider):
             message = str(error)
             if "Unterminated" in message or "Expecting value" in message:
                 raise InvalidJsonResponse(
-                    f"OpenRouter returned truncated JSON for {request.request_id}: {error}"
+                    f"{self.PROVIDER_LABEL} returned truncated JSON for {request.request_id}: {error}"
                 ) from error
             raise MissingStructuredOutput(
-                f"OpenRouter returned invalid JSON for {request.request_id}: {error}"
+                f"{self.PROVIDER_LABEL} returned invalid JSON for {request.request_id}: {error}"
             ) from error
         return ModelResult(
             request_id=request.request_id,
@@ -455,7 +457,7 @@ class OpenRouterProvider(Provider):
             else self.last_payload
         )
         if not isinstance(payload, dict):
-            raise ProviderError("OpenRouter provider missing stage payload (last_payload)")
+            raise ProviderError(f"{self.PROVIDER_LABEL} provider missing stage payload (last_payload)")
         if payload_digest(payload) != request.payload_digest:
             raise ProviderError("stage payload digest does not match ModelRequest")
         if self._json_mode == "off":

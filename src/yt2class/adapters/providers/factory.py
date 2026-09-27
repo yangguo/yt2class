@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from yt2class.adapters.providers.base import Provider
+from yt2class.adapters.providers.openai_compatible_image import OpenAICompatibleImageProvider
 from yt2class.adapters.providers.openrouter import OpenRouterProvider
 from yt2class.adapters.providers.synthetic import fake_course_provider
 from yt2class.adapters.providers.volcengine_ark_plan import VolcengineArkPlanProvider
@@ -12,7 +13,7 @@ from yt2class.config import AnalysisConfig
 from yt2class.domain.visual import VisualCatalogue
 from yt2class.orchestration.analyze import default_capabilities
 
-SUPPORTED_ANALYSIS_PROVIDERS = frozenset({"fake", "openrouter", "ark-plan", "volcengine"})
+SUPPORTED_ANALYSIS_PROVIDERS = frozenset({"fake", "openai-compatible", "openrouter", "ark-plan", "volcengine"})
 _ARK_PLAN_ALIASES = frozenset({"ark-plan", "volcengine"})
 
 
@@ -29,6 +30,11 @@ def resolve_course_provider(
 ) -> Provider:
     if provider_name == "fake":
         return fake_course_provider(default_capabilities())
+    if provider_name == "openai-compatible":
+        provider = OpenAICompatibleImageProvider.from_config(analysis)
+        if run_root is not None:
+            provider.bind_run_context(run_root, visual=visual)
+        return provider
     if provider_name == "openrouter":
         provider = OpenRouterProvider.from_config(analysis)
         if run_root is not None:

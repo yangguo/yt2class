@@ -13,6 +13,7 @@ __pycache__/
 *.webm
 *.mov
 output/
+outputs/
 test-output/
 dist/
 
@@ -20,6 +21,7 @@ dist/
 .env
 .env.*
 !*.env.example
+!.env.sample
 
 # Local input lists may contain private URLs.
 links.txt

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 from typing import Any, Literal
 
@@ -116,9 +117,17 @@ class BuildSource:
 
 
 def load_config(path: Path | None) -> CourseConfig:
-    if path is None:
-        return CourseConfig()
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw = {} if path is None else json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(raw, dict):
+        image_provider = os.getenv("YT2CLASS_IMAGE_PROVIDER", "").strip()
+        image_model = os.getenv("YT2CLASS_IMAGE_MODEL", "").strip()
+        if image_provider or image_model:
+            analysis = raw.setdefault("analysis", {})
+            if isinstance(analysis, dict):
+                if image_provider:
+                    analysis.setdefault("provider", image_provider)
+                if image_model and analysis.get("provider", "fake") != "fake" and not analysis.get("model"):
+                    analysis["model"] = image_model
     return CourseConfig.model_validate(raw)
 
 

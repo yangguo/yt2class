@@ -32,6 +32,22 @@ class ModelConfig:
 
     @classmethod
     def from_environment(cls) -> "ModelConfig | None":
+        image_url = os.getenv("YT2CLASS_IMAGE_ENDPOINT", "").strip()
+        image_key = os.getenv("YT2CLASS_IMAGE_API_KEY", "").strip()
+        if image_url or image_key:
+            image_model = os.getenv("YT2CLASS_IMAGE_MODEL", "").strip()
+            if not (image_url and image_key and image_model):
+                raise ValueError(
+                    "YT2CLASS_IMAGE_ENDPOINT, YT2CLASS_IMAGE_API_KEY, and "
+                    "YT2CLASS_IMAGE_MODEL must all be set for legacy image analysis"
+                )
+            return cls(
+                endpoint=image_url,
+                api_key=image_key,
+                model=image_model,
+                provider="anthropic" if image_url.rstrip("/").endswith("/messages") else "openai",
+            )
+
         explicit_url = os.getenv("YT2CLASS_MODEL_URL")
         explicit_key = os.getenv("YT2CLASS_MODEL_KEY")
         if explicit_url and explicit_key:

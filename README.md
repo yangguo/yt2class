@@ -31,7 +31,45 @@ Build the bundled renderer before packaging wheels (hatch build hook or `scripts
 
 ## Quick start (M5 product CLI)
 
-The product path (`build-run`, `batch`, `resume`, and stage commands below) supports **`analysis.provider: fake`** (default, offline/CI), **`openrouter`** for [OpenRouter](https://openrouter.ai/) vision models, and **`ark-plan`** (alias **`volcengine`**) for Volcengine Ark **Agent Plan** chat/completions. Other provider names fail closed. Opt-in real-model experiments also live under `tests/live/`.
+The product path (`build-run`, `batch`, `resume`, and stage commands below) supports **`analysis.provider: fake`** (default, offline/CI), **`openai-compatible`** for any endpoint accepting OpenAI-style chat/completions with `image_url` parts, and dedicated **`openrouter`** and **`ark-plan`** (alias **`volcengine`**) adapters. Other provider names fail closed. Opt-in real-model experiments also live under `tests/live/`.
+
+All CLI commands load `.env` from the current working directory. Copy [`.env.sample`](.env.sample) to `.env`, then uncomment the settings for the input path you use. Variables already exported in the shell take precedence. Image/frame analysis and direct YouTube video analysis have separate model settings.
+
+| Workflow | Model selection |
+| --- | --- |
+| `build-run` / `batch` frame analysis | `analysis.provider` and `analysis.model` in the course config; otherwise `YT2CLASS_IMAGE_PROVIDER` and `YT2CLASS_IMAGE_MODEL` in `.env` |
+| Legacy `build --links` image analysis | `YT2CLASS_IMAGE_ENDPOINT`, `YT2CLASS_IMAGE_API_KEY`, and `YT2CLASS_IMAGE_MODEL`; older `YT2CLASS_MODEL_*` settings still work |
+| `gemini-preview` YouTube video analysis | `GEMINI_MODEL`; command-line `--model` takes precedence |
+
+For a new OpenAI-compatible vision service, set `YT2CLASS_IMAGE_PROVIDER=openai-compatible` and its endpoint, API key, and model in `.env`, then run `uv run yt2class build-run --video path/to/lesson.mp4 --output runs`. The endpoint must be a full `/chat/completions` URL that accepts `image_url` content parts. A course config's explicit `analysis.provider` or `analysis.model` wins over the corresponding `.env` setting. The same endpoint/key/model settings also work with the legacy `build --links` command. Services using another request format need a matching adapter.
+
+### Direct Gemini video analysis (experimental)
+
+`gemini-preview` analyzes public YouTube videos directly with the Gemini Developer API. It accepts a single video, repeated `--url` values, a UTF-8 URL file, or a YouTube playlist URL/file entry. Playlist expansion uses `yt-dlp` metadata only; the videos are not downloaded. Each video is analyzed independently and saved as `<video-id>.md` plus a JSON provenance record. `batch-manifest.json` records ordered successes and failures so a partial run is reviewable. This is an analysis preview, not verified courseware; verify generated facts and timestamps against the video.
+
+Set `GEMINI_API_KEY` in the shell or in a local `.env` file (ignored by Git):
+
+```dotenv
+GEMINI_API_KEY=your-Google-AI-Studio-key
+GEMINI_MODEL=gemini-3.8-flash
+```
+
+`GEMINI_MODEL` is optional and defaults to `gemini-3.8-flash`; the `--model` option takes precedence over it.
+
+```bash
+uv run yt2class gemini-preview \
+  --url 'https://www.youtube.com/watch?v=VIDEO_ID' \
+  --output output/gemini-preview
+
+# Playlist URL or a file containing a mix of video and playlist URLs:
+uv run yt2class gemini-preview \
+  --url 'https://www.youtube.com/playlist?list=PLAYLIST_ID' \
+  --output output/gemini-playlist
+
+uv run yt2class gemini-preview --links courses.txt --output output/gemini-list
+```
+
+`courses.txt` supports blank lines and `#` comments. Install `yt-dlp` to expand playlists. Use `--prompt-file prompt.txt` for a custom analysis prompt and `--model MODEL` to select another Gemini model with YouTube video input support. Requests run once per video without automatic retries; failures do not stop the remaining items. Check current free-tier limits and data-use terms in [Google AI Studio](https://ai.google.dev/gemini-api/docs/rate-limits) before analyzing sensitive content.
 
 Example configs:
 
@@ -70,7 +108,7 @@ Default model is **`google/gemma-4-31b-it:free`** (free-tier vision on OpenRoute
 
 **Volcengine Ark Agent Plan (frames mode)**
 
-Use [docs/examples/course.volcengine.ark-plan.json](docs/examples/course.volcengine.ark-plan.json) with the `ark-plan` provider. Set `VOLCENGINE_ARK_API_KEY` (or the `ARK_API_KEY` alias) in the environment; `yt2class doctor --json` reports whether it is set without printing the secret.
+Use [docs/examples/course.volcengine.ark-plan.json](docs/examples/course.volcengine.ark-plan.json) with the `ark-plan` provider. Set `VOLCENGINE_ARK_API_KEY` (or the `ARK_API_KEY` alias) and, optionally, `YT2CLASS_ARK_MODEL` in `.env`; an explicit `analysis.model` in the course config takes precedence. `yt2class doctor --json` reports whether the credential is set without printing it.
 
 ```bash
 export VOLCENGINE_ARK_API_KEY="..."
@@ -186,15 +224,15 @@ runs/<run-id>/
 
 The original YouTube batch prototype uses a separate code path (`llm.py`) and **does not** run the M5 stage DAG or SlideSpec 3.0 product pipeline.
 
-Optional vision HTTP for that legacy path only (not `build-run`):
+Optional vision HTTP for that legacy path only (`build --links`):
 
-```bash
-export YT2CLASS_MODEL_URL="https://your-endpoint/v1/chat/completions"
-export YT2CLASS_MODEL_KEY="..."
-export YT2CLASS_MODEL="your-vision-model"
+```dotenv
+YT2CLASS_MODEL_URL=https://your-endpoint/v1/chat/completions
+YT2CLASS_MODEL_KEY=your-api-key
+YT2CLASS_MODEL=your-vision-model
 ```
 
-Also supported on the legacy path: `OPENAI_API_KEY` (optional `OPENAI_BASE_URL`) and Anthropic-compatible variables. DeepSeek routes are treated as text-only with offline fallback.
+These settings may be placed in `.env`. The legacy image path also accepts the common `YT2CLASS_IMAGE_*` settings, `OPENAI_API_KEY` with optional `OPENAI_BASE_URL`, or Anthropic-compatible variables. If common and legacy model settings are both present, the common settings take precedence. DeepSeek routes are treated as text-only with offline fallback. Image credentials and model names remain separate from `GEMINI_API_KEY` and `GEMINI_MODEL` used by `gemini-preview`.
 
 ```bash
 uv run yt2class build --links links.txt --output output --max-slides 12 --preview
